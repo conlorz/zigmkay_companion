@@ -219,7 +219,7 @@ pub fn main(init: std.process.Init) !void {
     var atomic = try directory.createFileAtomic(io, receipt_name, .{ .replace = existing != null });
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, encoded);
-    try atomic.replace(io);
+    if (existing != null) try atomic.replace(io) else try atomic.link(io);
 }
 test "archive entries stay within the immutable package prefix" {
     try std.testing.expectEqualStrings("src/main.zig", try archivePath("pin/src/main.zig", "pin"));

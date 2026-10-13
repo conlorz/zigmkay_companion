@@ -42,7 +42,7 @@ pub fn main(init: std.process.Init) !void {
             defer runner.deinit(init.io);
             try runner.file.writeStreamingAll(init.io, own_bytes);
             try runner.file.setPermissions(init.io, .executable_file);
-            try runner.replace(init.io);
+            try runner.link(init.io);
             return;
         }
     }

@@ -190,7 +190,7 @@ pub fn main(init: std.process.Init) !void {
         var atomic = try output.createFileAtomic(io, file.path, .{ .replace = false });
         defer atomic.deinit(io);
         try atomic.file.writeStreamingAll(io, bytes);
-        try atomic.replace(io);
+        try atomic.link(io);
         const written = try output.readFileAlloc(io, file.path, gpa, .limited(32 * 1024 * 1024));
         defer gpa.free(written);
         if (!std.mem.eql(u8, bytes, written)) return error.AdaptedCopyMismatch;
@@ -223,7 +223,7 @@ pub fn main(init: std.process.Init) !void {
     var atomic = try output.createFileAtomic(io, "adaptation-manifest.zon", .{ .replace = false });
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, encoded.written());
-    try atomic.replace(io);
+    try atomic.link(io);
 }
 test "exact adaptation changes only the four known literals and rejects drift" {
     const gpa = std.testing.allocator;

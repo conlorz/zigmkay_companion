@@ -40,6 +40,24 @@ pub fn free(gpa: std.mem.Allocator, files: []Entry) void {
     gpa.free(files);
 }
 
+test "nested traversal terminates and preserves relative paths" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "nested/deeper");
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/deeper/input.zig", .data = "" });
+    const Accept = struct {
+        fn excluded(_: []const u8, _: []const u8, _: std.Io.File.Kind) bool {
+            return false;
+        }
+    };
+    const files = try collect(gpa, io, tmp.dir, .{ .excluded = Accept.excluded, .max_files = 1 });
+    defer free(gpa, files);
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expectEqualStrings("nested/deeper/input.zig", files[0].path);
+}
+
 test "traversal preserves caller policy, sorts paths and enforces bounds" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
