@@ -127,6 +127,70 @@ test "multiple files on one directory handle with threaded IO" {
     try checkMultipleFiles(threaded.io());
 }
 
+fn checkFixtureRoots(io: std.Io, tmp: std.Io.Dir, policy: Policy, expected: []const []const u8) !void {
+    const gpa = std.testing.allocator;
+    const reopened = try tmp.openDir(io, ".", .{ .iterate = true });
+    defer reopened.close(io);
+    for ([_]std.Io.Dir{ tmp, reopened }) |root| {
+        const files = try collect(gpa, io, root, policy);
+        defer free(gpa, files);
+        try std.testing.expectEqual(expected.len, files.len);
+        for (expected, files) |path, file| try std.testing.expectEqualStrings(path, file.path);
+    }
+}
+
+const FixturePolicy = struct {
+    fn excluded(_: []const u8, name: []const u8, kind: std.Io.File.Kind) bool {
+        return kind == .directory and (std.mem.eql(u8, name, ".zig-cache") or
+            std.mem.eql(u8, name, "zig-out") or std.mem.eql(u8, name, "cache"));
+    }
+    fn included(path: []const u8, kind: std.Io.File.Kind) bool {
+        return kind == .file and (std.mem.endsWith(u8, path, ".zig") or std.mem.endsWith(u8, path, ".zon"));
+    }
+    const policy: Policy = .{ .excluded = excluded, .included = included, .max_files = 8 };
+};
+
+fn checkColonFixture(io: std.Io) !void {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "samples/USB Device 0x46d:0x9a4--USB Mixer");
+    try tmp.dir.writeFile(io, .{ .sub_path = "samples/USB Device 0x46d:0x9a4--USB Mixer/main.zig", .data = "" });
+    try tmp.dir.createDirPath(io, ".zig-cache");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache/ignored.zig", .data = "" });
+    try checkFixtureRoots(io, tmp.dir, FixturePolicy.policy, &.{"samples/USB Device 0x46d:0x9a4--USB Mixer/main.zig"});
+}
+
+fn checkResolutionFixture(io: std.Io) !void {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "local");
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig.zon", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "local/build.zig.zon", .data = "" });
+    try tmp.dir.createDirPath(io, "cache");
+    try tmp.dir.writeFile(io, .{ .sub_path = "cache/ignored.zon", .data = "" });
+    try checkFixtureRoots(io, tmp.dir, FixturePolicy.policy, &.{ "build.zig.zon", "local/build.zig.zon" });
+}
+
+test "colon nested fixture with testing IO" {
+    try checkColonFixture(std.testing.io);
+}
+
+test "colon nested fixture with threaded IO" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    try checkColonFixture(threaded.io());
+}
+
+test "resolution manifest fixture with testing IO" {
+    try checkResolutionFixture(std.testing.io);
+}
+
+test "resolution manifest fixture with threaded IO" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    try checkResolutionFixture(threaded.io());
+}
+
 test "nested traversal terminates and preserves relative paths" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
