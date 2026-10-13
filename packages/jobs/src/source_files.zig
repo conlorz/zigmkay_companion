@@ -44,12 +44,15 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
     var trace_steps: usize = 0;
     while (stack.items.len != 0) {
         const frame = &stack.items[stack.items.len - 1];
+        if (builtin.is_test and trace_steps < 30) {
+            trace_steps += 1;
+            std.debug.print("source traversal step={d} depth={d} before next\n", .{ trace_steps, stack.items.len });
+        }
         const entry = try frame.iterator.next(io);
         if (builtin.is_test) {
-            if (trace_steps < 100) {
-                trace_steps += 1;
+            if (trace_steps > 0 and trace_steps <= 30) {
                 const reader = &frame.iterator.reader;
-                std.debug.print("source traversal step={d} depth={d} state={any} index={d} end={d}\n", .{
+                std.debug.print("source traversal step={d} depth={d} after next state={any} index={d} end={d}\n", .{
                     trace_steps, stack.items.len, reader.state, reader.index, reader.end,
                 });
             }
@@ -75,21 +78,28 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
             gpa.free(done.prefix);
             continue;
         };
+        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} before join\n", .{trace_steps});
         const path = try std.fs.path.join(gpa, &.{ frame.prefix, item.name });
-        if (policy.excluded(path, item.name, item.kind)) {
+        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after join, before excluded\n", .{trace_steps});
+        const excluded = policy.excluded(path, item.name, item.kind);
+        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after excluded\n", .{trace_steps});
+        if (excluded) {
             gpa.free(path);
             continue;
         }
         if (item.kind == .directory) {
+            if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} before child open\n", .{trace_steps});
             const child = frame.dir.openDir(io, item.name, .{ .iterate = true }) catch |err| {
                 gpa.free(path);
                 return err;
             };
+            if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after child open, before stack append\n", .{trace_steps});
             stack.append(gpa, .{ .dir = child, .iterator = child.iterate(), .prefix = path, .owns_dir = true }) catch |err| {
                 child.close(io);
                 gpa.free(path);
                 return err;
             };
+            if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after stack append\n", .{trace_steps});
             continue;
         }
         if (policy.included) |included| {
@@ -102,10 +112,12 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
             gpa.free(path);
             return error.SourceFileLimit;
         }
+        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} before file append\n", .{trace_steps});
         files.append(gpa, .{ .path = path, .kind = item.kind }) catch |err| {
             gpa.free(path);
             return err;
         };
+        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after file append\n", .{trace_steps});
     }
     std.mem.sort(Entry, files.items, {}, struct {
         fn less(_: void, lhs: Entry, rhs: Entry) bool {
