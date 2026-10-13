@@ -16,3 +16,75 @@ reference cannot certify the keyboard producing OS text.
 Native Windows/Linux storage acceptance and user typing trials require those
 environments and remain pending until recorded here. No hardware task is part
 of this feature. The requested PR remains open for the user's morning review.
+
+## Implementation and capture checkpoint
+
+Production/fixture checkpoint: `c7772fa` (plus subsequent review corrections,
+listed below). Generation/corpus/textual coverage, metrics, drill policy and ZON
+storage versions are all 1. The nine English pairs cover seeds 0–63, with literal
+SHA-256 fixtures for seed 42; `tools/practice_samples.zig` prints the reviewable
+nine samples. Base vocabulary is 893 unique curated ordinary entries. No external
+corpus or license dependency was introduced. Words use twelve sentence structures;
+Mixed case uses twelve and punctuation has eight coverage-bearing openings.
+Readable sample review led to explicit vocabulary-use sentences instead of
+incoherent random topic claims and corrected acronym article agreement.
+
+The [selected planning mockup](typing-practice-design-reference.png) is a generated
+design reference, not a screenshot of the application. The user guide's images
+are real native app output with deterministic offline exercise/result fixtures.
+`apps/desktop/practice_fixture.zig` adds explicit US symbol actions to the generic
+QWERTY fixture only; the ordinary template lacks some symbol routes. No saved
+project or firmware is altered by capture. Scripted counts do not represent a
+human typing trial, hardware validation or learning efficacy.
+
+Capture environment: macOS 26.6.2 (25G83), arm64, native SDL/Cocoa renderer,
+Retina pixel scale 2. Normal window: 1536×1024 logical, 3072×2048 pixels; small
+window: native minimum 900×700 logical. Images are reduced to 1536 pixels wide,
+and the small image to 900, with the macOS `sips` utility. Light/dark use the app's
+existing themes; system fonts are read locally and never committed.
+
+After compiling `build-desktop` with the prepared immutable desktop sources and
+`-Ddesktop-dependencies=true -Ddesktop-vectors=true`, capture explicitly:
+
+```sh
+practice_exe=$(ls -t .zig-cache/o/*/zigmkay-companion | head -1)
+"$practice_exe" --native-rundown-frames 20
+sips -s format png -Z 1536 .zig-cache/typing-practice-gallery/4.bmp \
+  --out docs/screenshots/typing-practice/rundown-light.png
+```
+
+Capture reads pixels before frame cleanup, while render resources are valid.
+The app remains offline; it uses no native input-source lookup, HID connection,
+tray installation or user history. Source frames 2/4/6/8/10/14 respectively supply
+tutor/light/symbols/dark/drill/history images. Frame 20 supplies the
+[small-window rundown](../screenshots/typing-practice/small.png). Original BMPs and
+logs stay in ignored caches. The software/dummy lane exercises controls and
+state without hardware; its font rendering is not used for documentation.
+
+## Checks and remaining gates
+
+Compiler: exactly Zig 0.17.0, verified from the installed zvm compiler.
+Local checks passed:
+
+- `zig build test-desktop-core test-app-paths -j4`.
+- `zig build check test -j4 --test-timeout 45s`.
+- Prepared GUI graph: `build-desktop test-desktop-launch test-desktop-practice
+  test-desktop-rundown test-desktop-companion test-desktop-source-refresh -j4`.
+- Native macOS screenshot fixture, including layer/Shift selectors, details,
+  history scope, drill focus, all assistance modes and the small window.
+- Documentation links, Zig formatting and `git diff --check`.
+
+The prepared GUI lane uses the pinned sources already acquired under the
+existing checkout's `desktop-acquired/p/` cache, with each explicit
+`desktop-*-source` option. No source acquisition or firmware override was needed.
+Native storage tests create Unicode/space directories, publish/reopen records,
+run independent writers, preserve interrupted/corrupt/future data, retain queued
+failed saves, test idempotence and exercise weighted twelve-run history. The
+background-worker allocator leak detected by those tests was corrected.
+
+`.github/workflows/practice-contracts.yml` runs generator, result, storage,
+background-runtime and path-policy tests on actual macOS, Windows and Linux CI
+runners. Their results must be recorded before cross-platform storage acceptance.
+Native Windows/Linux GUI/input-source behavior, human typing trials and required
+user review remain pending; no extraction, firmware or release gate is closed by
+this feature. The requested PR is left open for morning review and testing.

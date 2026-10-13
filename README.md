@@ -5,6 +5,19 @@ project, session, jobs, keymap, catalog, processor-runner and desktop code.
 Native acceptance is not established across all intended macOS, Windows and
 Linux targets.
 
+## Typing practice
+
+Practice English with Words, Mixed case and Punctuation presets, independent
+length and optional reproducible challenges. Layer heatmaps show distinct missed
+character occurrences, with comparable local history and fresh weak-spot drills.
+Guided, Layout only and Hidden assistance keep practice under your control.
+See the [typing practice guide](docs/typing-practice.md) for metrics, storage,
+controls, test status and morning review instructions.
+
+![Typing practice layer heatmap in light mode](docs/screenshots/typing-practice/rundown-light.png)
+
+*Real macOS application capture with deterministic offline fixture data.*
+
 ## Build and check
 
 Use exactly Zig 0.17.0 (`.zigversion` and `mise.toml`). Verify your compiler with
