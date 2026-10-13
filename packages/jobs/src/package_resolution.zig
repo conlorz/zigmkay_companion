@@ -319,15 +319,29 @@ test "selected build binds inactive lazy pins and rejects silent omissions" {
 test "read-only resolution traverses local cycles and requires explicit prepared or overridden pins" {
     const t = std.testing;
     var tmp = t.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
+    defer {
+        std.debug.print("resolution cycle: before tmp cleanup\n", .{});
+        tmp.cleanup();
+        std.debug.print("resolution cycle: after tmp cleanup\n", .{});
+    }
+    std.debug.print("resolution cycle: before local open\n", .{});
     var local = try tmp.dir.createDirPathOpen(t.io, "local", .{});
-    defer local.close(t.io);
+    std.debug.print("resolution cycle: after local open\n", .{});
+    defer {
+        std.debug.print("resolution cycle: before local close\n", .{});
+        local.close(t.io);
+        std.debug.print("resolution cycle: after local close\n", .{});
+    }
     try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{ .local = .{ .path = \"local\" } } }" });
     try local.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{ .parent = .{ .path = \"..\" } } }" });
+    std.debug.print("resolution cycle: begin root realpath\n", .{});
     const path = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    std.debug.print("resolution cycle: end root realpath\n", .{});
     defer t.allocator.free(path);
     const roots = [_]Root{.{ .name = "companion", .directory = path }};
+    std.debug.print("resolution cycle: begin initial resolve\n", .{});
     var resolved = try resolve(t.allocator, t.io, .{ .roots = &roots });
+    std.debug.print("resolution cycle: end initial resolve\n", .{});
     defer resolved.deinit();
     try t.expectEqual(@as(usize, 2), resolved.record.manifests.len);
     try t.expectEqual(@as(usize, 0), resolved.record.dependencies.len);
@@ -349,13 +363,21 @@ test "read-only resolution traverses local cycles and requires explicit prepared
     try t.expectError(error.UnusedResolutionOverride, resolve(t.allocator, t.io, .{ .roots = &roots, .overrides = &unknown }));
     const package_hash = "sdl-1.0.3+3.4.16-i4QD0e0HqgDYP8m4T3rMJShyaDLy8ksp8qzCrCSncaPB";
     var cache = t.tmpDir(.{ .iterate = true });
-    defer cache.cleanup();
+    defer {
+        std.debug.print("resolution cycle: before cache cleanup\n", .{});
+        cache.cleanup();
+        std.debug.print("resolution cycle: after cache cleanup\n", .{});
+    }
     const cache_path = try cache.dir.realPathFileAlloc(t.io, ".", t.allocator);
     defer t.allocator.free(cache_path);
     const package_relative = try std.fs.path.join(t.allocator, &.{ "p", package_hash });
     defer t.allocator.free(package_relative);
     var prepared_dir = try cache.dir.createDirPathOpen(t.io, package_relative, .{ .open_options = .{ .iterate = true } });
-    defer prepared_dir.close(t.io);
+    defer {
+        std.debug.print("resolution cycle: before prepared directory close\n", .{});
+        prepared_dir.close(t.io);
+        std.debug.print("resolution cycle: after prepared directory close\n", .{});
+    }
     try prepared_dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{} }" });
     try cache.dir.createDirPath(t.io, "blobs");
     const blob = "explicit prepared-source fixture bytes";

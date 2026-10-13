@@ -338,26 +338,48 @@ test "package archive paths preserve POSIX colon names without Windows streams" 
         try t.expectError(error.InvalidPackageArchivePath, relativeForPlatform(path, "pin", true));
     }
     if (@import("builtin").os.tag == .windows) return;
+    std.debug.print("colon archive: before fixture tmpDir\n", .{});
     var fixture = t.tmpDir(.{});
-    defer fixture.cleanup();
+    std.debug.print("colon archive: after fixture tmpDir; before destination tmpDir\n", .{});
+    defer {
+        std.debug.print("colon archive: before fixture cleanup\n", .{});
+        fixture.cleanup();
+        std.debug.print("colon archive: after fixture cleanup\n", .{});
+    }
     var destination = t.tmpDir(.{ .iterate = true });
-    defer destination.cleanup();
+    std.debug.print("colon archive: after destination tmpDir\n", .{});
+    defer {
+        std.debug.print("colon archive: before destination cleanup\n", .{});
+        destination.cleanup();
+        std.debug.print("colon archive: after destination cleanup\n", .{});
+    }
     var bytes: std.Io.Writer.Allocating = .init(t.allocator);
     defer bytes.deinit();
     var window: [std.compress.flate.max_window_len]u8 = undefined;
+    std.debug.print("colon archive: before gzip init\n", .{});
     var gzip = try std.compress.flate.Compress.Raw.init(&bytes.writer, &window, .gzip);
+    std.debug.print("colon archive: after gzip init; before tar write\n", .{});
     var tar: std.tar.Writer = .{ .underlying_writer = &gzip.writer };
     try tar.writeFileBytes(name, "mixer sample", .{});
+    std.debug.print("colon archive: after tar write; before tar finish\n", .{});
     try tar.finishPedantically();
+    std.debug.print("colon archive: after tar finish; before gzip finish\n", .{});
     try gzip.finish();
+    std.debug.print("colon archive: after gzip finish; before archive write\n", .{});
     try fixture.dir.writeFile(t.io, .{ .sub_path = "colon.tar.gz", .data = bytes.written() });
+    std.debug.print("colon archive: after archive write; before realPathFileAlloc\n", .{});
     const archive = try fixture.dir.realPathFileAlloc(t.io, "colon.tar.gz", t.allocator);
     defer t.allocator.free(archive);
+    std.debug.print("colon archive: after realPathFileAlloc; before unpack\n", .{});
     try unpack(t.allocator, t.io, archive, "pin", destination.dir);
+    std.debug.print("colon archive: after unpack; before extracted read\n", .{});
     const extracted = try destination.dir.readFileAlloc(t.io, name[4..], t.allocator, .limited(128));
     defer t.allocator.free(extracted);
+    std.debug.print("colon archive: after extracted read; before content assertion\n", .{});
     try t.expectEqualStrings("mixer sample", extracted);
+    std.debug.print("colon archive: after content assertion; before packageTreeDigest\n", .{});
     _ = try jobs.preparation.packageTreeDigest(t.allocator, t.io, destination.dir);
+    std.debug.print("colon archive: after packageTreeDigest\n", .{});
 }
 
 test "package source records rebase paths verify bytes and preserve unsupported versions" {
