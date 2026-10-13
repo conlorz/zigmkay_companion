@@ -3,6 +3,9 @@ const hid = @import("../hid_to_platform.zig");
 
 /// Opaque handle allocated by the C implementation in platform/linux.c.
 /// Wraps xkb_context + xkb_keymap + xkb_state + cached modifier indices.
+/// The bridge compiles process-default XKB rules (falling back to US); it does
+/// not query the active X11/Wayland layout. refresh recompiles those defaults,
+/// not the compositor's current layout. No active-map injection is available.
 pub const LinuxKeyMap = opaque {
     extern fn linuxKeyMapInit() ?*LinuxKeyMap;
     pub fn init() *LinuxKeyMap {

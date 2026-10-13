@@ -9,6 +9,20 @@ pub const native_available = zkeymap.native_available;
 pub const active_source_identity_available = builtin.os.tag == .macos and native_available;
 pub const persistent_translation_available = builtin.os.tag == .macos and native_available;
 
+/// Provenance of layout-dependent translation, not merely bridge availability.
+/// Linux's XKB map is compiled from process defaults (or a US fallback), not
+/// obtained from the active X11/Wayland session. No active-layout injection is
+/// supported by the retained C bridge.
+pub const Provenance = enum { unavailable, active_macos, default_xkb, native_fallback };
+pub fn platformProvenance() Provenance {
+    if (!native_available) return .unavailable;
+    return switch (builtin.os.tag) {
+        .macos => .active_macos,
+        .linux => .default_xkb,
+        else => .native_fallback,
+    };
+}
+
 extern "c" fn TISCopyCurrentKeyboardInputSource() ?*anyopaque;
 extern "c" fn TISCopyCurrentKeyboardLayoutInputSource() ?*anyopaque;
 extern "c" fn TISGetInputSourceProperty(*anyopaque, *anyopaque) ?*anyopaque;
@@ -30,6 +44,12 @@ pub const Source = struct {
     layout_id_buffer: [256]u8 = @splat(0),
     layout_id_len: usize = 0,
     fallback: ?zkeymap.KeyMap = null,
+    pub fn provenance(_: *const Source) Provenance {
+        return platformProvenance();
+    }
+    pub fn hasActiveLayout(self: *const Source) bool {
+        return self.provenance() == .active_macos and self.layout != null;
+    }
     pub fn id(self: *const Source) []const u8 {
         return self.id_buffer[0..self.id_len];
     }
