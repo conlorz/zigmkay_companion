@@ -19,8 +19,8 @@ of this feature. The requested PR remains open for the user's morning review.
 
 ## Implementation and capture checkpoint
 
-Production/fixture checkpoint: `c7772fa` (plus subsequent review corrections,
-listed below). Generation/corpus/textual coverage, metrics, drill policy and ZON
+Production/fixture checkpoint: `c7772fa`; post-implementation review checkpoint:
+`11e6271`. Native screenshots were regenerated from the reviewed source. Generation/corpus/textual coverage, metrics, drill policy and ZON
 storage versions are all 1. The nine English pairs cover seeds 0–63, with literal
 SHA-256 fixtures for seed 42; `tools/practice_samples.zig` prints the reviewable
 nine samples. Base vocabulary is 893 unique curated ordinary entries. No external
