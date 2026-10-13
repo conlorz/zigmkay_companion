@@ -64,6 +64,11 @@ pub const Runtime = struct {
     }
     fn begin(self: *Runtime, owner: *controller.Controller, effect: Start, frozen: *const jobs.flash_inputs.Frozen, current: jobs.firmware.Inputs, board_id: [8]u8) !void {
         try preflight(owner, effect, ArtifactView.fromFrozen(frozen), current, board_id);
+        // The metadata view is not provenance: bind the actual owned frozen
+        // record to the controller artifact before Job.start verifies its bytes.
+        if (!std.mem.eql(u8, &frozen.build_key, &effect.frozen.context.build_key) or
+            !std.mem.eql(u8, &frozen.uf2_hash, &effect.frozen.uf2_hash) or
+            !std.mem.eql(u8, frozen.path, effect.frozen.path)) return error.StaleArtifact;
         const request: jobs.flash_inputs.Request = .{ .captured = effect.operation.context.snapshot, .current = owner.current.snapshot };
         const job = try self.gpa.create(jobs.managed_flash.Job);
         errdefer self.gpa.destroy(job);
@@ -140,6 +145,15 @@ test "preflight binds current identity artifact operation and owned serial witho
     var newer = input;
     newer.source_digest[0] ^= 1;
     try t.expectError(error.StaleBuild, preflight(&owner, effect, view, newer, "board_v1".*));
+    var changed_context = effect;
+    changed_context.frozen.context.snapshot[0] ^= 1;
+    try t.expectError(error.StaleArtifact, preflight(&owner, changed_context, view, input, "board_v1".*));
+    changed_context = effect;
+    changed_context.frozen.expected_identity.board_id[0] ^= 1;
+    try t.expectError(error.StaleArtifact, preflight(&owner, changed_context, view, input, "board_v1".*));
+}
+test "offline flash preparation composition" {
+    _ = @import("flash_preparation.zig");
 }
 test "runtime declarations compile and empty cancellation polling teardown do not spawn" {
     _ = &Runtime.start;

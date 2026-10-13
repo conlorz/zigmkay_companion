@@ -126,6 +126,9 @@ pub const Frozen = struct {
 pub fn freeze(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, cache_path: []const u8, manifest: firmware.Manifest, current: firmware.Inputs, tools: Tools, request: Request) !Frozen {
     try request.validate();
     try path(cache_path);
+    const actual_cache_path = try cache.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(actual_cache_path);
+    if (!std.mem.eql(u8, actual_cache_path, cache_path)) return error.CachePathMismatch;
     try tools.verify(gpa, io);
     if (!std.mem.eql(u8, tools.record.firmware_revision, manifest.inputs.lock.firmware_revision)) return error.ToolsRevisionMismatch;
     if (tools.record.source_kind != manifest.inputs.lock.source_kind or !std.mem.eql(u8, &tools.record.firmware_source_digest, &manifest.inputs.lock.firmware_source_digest)) return error.ToolsSourceMismatch;
@@ -190,7 +193,14 @@ test "tools provenance and frozen artifact reject edits stale requests and cance
     var frozen = try freeze(gpa, io, tmp.dir, base, manifest, input, parsed, request);
     defer frozen.deinit();
     try frozen.verify(gpa, io, input, request);
-    try std.testing.expectError(error.FileNotFound, freeze(gpa, io, tmp.dir, "/missing-flash-cache", manifest, input, parsed, request));
+    try std.testing.expectError(error.CachePathMismatch, freeze(gpa, io, tmp.dir, "/missing-flash-cache", manifest, input, parsed, request));
+    var other_cache = try tmp.dir.createDirPathOpen(io, "other-cache", .{});
+    defer other_cache.close(io);
+    const other_path = try other_cache.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(other_path);
+    const blob_name = std.fmt.bytesToHex(manifest.uf2_hash, .lower);
+    try other_cache.writeFile(io, .{ .sub_path = &blob_name, .data = &bytes });
+    try std.testing.expectError(error.CachePathMismatch, freeze(gpa, io, tmp.dir, other_path, manifest, input, parsed, request));
     var wrong_revision = try Tools.clone(gpa, parsed.record);
     defer wrong_revision.deinit();
     wrong_revision.record.firmware_revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
