@@ -29,19 +29,23 @@ jobs:
       - name: Test nested source traversal before the complete matrix
         timeout-minutes: 2
         run: zig test packages/jobs/src/source_files.zig --test-filter nested
-      - name: Trace standalone Linux package-tree stall
+      - name: Capture blocked standalone test backtrace
         timeout-minutes: 2
         run: |
-          sudo apt-get install -y strace
+          sudo apt-get install -y gdb
           zig test packages/jobs/src/package_cache.zig --test-filter 'POSIX colon' --test-no-exec -femit-bin="$RUNNER_TEMP/package-colon-test"
-          timeout 12s strace -ff -tt -T -yy -e trace=getdents64,lseek,openat,close,futex -o "$RUNNER_TEMP/colon.trace" "$RUNNER_TEMP/package-colon-test" > "$RUNNER_TEMP/colon.out" 2>&1 && exit 0
-          result=$?
-          printf 'standalone exit=%s\n' "$result"
-          for trace in "$RUNNER_TEMP"/colon.trace.*; do
-            printf 'trace syscall tail for one process/thread:\n'
-            grep -E 'getdents64|lseek|futex' "$trace" | tail -n 12 || true
-          done
-          exit 1
+          "$RUNNER_TEMP/package-colon-test" > "$RUNNER_TEMP/colon.out" 2>&1 &
+          test_pid=$!
+          sleep 3
+          if kill -0 "$test_pid" 2>/dev/null; then
+            sudo gdb -q -batch -p "$test_pid" -ex 'set pagination off' -ex 'thread apply all bt 30' -ex detach > "$RUNNER_TEMP/colon.bt" 2>&1 || true
+            printf 'blocked test backtrace:\n'
+            grep -E '^Thread |^#[0-9]+ ' "$RUNNER_TEMP/colon.bt" | head -n 120 || true
+            kill "$test_pid" 2>/dev/null || true
+            wait "$test_pid" 2>/dev/null || true
+            exit 1
+          fi
+          wait "$test_pid"
       - name: Diagnose Linux fixture cleanup and traversal
         timeout-minutes: 2
         run: zig build test-jobs -j1 --test-timeout 10s --summary failures
