@@ -319,6 +319,7 @@ pub fn main(init: std.process.Init) !void {
     defer template.deinit();
     var model = try desktop.model.Model.init(gpa, project.profiles.board, template.snapshot);
     defer model.deinit();
+    if (rundown_fixture) try @import("practice_fixture.zig").install(&model);
     var owner = try desktop.editor_dispatch.State.init(&model);
     defer owner.deinit();
     var flash = flash_session.Session.init(gpa, .{ .snapshot = try model.id(), .build_key = @splat(0) });
@@ -909,6 +910,7 @@ pub fn main(init: std.process.Init) !void {
         // for macOS display density. Menu zoom is relative to that fitted size.
         window.content_scale = desktop.geometry.fitScale(available.w / system_scale, available.h / system_scale) * life.editor_scale;
         window.snap_to_pixels = window.content_scale == 1;
+        if (rundown_fixture) view.toolbar.light = count < 7;
         window.themeSet(if (view.toolbar.light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark);
         try window.begin(if (frame_limit == null) window.beginWait(interrupted) else native.nanoTime());
         var ended = false;
@@ -1035,11 +1037,11 @@ pub fn main(init: std.process.Init) !void {
                 practice_view.rundown.selected = ';';
             } else if (scene == 3) {
                 const record = practice.completed.?;
-                for (record.stats[0..record.stat_count]) |stat| if (stat.cp == ';' and stat.route_count > 0) {
+                for (record.stats[0..record.stat_count]) |stat| if (stat.cp == '"' and stat.route_count > 0) {
                     practice_view.rundown.layer = stat.routes[0].layer;
-                    practice_view.rundown.variant = 0;
+                    practice_view.rundown.variant = std.mem.indexOfScalar(u8, &desktop.practice.route_modifiers, stat.routes[0].modifiers) orelse 0;
                 };
-                practice_view.rundown.selected = ';';
+                practice_view.rundown.selected = '"';
             } else if (scene == 4) {
                 view.toolbar.light = false;
             } else if (scene == 5) {
@@ -1078,7 +1080,7 @@ pub fn main(init: std.process.Init) !void {
         if (practice.session.state == .complete and practice.completed == null) {
             var record = try desktop.practice_results.capture(&practice.session, practice.captured_cohort, if (std.mem.eql(u8, &practice.cohort.mapping, &practice.captured_cohort.mapping)) practice_labels.practiceLabels() else null);
             try std.Io.randomSecure(init.io, &record.id);
-            record.timestamp = @intCast(std.Io.Clock.real.now(init.io).toSeconds());
+            record.timestamp = @intCast(std.Io.Clock.real.now(init.io).toNanoseconds());
             record.seed = practice.exercise_seed;
             record.target_count = practice.captured_config.target_count;
             record.targets = practice.captured_config.targets;
@@ -1216,17 +1218,19 @@ pub fn main(init: std.process.Init) !void {
         }
         tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = life.companion_visible });
         if (rundown_fixture) {
+            if (!practice_view.drawn_panel) return error.PracticePanelNotDrawn;
             if (dvui.tagGet(if (practice.completed != null) "practice.rundown" else "practice.word") == null) return error.PracticeRundownNotDrawn;
             if (practice.config.assistance == .hidden and practice_view.drawn_keyboard) return error.HiddenPracticeKeyboardVisible;
         }
-        const delay = try window.end(.{ .manage_backend = frame_limit == null });
         if (rundown_fixture) {
+            window.endRendering(.{ .manage_backend = false });
             try std.Io.Dir.cwd().createDirPath(init.io, ".zig-cache/typing-practice-gallery");
             const surface = Backend.c.SDL_RenderReadPixels(native.renderer, null) orelse return error.PracticeScreenshotRead;
             defer Backend.c.SDL_DestroySurface(surface);
             const file = try std.fmt.allocPrintSentinel(window.arena(), ".zig-cache/typing-practice-gallery/{d}.bmp", .{count}, 0);
             if (!Backend.c.SDL_SaveBMP(surface, file)) return error.PracticeScreenshotSave;
         }
+        const delay = try window.end(.{ .manage_backend = frame_limit == null });
         ended = true;
         if (frame_limit != null) native.renderPresent();
         applyPractice(&draft_runtime, &practice, practice_input_effect, built_runner, &model, &view, now_us);

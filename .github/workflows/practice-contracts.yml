@@ -26,3 +26,4 @@ jobs:
           zig test packages/desktop/src/practice_results.zig
           zig test packages/desktop/src/practice_history.zig
           zig test packages/desktop/src/practice_history_runtime.zig
+          zig test packages/platform/src/app_paths.zig

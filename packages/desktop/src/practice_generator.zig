@@ -2,6 +2,7 @@
 const std = @import("std");
 pub const Preset = enum { words, mixed_case, punctuation };
 pub const version: u16 = 1;
+pub const character_bounds = [_]usize{ 512, 1280, 2560 };
 pub const Descriptor = struct {
     seed: u64,
     preset: Preset = .words,
@@ -156,7 +157,21 @@ pub fn generateWithCoverage(buffer: []u8, descriptor: Descriptor, targets: []con
                 }
             },
             .punctuation => switch (unit % 4) {
-                0 => try writer.print("Let's discuss {s}; she said, \"try {s} next!\"", .{ a, b }),
+                0 => {
+                    var template = random.index(8);
+                    while (used_templates[template]) template = (template + 1) % 8;
+                    used_templates[template] = true;
+                    switch (template) {
+                        0 => try writer.print("Let's discuss {s}; she said, \"try {s} next!\"", .{ a, b }),
+                        1 => try writer.print("Don't forget {s}; he wrote, \"save {s} for later.\"", .{ a, b }),
+                        2 => try writer.print("We can't skip {s}; the note says, \"review {s} today.\"", .{ a, b }),
+                        3 => try writer.print("It's time for {s}; our plan reads, \"start with {s}.\"", .{ a, b }),
+                        4 => try writer.print("Today's list includes {s}; I added, \"please check {s}.\"", .{ a, b }),
+                        5 => try writer.print("You've already seen {s}; she asked, \"what about {s}?\"", .{ a, b }),
+                        6 => try writer.print("I'll read {s}; you can reply, \"let's try {s}.\"", .{ a, b }),
+                        else => try writer.print("That isn't {s}; the label says, \"{s} goes here!\"", .{ a, b }),
+                    }
+                },
                 1 => try writer.print("Today's topics: {s} and {s} (pages 12-14).", .{ a, b }),
                 2 => try writer.print("Is {s} on your list, or would you prefer {s}?", .{ a, b }),
                 else => try writer.print("We wrote \"{s}\" twice; don't forget {s} at 9:30.", .{ a, b }),
@@ -164,7 +179,7 @@ pub fn generateWithCoverage(buffer: []u8, descriptor: Descriptor, targets: []con
         }
     }
     const text = writer.buffered();
-    if (text.len > 8192) return error.ExerciseTooLong;
+    if (text.len > character_bounds[descriptor.length]) return error.ExerciseTooLong;
     // Every accepted drill target must actually appear, including punctuation.
     for (targets) |cp| if (std.mem.indexOfScalar(u8, text, @intCast(cp)) == null) return error.CorpusCoverageUnavailable;
     return text;
@@ -244,9 +259,9 @@ test "generation v1 literal hashes freeze challenges across platforms" {
         "9f1adbf32770e3e58f92090a77b1b42957cc28a924b7c8f0e2daaecc3769daa1",
         "c1e94b685094730b345f47fcdf952e5aab5961354a681e2bad8e4ff8300fb799",
         "74039446c9dc4fb2824517340138ade63dd59bc424c922adda79b9ddb6ec2a78",
-        "d26927539318b9a107df04cbdae7c445baef5a962e2617099c3278cc0fab2bb7",
-        "56bf3541531e431816c1db1e57317a7fb5ff097cadcd65c795348c9b873c5c5b",
-        "1d55fc2daf8a72a0dae0d70e8db1d2445bd61f3db391fd8dab810d3e49a613d4",
+        "6a60c835b5da473d2ef7ba8ef8a3f2e269c2ae48768a5b99a0850251e2b374bd",
+        "510725efe2d6d06d8fcede662e69549ce2400e4ce79824cab6607a38026a300e",
+        "6f0ccfecb425d89f06f7b45b318e53168b4bd5e776456a40c9f297976b196dc2",
     };
     var index: usize = 0;
     for ([_]Preset{ .words, .mixed_case, .punctuation }) |preset| for (0..3) |length| {

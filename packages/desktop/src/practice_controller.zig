@@ -17,6 +17,7 @@ pub const Config = struct {
     targets: [5]u21 = @splat(0),
     target_count: u8 = 0,
     pub fn validate(self: Config) !void {
+        if (self.challenge != null and self.target_count > 0) return error.ChallengeCannotUseHistory;
         if (self.target_count > 5) return error.TooManyDrillTargets;
         if (self.level >= 3) return error.InvalidExerciseLevel;
     }
@@ -53,8 +54,8 @@ pub const Controller = struct {
         var cohort = self.cohort;
         cohort.source = self.config.source;
         cohort.family = @fromBackingInt(@backingInt(self.config.mode));
-        cohort.preset = self.config.preset;
-        cohort.length = @intCast(self.config.level);
+        cohort.preset = if (self.config.mode == .zig) .words else self.config.preset;
+        cohort.length = if (self.config.mode == .zig) 1 else @intCast(self.config.level);
         cohort.lesson = if (self.config.mode == .zig) @intCast(self.config.level) else 0;
         cohort.assistance = self.config.assistance;
         cohort.mode = if (self.config.target_count > 0) .drill else if (self.config.challenge != null) .challenge else .normal;
@@ -113,10 +114,19 @@ pub const Controller = struct {
         var buffer: [8192]u8 = undefined;
         self.seed +%= 0x9e3779b97f4a7c15;
         self.exercise_seed = self.config.challenge orelse self.seed;
-        const reference = if (self.config.mode == .english)
+        var reference = if (self.config.mode == .english)
             try generator.generateWithCoverage(&buffer, .{ .seed = self.exercise_seed, .preset = self.config.preset, .length = @intCast(self.config.level) }, self.config.targets[0..self.config.target_count], if (self.config.challenge == null and self.config.target_count == 0) self.normal_coverage else null)
         else
             practice.lessons[self.config.level];
+        if (self.config.mode == .english and self.config.challenge == null and self.session.reference_len > 0) {
+            var retries: usize = 0;
+            while (sameOpening(&self.session, reference)) : (retries += 1) {
+                if (retries == 4) return error.ExerciseFreshnessUnavailable;
+                self.seed +%= 0x9e3779b97f4a7c15;
+                self.exercise_seed = self.seed;
+                reference = try generator.generateWithCoverage(&buffer, .{ .seed = self.exercise_seed, .preset = self.config.preset, .length = @intCast(self.config.level) }, self.config.targets[0..self.config.target_count], if (self.config.target_count == 0) self.normal_coverage else null);
+            }
+        }
         try self.session.load(reference, self.config.source);
         self.completed = null;
         self.completion_delivered = false;
@@ -282,4 +292,28 @@ test "rendered tutor actions reject changed project and replaced operation" {
     const current = owner.action(.{ .start = true });
     _ = try owner.dispatch(current, null, 1);
     try t.expectError(error.StalePracticeAction, owner.dispatch(current, null, 2));
+}
+
+fn sameOpening(session: *const practice.Session, text: []const u8) bool {
+    if (session.reference_len < 12 or text.len < 12) return false;
+    for (session.reference[0..12], text[0..12]) |cp, byte| if (cp != byte) return false;
+    return true;
+}
+test "normal starts stay fresh challenges stay reproducible and completion is idempotent" {
+    var owner = Controller.init(@splat(1));
+    _ = try owner.start(true, null, 0);
+    const first = owner.session.reference;
+    _ = try owner.start(false, null, 1);
+    try std.testing.expect(!std.mem.eql(u21, first[0..12], owner.session.reference[0..12]));
+    _ = try owner.choose(.{ .challenge = 42 }, 2);
+    _ = try owner.start(true, null, 3);
+    const challenge = owner.session.reference;
+    _ = try owner.start(true, null, 4);
+    try std.testing.expectEqualSlices(u21, challenge[0..owner.session.reference_len], owner.session.reference[0..owner.session.reference_len]);
+    try owner.session.load("a", .os);
+    _ = try owner.insertOs(true, "a", 5, false);
+    const first_effect = owner.finish(6);
+    const repeated_effect = owner.finish(7);
+    try std.testing.expect(owner.completion_delivered);
+    try std.testing.expectEqualDeep(first_effect, repeated_effect);
 }

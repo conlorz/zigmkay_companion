@@ -16,6 +16,7 @@ pub const View = struct {
     retry: bool = false,
     clear: bool = false,
     confirm_clear: bool = false,
+    cleared: bool = false,
     before: ?results.Record = null,
     message: []const u8 = "",
     character_page: usize = 0,
@@ -64,7 +65,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         historical = if (view.scope == 1) history.?.recent else history.?.all;
         const queried = history.?.requested_id;
         const contains = queried != null and std.mem.eql(u8, &queried.?, &record.id) and history.?.contains_requested;
-        if (!contains and record.scored and view.reviewed == null) {
+        if (!contains and record.scored and view.reviewed == null and !view.cleared) {
             if (view.scope == 1 and historical.runs == 10) if (history.?.oldest_recent) |oldest| historical.remove(&oldest);
             try historical.add(record);
         }
@@ -72,7 +73,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     const aggregate = if (view.scope == 0) &current else &historical;
     presentation.caption(try std.fmt.allocPrint(arena, "{s} · {d:.0} WPM · {d:.1}% accuracy · {d:.1}s · {d} corrections · {s}", .{ if (view.reviewed != null) "Saved run" else "Exercise complete", record.wpm(), record.accuracy(), @as(f64, @floatFromInt(record.active_us)) / 1_000_000, record.corrections, if (record.scored) "scored" else "unscored preview" }), .{ .w = width, .h = 32 }, 20, theme.text, "practice.rundown.metrics");
     _ = dvui.dropdown(@src(), &.{ "This run", "Last 10 runs", "All history" }, .{ .choice = &view.scope }, .{}, .{ .rect = .{ .y = 40, .w = 160, .h = 38 }, .tag = "practice.scope" });
-    presentation.caption(try std.fmt.allocPrint(arena, "{d} included · {t} / {t} / {t} · {s}", .{ aggregate.runs, record.cohort.preset, record.cohort.assistance, record.cohort.mode, if (record.cohort.verified) "verified mapping" else "unverified OS layout / draft reference" }), .{ .x = 170, .y = 40, .w = width - 170, .h = 38 }, 14, theme.muted, null);
+    presentation.caption(try std.fmt.allocPrint(arena, "{d} included · {s} / {s} · {t} / {t} / {t} · {s}", .{ aggregate.runs, std.mem.sliceTo(&record.profile, 0), std.mem.sliceTo(&record.input_source, 0), record.cohort.preset, record.cohort.assistance, record.cohort.mode, if (record.cohort.verified) "verified mapping" else "unverified OS layout / draft reference" }), .{ .x = 170, .y = 40, .w = width - 170, .h = 38 }, 14, theme.muted, null);
     const variants = desktop.practice.route_modifiers;
     var layer_count: usize = record.layer_count;
     for (record.stats[0..record.stat_count]) |stat| for (stat.routes[0..stat.route_count]) |route| {
@@ -206,6 +207,16 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         view.before = null;
     }
     if (ui.button(theme, "Clear history", "practice.history.clear", .{ .x = 520, .y = actions_y, .w = 140, .h = 38 })) view.confirm_clear = true;
+    var focus_note: std.Io.Writer.Allocating = .init(arena);
+    try focus_note.writer.print("Seed {d} · generation / corpus / coverage v1 · {d} outside-reference errors", .{ record.seed, record.outside_errors });
+    if (record.target_count > 0) {
+        try focus_note.writer.writeAll(" · drill focus: ");
+        for (record.targets[0..record.target_count]) |cp| {
+            var bytes: [4]u8 = undefined;
+            try focus_note.writer.print("{s} ", .{glyph(cp, &bytes)});
+        }
+    }
+    if (!view.confirm_clear and !view.history_open) presentation.caption(focus_note.written(), .{ .y = actions_y + 78, .w = width, .h = 30 }, 14, theme.muted, "practice.result.seed");
     const save_status = if (failure) |err| try std.fmt.allocPrint(arena, "History save/read failed: {s}. In-memory results remain available.", .{@errorName(err)}) else if (saving) "Saving / loading history…" else if (history != null and history.?.rejected > 0) "Some history files could not be read; scopes are incomplete. Original files are preserved." else view.message;
     presentation.caption(save_status, .{ .y = actions_y + 43, .w = width - 110, .h = 30 }, 14, theme.muted, "practice.history.status");
     if (failure != null and ui.button(theme, "Retry", "practice.history.retry", .{ .x = width - 105, .y = actions_y + 43, .w = 100, .h = 30 })) view.retry = true;
@@ -213,6 +224,8 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         presentation.caption("Clear saved practice runs? Projects and preferences are preserved.", .{ .y = actions_y + 80, .w = width - 250, .h = 30 }, 14, theme.text, null);
         if (ui.button(theme, "Clear runs", "practice.history.confirm", .{ .x = width - 240, .y = actions_y + 80, .w = 115, .h = 30 })) {
             view.clear = true;
+            view.cleared = true;
+            view.scope = 0;
             view.confirm_clear = false;
             view.reviewed = null;
         }
@@ -225,7 +238,8 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
             view.scope = 0;
         }
         for (history.?.page[0..history.?.page_count], 0..) |saved, index| {
-            const label = try std.fmt.allocPrint(arena, "Run {d} · {d:.0} WPM · {d:.1}% · {s}", .{ saved.timestamp, saved.wpm(), saved.accuracy(), if (saved.scored) "scored" else "unscored" });
+            var date: [32]u8 = undefined;
+            const label = try std.fmt.allocPrint(arena, "{s} · {d:.0} WPM · {d:.1}% · {s}", .{ try results.dateLabel(saved.timestamp, &date), saved.wpm(), saved.accuracy(), if (saved.scored) "scored" else "unscored" });
             if (ui.button(theme, label, try std.fmt.allocPrint(arena, "practice.history.run.{d}", .{index}), .{ .y = @as(f32, @floatFromInt(index + 1)) * 32, .w = width - 150, .h = 28 })) {
                 view.reviewed = saved;
                 view.scope = 0;

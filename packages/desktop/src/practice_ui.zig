@@ -41,6 +41,7 @@ pub const View = struct {
     show_keyboard: bool = true,
     drawn_len: usize = 0,
     drawn_keyboard: bool = false,
+    drawn_panel: bool = false,
     rundown: rundown.View = .{},
     challenge_open: bool = false,
     challenge_enabled: bool = false,
@@ -70,6 +71,7 @@ fn consumeInput(owner: *control.Controller, data: *dvui.WidgetData, input: Input
     var effect: control.Effect = .{};
     if (!input.owns_input or !input.window_focused) return effect;
     const accepting = owner.acceptingOsText(true);
+    if (!accepting or owner.session.state == .complete) return effect;
     dvui.wantTextInput(data.borderRectScale().r.toNatural());
     for (dvui.events()) |*event| {
         if (event.handled) continue;
@@ -152,11 +154,16 @@ fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bou
 }
 pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dvui.Rect, input: Input) !DrawResult {
     view.drawn_keyboard = false;
+    view.drawn_panel = false;
     const window = dvui.box(@src(), .{}, .{ .rect = bounds, .padding = .{}, .background = true, .color_fill = .{ .color = theme.bg }, .tag = "practice.inline" });
     defer window.deinit();
     const height = window.data().rect.h;
     const width = bounds.w;
-    if (height < 300 or width < 300) return .{};
+    if (height < 300 or width < 300) {
+        if (input.fixture) std.log.err("Practice bounds height={d} width={d} requested={d}", .{ height, width, bounds.h });
+        return .{};
+    }
+    view.drawn_panel = true;
     // Exercise input precedes controls so Space cannot toggle a focused checkbox.
     const input_effect = try consumeInput(owner, window.data(), input);
     var pending: ?control.Intent = null;
@@ -186,7 +193,10 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
                 view.rundown.reviewed = saved.page[0];
             };
         }
-        if (dvui.button(@src(), "Challenge seed…", .{}, .{ .tag = "practice.challenge.toggle" })) view.challenge_open = !view.challenge_open;
+        if (dvui.button(@src(), "Challenge seed…", .{}, .{ .tag = "practice.challenge.toggle" })) {
+            view.challenge_open = !view.challenge_open;
+            if (view.challenge_open and owner.active and owner.session.state != .complete) pending = .pause;
+        }
     }
     if (view.challenge_open) {
         const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .rect = .{ .y = 84, .w = width, .h = 38 } });
@@ -207,6 +217,11 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         pending = .{ .choose = config };
     }
     view.show_keyboard = owner.config.assistance != .hidden;
+    if (view.rundown.history_open and view.rundown.reviewed == null and owner.completed == null and !owner.active) {
+        if (input.history) |saved| if (saved.page_count > 0 and std.meta.eql(input.history_cohort, owner.configCohort())) {
+            view.rundown.reviewed = saved.page[0];
+        };
+    }
     if (view.rundown.reviewed != null or owner.completed != null) {
         const record = if (view.rundown.reviewed) |*reviewed| reviewed else &owner.completed.?;
         const action = try rundown.draw(owner, &view.rundown, record, input.history, std.meta.eql(record.cohort, input.history_cohort), input.frame, theme, .{ .y = controls_height + 6, .w = width, .h = height - controls_height - 6 }, input.history_saving, input.history_failure);
@@ -289,7 +304,11 @@ pub fn apply(owner: *control.Controller, view: *View, rendered: control.Action, 
     const effect = try owner.dispatch(rendered, input.prepared_snapshot, input.now_us);
     switch (rendered.intent) {
         .start, .new_exercise, .drill => {
+            if (rendered.intent == .drill) view.challenge_enabled = false;
             view.rundown.reviewed = null;
+            view.rundown.cleared = false;
+            view.rundown.scope = 0;
+            view.rundown.before = null;
             view.rundown.selected = null;
             view.rundown.message = "";
             view.scroll.at = null;

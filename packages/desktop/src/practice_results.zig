@@ -67,6 +67,7 @@ pub const Record = struct {
     pub fn validate(self: *const Record) !void {
         if (self.version != 1 or self.cohort.metric_version != 1 or self.cohort.generation_version != 1 or self.drill_policy != 1) return error.UnsupportedPracticeHistory;
         if (self.stat_count > 256 or self.substitution_count > 256 or self.target_count > 5 or self.correct_attempts > self.attempts) return error.InvalidPracticeHistory;
+        for (self.targets[0..self.target_count]) |cp| if (cp > 0x10ffff or (cp >= 0xd800 and cp <= 0xdfff)) return error.InvalidPracticeHistory;
         var opportunities: u64 = 0;
         for (self.stats[0..self.stat_count], 0..) |stat, index| {
             if (stat.cp > 0x10ffff or (stat.cp >= 0xd800 and stat.cp <= 0xdfff) or stat.misses > stat.opportunities or stat.route_count > 4) return error.InvalidPracticeHistory;
@@ -244,4 +245,18 @@ test "distinct occurrences survive retries and weighted aggregation separates ca
     other.scored = false;
     try sum.add(&other);
     try t.expectEqual(@as(u64, 2), sum.runs);
+}
+
+/// Human-readable UTC labels; nanosecond timestamps retain same-second ordering.
+pub fn dateLabel(timestamp: i64, buffer: []u8) ![]const u8 {
+    if (timestamp < 0) return std.fmt.bufPrint(buffer, "unknown time", .{});
+    const seconds: std.time.epoch.EpochSeconds = .{ .secs = @intCast(@divTrunc(timestamp, 1_000_000_000)) };
+    const year = seconds.getEpochDay().calculateYearDay();
+    const month = year.calculateMonthDay();
+    const time = seconds.getDaySeconds();
+    return std.fmt.bufPrint(buffer, "{d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC", .{ year.year, month.month.numeric(), month.day_index + 1, time.getHoursIntoDay(), time.getMinutesIntoHour(), time.getSecondsIntoMinute() });
+}
+test "history timestamps have readable UTC labels" {
+    var buffer: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("1970-01-01 00:00:00 UTC", try dateLabel(0, &buffer));
 }
