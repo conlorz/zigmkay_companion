@@ -657,7 +657,7 @@ pub fn build(b: *std.Build) void {
                 const app = b.addExecutable(.{ .name = "zigmkay-companion", .root_module = b.createModule(.{
                     .root_source_file = b.path("apps/desktop/main.zig"),
                     .target = b.graph.host,
-                    .imports = &.{ .{ .name = "callback-ui", .module = b.modules.get("callback-ui").? }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "native-events", .module = graph.events }, .{ .name = "folder-dialog", .module = graph.folder_dialog }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "editor-frame-ui", .module = b.modules.get("editor-frame-ui").? }, .{ .name = "paths-ui", .module = b.modules.get("paths-ui").? }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "zkeymap", .module = input_source.module } },
+                    .imports = &.{ .{ .name = "callback-ui", .module = b.modules.get("callback-ui").? }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "native-events", .module = graph.events }, .{ .name = "folder-dialog", .module = graph.folder_dialog }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "editor-frame-ui", .module = b.modules.get("editor-frame-ui").? }, .{ .name = "paths-ui", .module = b.modules.get("paths-ui").? }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "zkeymap", .module = input_source.module }, .{ .name = "companion-jobs", .module = jobs } },
                 }) });
                 app.root_module.addImport("app-paths", installed_paths);
                 app.root_module.addImport("native-tray", graph.tray);
@@ -672,6 +672,12 @@ pub fn build(b: *std.Build) void {
                 const overlay_tests = b.addTest(.{ .root_module = companion_window });
                 b.step("test-companion-placement", "Validate optional overlay bounds without creating a window").dependOn(&b.addRunArtifact(overlay_tests).step);
                 desktop_app = app;
+                const flash_session_tests = b.addTest(.{ .root_module = b.createModule(.{
+                    .root_source_file = b.path("apps/desktop/flash_session.zig"),
+                    .target = b.graph.host,
+                    .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "dvui", .module = graph.dvui } },
+                }) });
+                b.step("test-desktop-flash-session", "Validate explicit offline editor flash receipt gating").dependOn(&b.addRunArtifact(flash_session_tests).step);
                 app.root_module.addImport("practice-ui", b.modules.get("practice-ui").?);
                 app.root_module.addImport("editor-ui", graph.ui);
                 app.root_module.addImport("native-draft-input", b.modules.get("native-draft-input").?);

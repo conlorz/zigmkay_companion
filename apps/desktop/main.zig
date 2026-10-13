@@ -1,6 +1,7 @@
 //! Native editor/companion startup monitors HID by default. Explicit offline
 //! modes and fixtures avoid devices; flashing and acquisition remain explicit.
 const std = @import("std");
+const flash_session = @import("flash_session.zig");
 const dvui = @import("dvui");
 const Backend = @import("dvui_backend");
 const desktop = @import("desktop-core");
@@ -288,6 +289,8 @@ pub fn main(init: std.process.Init) !void {
     defer model.deinit();
     var owner = try desktop.editor_dispatch.State.init(&model);
     defer owner.deinit();
+    var flash = flash_session.Session.init(gpa, .{ .snapshot = try model.id(), .build_key = @splat(0) });
+    defer flash.deinit();
     var view: editor.View = .{};
     view.toolbar.light = light;
     var registry = desktop.profile_projects.Registry.init(gpa);
@@ -956,6 +959,8 @@ pub fn main(init: std.process.Init) !void {
             view.report(err);
             break :failed editor.Result{ .effect = .none };
         };
+        flash.observe(.{ .snapshot = try model.id(), .build_key = if (built) |manifest| manifest.build_key else @splat(0) });
+        if (life.editor_visible and !practicing) flash.draw();
         if (build_fixture and count == 2) {
             if (!can_build or built != null or jobs.busy()) return error.ManagedEditorStartupNotIdle;
             rendered = .{ .effect = try owner.request(&model, try desktop.editor_dispatch.Request.capture(&model, .build)) };
@@ -1177,7 +1182,7 @@ pub fn main(init: std.process.Init) !void {
                     build_scheduler.manual(try model.id());
                     view.diagnostic = @splat(0);
                 },
-                .flash => view.report(error.CapabilityNotPrepared),
+                .flash => flash.show(),
                 else => {},
             },
         }
