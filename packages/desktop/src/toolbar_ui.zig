@@ -45,7 +45,7 @@ pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame) !?desk
     if (ui.buttonEnabled(theme, "Redo", "edit.redo", .{ .x = 996, .y = 16, .w = 68, .h = 36 }, model.redo_stack.items.len != 0) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .redo);
     if (ui.button(theme, "Save", "file.save", .{ .x = 1078, .y = 16, .w = 76, .h = 36 }) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .save);
     if (ui.buttonEnabled(theme, "Build", "firmware.build", .{ .x = 1166, .y = 16, .w = 110, .h = 36 }, frame.can_build) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .build);
-    if (ui.buttonEnabled(theme, "Flash", "firmware.inspect", .{ .x = 1288, .y = 16, .w = 110, .h = 36 }, frame.can_flash) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .flash);
+    if (ui.buttonEnabled(theme, "Flash info", "firmware.inspect", .{ .x = 1288, .y = 16, .w = 110, .h = 36 }, frame.can_flash) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .flash);
     if (frame.build_status.len != 0) ui.label(theme, frame.build_status, .{ .x = 1166, .y = 52, .w = 230, .h = 14 }, 10);
     if (ui.button(theme, if (view.light) "Dark" else "Light", "theme.toggle", .{ .x = 1410, .y = 16, .w = 100, .h = 36 })) view.light = !view.light;
     return result;

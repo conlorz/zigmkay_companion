@@ -58,13 +58,12 @@ pub const Session = struct {
 
     pub fn draw(self: *Session) void {
         if (!self.open) return;
-        const state = desktop.flash_presenter.view(&self.controller, null);
         var panel = dvui.box(@src(), .{ .dir = .vertical }, .{});
         defer panel.deinit();
-        dvui.label(@src(), "Flash preparation", .{}, .{});
-        dvui.label(@src(), "{s}", .{state.status}, .{});
-        dvui.label(@src(), "Flash unavailable: accepted tool provenance, a matching frozen UF2 artifact, and an explicitly selected device are required.", .{}, .{});
-        dvui.label(@src(), "The editor does not yet have a flash preparation adapter. Build output alone cannot authorize flashing.", .{}, .{});
+        dvui.label(@src(), "Flash information · transfer unavailable", .{}, .{});
+        dvui.label(@src(), "This panel is read-only. Opening it does not search for or change a device.", .{}, .{});
+        dvui.label(@src(), "Flashing requires verified tools, a matching frozen UF2, and an explicitly selected device.", .{}, .{});
+        dvui.label(@src(), "The editor cannot prepare those steps here yet. Building firmware does not enable transfer.", .{}, .{});
         if (dvui.button(@src(), "Close flash panel", .{}, .{})) self.open = false;
     }
 };
