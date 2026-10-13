@@ -17,6 +17,8 @@ pub const Config = struct {
     targets: [5]u21 = @splat(0),
     target_count: u8 = 0,
     pub fn validate(self: Config) !void {
+        if (self.mode == .zig and self.challenge != null) return error.ChallengeOnlyEnglish;
+        if (self.mode == .zig and self.target_count > 0) return error.UnsupportedDrillFamily;
         if (self.challenge != null and self.target_count > 0) return error.ChallengeCannotUseHistory;
         if (self.target_count > 5) return error.TooManyDrillTargets;
         if (self.level >= 3) return error.InvalidExerciseLevel;
@@ -353,4 +355,9 @@ test "completion and a fresh-run click in one input batch cannot discard the res
     owner.completed = try results.capture(&owner.session, owner.captured_cohort, null);
     _ = try owner.dispatch(owner.action(.new_exercise), null, 3);
     try std.testing.expect(owner.generation > generation);
+}
+
+test "English challenge and drill settings do not reinterpret fixed Zig lessons" {
+    try std.testing.expectError(error.ChallengeOnlyEnglish, (Config{ .mode = .zig, .challenge = 42 }).validate());
+    try std.testing.expectError(error.UnsupportedDrillFamily, (Config{ .mode = .zig, .targets = .{ 'a', 0, 0, 0, 0 }, .target_count = 1 }).validate());
 }

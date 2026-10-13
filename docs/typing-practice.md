@@ -48,7 +48,9 @@ preview the next route and says so. Shift guidance prefers an opposite-hand
 home-row modifier from action and physical metadata. Already-held Shift is
 accepted. If that provider is absent, the tutor explains its fallback; it never
 asks you to hold the target tap itself. Text correctness does not grade which
-Shift key you actually used.
+Shift key you actually used. Unknown translation placeholders, named keys and
+arbitrary callback text retain display captions but are never invented typing
+routes. Unknown custom hold callbacks are not required as guidance providers.
 
 **Layout only** displays the keyboard without target, HOLD or pressed-key
 highlights. Only verified live or simulated processor state changes its actual
@@ -59,7 +61,7 @@ editor restores ordinary companion behavior.
 
 Native OS text does not establish physical key telemetry. Draft text comes
 from the prepared real processor, with the existing cancellation and snapshot
-guards. Layout/input-source changes invalidate a run's comparability and require
+guards. Detected layout/input-source changes invalidate a run's comparability and require
 a fresh exercise. Loss of verified live state shows an unavailable keyboard.
 
 ## The layer rundown
@@ -178,9 +180,8 @@ Other instances can still publish new runs while clearing occurs.
 Local evidence covers macOS arm64 storage create/save/reopen, background queues,
 failed writes, independent writers, Unicode paths, corruption/future preservation,
 core generation/statistics tests and offline GUI fixtures. Native screenshots
-cover light/dark and normal/small windows on macOS. Windows and Linux native
-storage CI lanes are included; acceptance is pending until their results are
-recorded. Native GUI/input-source acceptance on those platforms and exploratory
+cover light/dark and normal/small windows on macOS. The native generation, metrics, storage, background-runtime and path-policy CI
+lanes passed on macOS, Windows and Linux at the published review checkpoint. Native GUI/input-source acceptance on those platforms and exploratory
 human typing trials remain separate. Cross-compilation is not native acceptance.
 
 Use exactly Zig 0.17.0:

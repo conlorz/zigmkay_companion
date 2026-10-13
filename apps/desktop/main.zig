@@ -563,7 +563,7 @@ pub fn main(init: std.process.Init) !void {
             _ = Backend.c.SDL_ShowWindow(native.window);
         }
         if (life.quit_requested and owner.close_requested == null and owner.pending == null and !owner.closed) life.cancelQuit();
-        if (frame_limit == null and !life.editor_visible and !life.companion_visible and !jobs.busy() and draft_runtime.owner == null) {
+        if (frame_limit == null and !life.editor_visible and !life.companion_visible and !jobs.busy() and draft_runtime.owner == null and practice_history.worker == null and (practice_history.queued == 0 or practice_history.error_value != null)) {
             // An idle resident does not construct editor frames or redraw hidden
             // windows. SDL waits for native events between bounded tray polls.
             tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = false });
@@ -908,7 +908,10 @@ pub fn main(init: std.process.Init) !void {
         const system_scale = window.backend.contentScale();
         // Match the reference editor: fit the whole design canvas, accounting
         // for macOS display density. Menu zoom is relative to that fitted size.
-        window.content_scale = desktop.geometry.fitScale(available.w / system_scale, available.h / system_scale) * life.editor_scale;
+        const fitted_scale = desktop.geometry.fitScale(available.w / system_scale, available.h / system_scale);
+        // Practice has a responsive canvas; keep its controls readable in the
+        // native minimum window instead of shrinking the editor's fixed canvas.
+        window.content_scale = (if (practicing) @max(@as(f32, 0.8), fitted_scale) else fitted_scale) * life.editor_scale;
         window.snap_to_pixels = window.content_scale == 1;
         if (rundown_fixture) view.toolbar.light = count < 7;
         window.themeSet(if (view.toolbar.light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark);
@@ -968,11 +971,8 @@ pub fn main(init: std.process.Init) !void {
         behavior_hash.update(&practice_identity.board_id);
         behavior_hash.update(&practice_identity.digest);
         const source_name = if (source) |*active| active.id() else "Offline fixture";
-        practice.context_profile = @splat(0);
-        practice.context_source = @splat(0);
-        const context_profile = practice_model.document().name;
-        @memcpy(practice.context_profile[0..@min(context_profile.len, 95)], context_profile[0..@min(context_profile.len, 95)]);
-        @memcpy(practice.context_source[0..@min(source_name.len, 95)], source_name[0..@min(source_name.len, 95)]);
+        desktop.practice_results.displayName(practice_model.document().name, &practice.context_profile);
+        desktop.practice_results.displayName(source_name, &practice.context_source);
         const mapping_name = if (source) |*active| try std.fmt.allocPrint(window.arena(), "{s}/{s}", .{ active.id(), active.layoutId() }) else "Offline fixture";
         practice.cohort.behavior = behavior_hash.finalResult();
         practice.cohort.mapping = desktop.practice_context.mapping(practice_labels, mapping_name);
@@ -1004,7 +1004,8 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
         }
-        practice.normal_coverage = if (std.mem.indexOfScalar(bool, &hand_coverage.left, true) != null and std.mem.indexOfScalar(bool, &hand_coverage.right, true) != null) hand_coverage else null;
+        const known_hand_translation = if (source) |*active| active.hasActiveLayout() else frame_limit != null;
+        practice.normal_coverage = if (known_hand_translation and std.mem.indexOfScalar(bool, &hand_coverage.left, true) != null and std.mem.indexOfScalar(bool, &hand_coverage.right, true) != null) hand_coverage else null;
         const practice_pressed = try window.arena().alloc(bool, practice_labels.key_count);
         @memset(practice_pressed, false);
         if (use_practice_live and live_frame.pressed.len == practice_pressed.len) @memcpy(practice_pressed, live_frame.pressed) else if (draft_runtime.owner) |runner| if (runner.pressed.len == practice_pressed.len) {
@@ -1023,6 +1024,7 @@ pub fn main(init: std.process.Init) !void {
         };
         if (rundown_fixture and count % 2 == 1) {
             const scene = (count + 1) / 2;
+            if (scene == 1 or scene == 2 or scene == 5 or scene == 8 or scene == 9 or scene == 10) practice_view.rundown = .{};
             if (scene == 1) {
                 practice.config = .{ .preset = .mixed_case, .level = 0 };
                 _ = try practice.start(true, null, now_us);
@@ -1457,7 +1459,7 @@ pub fn main(init: std.process.Init) !void {
             if (companion_fixture and (count != 9 or !life.quit_requested)) return error.ResidentCleanQuitFailed;
             break;
         }
-        if (frame_limit == null) interrupted = try native.waitEventTimeout(@min(window.waitTime(delay), desktop.live_keyboard.waitBudget(live_enabled, jobs.busy() or draft_runtime.owner != null, false)));
+        if (frame_limit == null) interrupted = try native.waitEventTimeout(@min(window.waitTime(delay), desktop.live_keyboard.waitBudget(live_enabled, jobs.busy() or draft_runtime.owner != null or practice_history.worker != null, false)));
         if (draft_fixture or build_fixture) try std.Io.sleep(init.io, .fromMilliseconds(10), .awake);
     }
     if (practice_fixture and (practice.session.len != 1 or practice.session.matched() != 1 or practice.session.state != .paused)) return error.PracticeTextRoutingFailed;

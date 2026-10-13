@@ -13,8 +13,8 @@ uses immutable per-run ZON files and atomic exclusive publication. Comparison
 includes behavioral/mapping identities and all exercise settings. A layout
 reference cannot certify the keyboard producing OS text.
 
-Native Windows/Linux storage acceptance and user typing trials require those
-environments and remain pending until recorded here. No hardware task is part
+Native Windows/Linux storage evidence is recorded below from the CI runners;
+user typing trials remain pending. No hardware task is part
 of this feature. The requested PR remains open for the user's morning review.
 
 ## Implementation and capture checkpoint
@@ -84,7 +84,7 @@ background-worker allocator leak detected by those tests was corrected.
 
 `.github/workflows/practice-contracts.yml` runs generator, result, storage,
 background-runtime and path-policy tests on actual macOS, Windows and Linux CI
-runners. Their results must be recorded before cross-platform storage acceptance.
+runners. Their results are recorded below; native GUI acceptance remains separate.
 Native Windows/Linux GUI/input-source behavior, human typing trials and required
 user review remain pending; no extraction, firmware or release gate is closed by
 this feature. The requested PR is left open for morning review and testing.
@@ -125,3 +125,45 @@ TAP/HOLD guidance is shown only when its actual labels match the practice frame.
 Layout only suppresses every guidance/pressed highlight, and Hidden suppresses
 the participating window. Unrelated verified running profiles do not receive
 hints from an unflashed draft.
+
+A final residency check ensures hidden editor/companion windows do not bypass
+polling and draining successful history writes. Failed queues can return to idle
+and remain available on reopening; background workers use the existing bounded
+wait budget. This does not change device monitoring or initiate device mutations.
+
+PR: https://github.com/conlorz/zigmkay_companion/pull/2 (linked to the T3 thread).
+
+## Native CI evidence
+
+At published review checkpoint `a75a6a0`, all three native practice lanes passed
+in [PR workflow run 38481853826](https://github.com/conlorz/zigmkay_companion/actions/runs/38481853826):
+macOS, Windows and Ubuntu. This establishes native filesystem/generation/metric
+contract evidence, including Unicode directories, independent atomic writers,
+background save/reopen and failed-clear queue preservation. It does not establish
+Windows/Linux GUI, active input-source discovery or human learning outcomes.
+
+The final small review follow-up keeps background history responsive while the
+editor is hidden, limits physical hand quotas to known translation, and keeps
+English challenge/drill settings separate from fixed Zig lessons.
+
+The route review additionally caught display-only `?` placeholders being accepted
+as literal question-mark routes. Provenance is now explicit in the label cache:
+unknown/named translations and arbitrary tap callbacks are excluded, and unknown
+custom hold providers are not requested. A regression distinguishes a function
+key's unknown placeholder from a real translated question mark. Hand coverage
+also requires known translation, rather than claiming active-layout knowledge
+from Windows/Linux fallback labels. This is part of the initial route contract.
+
+The broader [Linux source-check run](https://github.com/conlorz/zigmkay_companion/actions/runs/38481853501)
+failed four existing jobs fixtures at their 10-second deadline. The same four
+package-cache/resolution/toolchain/build fixtures timed out in
+[main's earlier run](https://github.com/conlorz/zigmkay_companion/actions/runs/38437303625)
+before this feature. Those jobs and their timeout policy are unchanged; local
+full checks pass. This pre-existing CI failure is recorded rather than hidden or
+worked around by weakening the checks.
+
+Unicode display-name truncation is codepoint-safe and corrupt stored names are
+rejected before rendering. Native small-window inspection also led to a practice
+scale floor of 0.8, preserving readable controls while retaining the editor's
+existing fit policy. The small-window fixture now resets its result scope on
+new runs, matching the actual controls rather than retaining a scripted old scope.

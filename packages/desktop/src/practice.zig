@@ -284,6 +284,8 @@ pub const Label = struct {
     shortcut: bool = false,
     hold_layer: ?usize = null,
     hold_modifiers: ?u8 = null,
+    provider_unknown: bool = false,
+    unproven: bool = false,
 };
 pub const Labels = struct {
     context: *const anyopaque,
@@ -313,7 +315,7 @@ pub fn layerMask(layer: usize) u16 {
     return 1 | (@as(u16, 1) << @intCast(layer));
 }
 pub fn matches(entry: Label, cp: u21) bool {
-    if (entry.dead or entry.shortcut) return false;
+    if (entry.dead or entry.shortcut or entry.unproven) return false;
     if (entry.hid_code) |code| {
         if ((cp == '\n' and code == 40) or (cp == '\t' and code == 43) or (cp == ' ' and code == 44)) return true;
     }
@@ -350,6 +352,7 @@ pub fn guidance(labels: Labels, metadata: ?[]const KeyMetadata, layer: usize, mo
     if (needed.layer != layer) {
         for (0..labels.key_count) |key| {
             const entry = labels.get(layer, key, modifiers, layerMask(layer));
+            if (entry.provider_unknown) continue;
             if (entry.hold_layer) |held| if (held == needed.layer and key != needed.key) {
                 output.hold[key] = true;
                 break;
@@ -366,6 +369,7 @@ pub fn guidance(labels: Labels, metadata: ?[]const KeyMetadata, layer: usize, mo
         for (0..labels.key_count) |key| {
             if (key == needed.key) continue;
             const entry = labels.get(layer, key, modifiers, layerMask(layer));
+            if (entry.provider_unknown) continue;
             const held = entry.hold_modifiers orelse if (entry.hid_code) |code| (if (code >= 224 and code <= 231) @as(u8, 1) << @intCast(code - 224) else 0) else 0;
             const accepted = if (flag & 0x22 != 0) @as(u8, 0x22) else flag;
             if (held & accepted == 0) continue;

@@ -15,7 +15,7 @@ pub fn mapping(labels: *const cache.LabelCache, source_id: []const u8) [32]u8 {
         std.mem.writeInt(u32, &length, @intCast(text.len), .little);
         hash.update(&length);
         hash.update(text);
-        hash.update(&.{ @intFromBool(value.dead), @intFromBool(value.shortcut) });
+        hash.update(&.{ @intFromBool(value.dead), @intFromBool(value.shortcut), @intFromBool(value.unproven) });
     };
     return hash.finalResult();
 }

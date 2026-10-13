@@ -187,7 +187,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         var config = owner.config;
         config.challenge = null;
         config.target_count = 0;
-        if (record.scored) {
+        if (record.scored or view.scope != 0) {
             const targets = aggregate.targets(&config.targets);
             config.target_count = @intCast(targets.len);
         }
@@ -208,7 +208,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     }
     if (ui.button(theme, "Clear history", "practice.history.clear", .{ .x = 520, .y = actions_y, .w = 140, .h = 38 })) view.confirm_clear = true;
     var focus_note: std.Io.Writer.Allocating = .init(arena);
-    try focus_note.writer.print("Seed {d} · generation / corpus / coverage v1 · {d} outside-reference errors", .{ record.seed, record.outside_errors });
+    if (record.cohort.family == .english) try focus_note.writer.print("Seed {d} · generation / corpus / coverage v1 · {d} outside-reference errors", .{ record.seed, record.outside_errors }) else try focus_note.writer.print("Zig lesson {s} · original text corpus v1 · {d} outside-reference errors", .{ desktop.practice.lesson_ids[record.cohort.lesson], record.outside_errors });
     if (record.target_count > 0) {
         try focus_note.writer.writeAll(" · drill focus: ");
         for (record.targets[0..record.target_count]) |cp| {

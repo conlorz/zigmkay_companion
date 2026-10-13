@@ -125,7 +125,7 @@ fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bou
         .simulated => "Draft companion · simulated key presses",
         .draft => if (guided) "Draft guide · next-route preview" else "Static draft reference · no key telemetry",
     };
-    presentation.caption(try std.fmt.allocPrint(arena, "{s} · {s} · layer {d}{s}{s}", .{ title, frame.profile, layer, if (mods.toByte() & 0x22 != 0) " · Shift" else "", if (mods.toByte() & 0x44 != 0) " · Alt / Option" else "" }), .{ .x = 8, .y = 0, .w = bounds.w - 16, .h = 28 }, @min(18, bounds.h * 0.09), theme.text, "practice.keyboard.source");
+    presentation.caption(try std.fmt.allocPrint(arena, "{s} · {s} · layer {d}{s}{s}{s}", .{ title, frame.profile, layer, if (mods.toByte() & 0x22 != 0) " · Shift" else "", if (mods.toByte() & 0x44 != 0) " · Alt / Option" else "", if (owner.cohort.verified) "" else " · unverified layout reference" }), .{ .x = 8, .y = 0, .w = bounds.w - 16, .h = 28 }, @min(18, bounds.h * 0.09), theme.text, "practice.keyboard.source");
     if (next) |hint| {
         const has_holds = std.mem.indexOfScalar(bool, hold, true) != null;
         var shift_note: []const u8 = "";
@@ -167,7 +167,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
     // Exercise input precedes controls so Space cannot toggle a focused checkbox.
     const input_effect = try consumeInput(owner, window.data(), input);
     var pending: ?control.Intent = null;
-    const controls_height: f32 = if (view.challenge_open) 126 else 84;
+    const controls_height: f32 = if (view.challenge_open and owner.config.mode == .english) 126 else 84;
     var mode: usize = @backingInt(owner.config.mode);
     var level = owner.config.level;
     var preset: usize = @backingInt(owner.config.preset);
@@ -193,12 +193,12 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
                 view.rundown.reviewed = saved.page[0];
             };
         }
-        if (dvui.button(@src(), "Challenge seed…", .{}, .{ .tag = "practice.challenge.toggle" })) {
+        if (mode == 0 and dvui.button(@src(), "Challenge seed…", .{}, .{ .tag = "practice.challenge.toggle" })) {
             view.challenge_open = !view.challenge_open;
             if (view.challenge_open and owner.active and owner.session.state != .complete) pending = .pause;
         }
     }
-    if (view.challenge_open) {
+    if (view.challenge_open and mode == 0) {
         const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .rect = .{ .y = 84, .w = width, .h = 38 } });
         defer row.deinit();
         changed = dvui.checkbox(@src(), &view.challenge_enabled, "Challenge v1", .{}) or changed;
@@ -212,7 +212,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         config.source = @fromBackingInt(@intCast(source));
         config.preset = @fromBackingInt(@intCast(preset));
         config.assistance = @fromBackingInt(@intCast(assistance));
-        config.challenge = if (view.challenge_enabled) view.challenge_seed else null;
+        config.challenge = if (mode == 0 and view.challenge_enabled) view.challenge_seed else null;
         config.target_count = 0;
         pending = .{ .choose = config };
     }

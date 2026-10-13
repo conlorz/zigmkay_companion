@@ -72,6 +72,7 @@ pub const Record = struct {
             if (sub.expected > 0x10ffff or sub.typed > 0x10ffff or (sub.expected >= 0xd800 and sub.expected <= 0xdfff) or (sub.typed >= 0xd800 and sub.typed <= 0xdfff)) return error.InvalidPracticeHistory;
             for (self.substitutions[0..index]) |old| if (old.expected == sub.expected and old.typed == sub.typed) return error.InvalidPracticeHistory;
         }
+        if (!std.unicode.utf8ValidateSlice(std.mem.sliceTo(&self.profile, 0)) or !std.unicode.utf8ValidateSlice(std.mem.sliceTo(&self.input_source, 0))) return error.InvalidPracticeHistory;
         var opportunities: u64 = 0;
         for (self.stats[0..self.stat_count], 0..) |stat, index| {
             if (stat.cp > 0x10ffff or (stat.cp >= 0xd800 and stat.cp <= 0xdfff) or stat.misses > stat.opportunities or stat.route_count > 4) return error.InvalidPracticeHistory;
@@ -79,7 +80,7 @@ pub const Record = struct {
             for (stat.routes[0..stat.route_count]) |route| if (route.layer >= self.layer_count or route.key >= self.key_count or std.mem.indexOfScalar(u8, &practice.route_modifiers, route.modifiers) == null) return error.InvalidPracticeHistory;
             opportunities = std.math.add(u64, opportunities, stat.opportunities) catch return error.InvalidPracticeHistory;
         }
-        if (opportunities != self.matched or self.matched > 8192 or self.cohort.length > 2 or self.layer_count == 0 or self.layer_count > 15) return error.InvalidPracticeHistory;
+        if (opportunities != self.matched or self.matched > 8192 or self.cohort.length > 2 or self.cohort.lesson >= 3 or self.layer_count == 0 or self.layer_count > 15) return error.InvalidPracticeHistory;
     }
     pub fn wpm(self: *const Record) f64 {
         return if (self.active_us == 0) 0 else @as(f64, @floatFromInt(self.matched)) * 12_000_000 / @as(f64, @floatFromInt(self.active_us));
@@ -273,5 +274,31 @@ test "corrupt substitution codepoints and duplicate pairs are rejected before re
     try record.validate();
     record.substitution_count = 2;
     record.substitutions[1] = record.substitutions[0];
+    try std.testing.expectError(error.InvalidPracticeHistory, record.validate());
+}
+
+/// Bounded display metadata always ends at a UTF-8 codepoint boundary.
+pub fn displayName(text: []const u8, buffer: *[96]u8) void {
+    buffer.* = @splat(0);
+    if (!std.unicode.utf8ValidateSlice(text)) {
+        @memcpy(buffer[0..7], "Unknown");
+        return;
+    }
+    var end = @min(text.len, buffer.len - 1);
+    while (end > 0 and end < text.len and text[end] & 0xc0 == 0x80) end -= 1;
+    @memcpy(buffer[0..end], text[0..end]);
+}
+test "bounded Unicode profile names never split a codepoint" {
+    var text: [96]u8 = undefined;
+    for (0..48) |index| {
+        text[index * 2] = 0xc3;
+        text[index * 2 + 1] = 0xa9;
+    }
+    var name: [96]u8 = undefined;
+    displayName(&text, &name);
+    try std.testing.expectEqual(@as(usize, 94), std.mem.sliceTo(&name, 0).len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(std.mem.sliceTo(&name, 0)));
+    var record: Record = .{};
+    record.profile[0] = 0xff;
     try std.testing.expectError(error.InvalidPracticeHistory, record.validate());
 }
