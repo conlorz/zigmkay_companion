@@ -36,17 +36,18 @@ pub fn packageLink(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []
     while (components.next()) |component| for ([_][]const u8{ ".git", ".zig-cache", "zig-out", "zig-pkg" }) |excluded| if (std.mem.eql(u8, component, excluded)) return error.PackageLinkTargetsExcludedInput;
     return gpa.dupe(u8, target);
 }
+fn excludedDirectory(_: []const u8, name: []const u8, kind: std.Io.File.Kind) bool {
+    return kind == .directory and
+        (std.mem.eql(u8, name, ".git") or
+            std.mem.eql(u8, name, ".zig-cache") or
+            std.mem.eql(u8, name, "zig-out") or
+            std.mem.eql(u8, name, "zig-pkg"));
+}
+
 fn tree(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, allow_links: bool) !Digest {
-    const policy: sources.Policy = .{ .excluded = struct {
-        fn excluded(_: []const u8, name: []const u8, kind: std.Io.File.Kind) bool {
-            if (kind != .directory) return false;
-            for ([_][]const u8{ ".git", ".zig-cache", "zig-out", "zig-pkg" }) |ignored| if (std.mem.eql(u8, name, ignored)) return true;
-            return false;
-        }
-    }.excluded, .max_files = 10_000 };
+    const policy: sources.Policy = .{ .excluded = excludedDirectory, .max_files = 10_000 };
     const files = try sources.collect(gpa, io, dir, policy);
     defer sources.free(gpa, files);
-    if (@import("builtin").is_test) std.debug.print("tree: collected {d} entries\n", .{files.len});
     var has_links = false;
     for (files) |file| if (file.kind == .sym_link) {
         has_links = true;
@@ -55,26 +56,19 @@ fn tree(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, allow_links: bool) 
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
     hash.update(if (has_links) "zigmkay-package-tree-links-v1\x00" else "zigmkay-source-tree-v1\x00");
     var total: usize = 0;
-    for (files, 0..) |file, ordinal| {
-        const trace = @import("builtin").is_test and ordinal < 12;
-        if (trace) std.debug.print("tree: entry {d} kind {s} begin\n", .{ ordinal, @tagName(file.kind) });
+    for (files) |file| {
         if (file.kind != .file and file.kind != .sym_link) return error.UnsupportedSourceKind;
-        if (trace) std.debug.print("tree: entry {d} before {s}\n", .{ ordinal, if (file.kind == .sym_link) @as([]const u8, "packageLink") else "readFileAlloc" });
         const bytes = if (file.kind == .sym_link) try packageLink(gpa, io, dir, file.path) else try dir.readFileAlloc(io, file.path, gpa, .limited(32 * 1024 * 1024));
         defer gpa.free(bytes);
-        if (trace) std.debug.print("tree: entry {d} after read length {d}\n", .{ ordinal, bytes.len });
         total += bytes.len;
         if (total > (if (allow_links) package_max_bytes else 128 * 1024 * 1024)) return error.SourceTreeTooLarge;
-        if (trace) std.debug.print("tree: entry {d} before hash.update\n", .{ordinal});
         if (has_links) hash.update(&.{if (file.kind == .sym_link) @as(u8, 2) else 1});
         length(&hash, file.path.len);
         // Canonicalize directory separators for identical Windows/POSIX sources.
         for (file.path) |c| hash.update(&.{if (c == '\\') '/' else c});
         length(&hash, bytes.len);
         hash.update(bytes);
-        if (trace) std.debug.print("tree: entry {d} after hash.update\n", .{ordinal});
     }
-    if (@import("builtin").is_test) std.debug.print("tree: return\n", .{});
     return hash.finalResult();
 }
 
@@ -155,6 +149,33 @@ test "source trees ignore caches but retain hidden and non-Zig build inputs" {
     try std.testing.expectEqual(original, try treeDigest(gpa, io, tmp.dir));
     try tmp.dir.writeFile(io, .{ .sub_path = "bridge.c", .data = "changed" });
     try std.testing.expect(!std.mem.eql(u8, &original, &try treeDigest(gpa, io, tmp.dir)));
+}
+
+test "excluded directories ignore nested contents but same-named files remain inputs" {
+    const t = std.testing;
+    const names = [_][]const u8{ ".git", ".zig-cache", "zig-out", "zig-pkg" };
+    for (names) |name| {
+        try t.expect(excludedDirectory("nested", name, .directory));
+        try t.expect(!excludedDirectory("nested", name, .file));
+    }
+    try t.expect(!excludedDirectory("nested", "ordinary", .directory));
+
+    var tmp = t.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "source.zig", .data = "source" });
+    const original = try treeDigest(t.allocator, t.io, tmp.dir);
+    for (names) |name| {
+        const nested = try std.fmt.allocPrint(t.allocator, "{s}/deep", .{name});
+        defer t.allocator.free(nested);
+        try tmp.dir.createDirPath(t.io, nested);
+        const path = try std.fmt.allocPrint(t.allocator, "{s}/ignored.zig", .{nested});
+        defer t.allocator.free(path);
+        try tmp.dir.writeFile(t.io, .{ .sub_path = path, .data = "ignored contents" });
+    }
+    try t.expectEqual(original, try treeDigest(t.allocator, t.io, tmp.dir));
+    try tmp.dir.createDirPath(t.io, "ordinary");
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "ordinary/kept.zig", .data = "kept" });
+    try t.expect(!std.mem.eql(u8, &original, &try treeDigest(t.allocator, t.io, tmp.dir)));
 }
 
 test "package tree links stay contained and never bypass excluded inputs" {
