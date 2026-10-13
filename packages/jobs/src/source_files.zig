@@ -49,13 +49,15 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
             if (entries_seen == 20_000) return error.SourceTraversalStalled;
             entries_seen += 1;
         }
+        if (item.name.len > std.Io.Dir.max_name_bytes) return error.InvalidSourceName;
         const path = try std.fs.path.join(gpa, &.{ frame.prefix, item.name });
-        if (policy.excluded(path, item.name, item.kind)) {
+        const name = std.fs.path.basename(path);
+        if (policy.excluded(path, name, item.kind)) {
             gpa.free(path);
             continue;
         }
         if (item.kind == .directory) {
-            const child = frame.dir.openDir(io, item.name, .{ .iterate = true }) catch |err| {
+            const child = frame.dir.openDir(io, name, .{ .iterate = true }) catch |err| {
                 gpa.free(path);
                 return err;
             };
