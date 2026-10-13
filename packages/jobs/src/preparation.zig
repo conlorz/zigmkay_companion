@@ -46,6 +46,7 @@ fn tree(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, allow_links: bool) 
     }.excluded, .max_files = 10_000 };
     const files = try sources.collect(gpa, io, dir, policy);
     defer sources.free(gpa, files);
+    if (@import("builtin").is_test) std.debug.print("tree: collected {d} entries\n", .{files.len});
     var has_links = false;
     for (files) |file| if (file.kind == .sym_link) {
         has_links = true;
@@ -54,19 +55,26 @@ fn tree(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, allow_links: bool) 
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
     hash.update(if (has_links) "zigmkay-package-tree-links-v1\x00" else "zigmkay-source-tree-v1\x00");
     var total: usize = 0;
-    for (files) |file| {
+    for (files, 0..) |file, ordinal| {
+        const trace = @import("builtin").is_test and ordinal < 12;
+        if (trace) std.debug.print("tree: entry {d} kind {s} begin\n", .{ ordinal, @tagName(file.kind) });
         if (file.kind != .file and file.kind != .sym_link) return error.UnsupportedSourceKind;
+        if (trace) std.debug.print("tree: entry {d} before {s}\n", .{ ordinal, if (file.kind == .sym_link) @as([]const u8, "packageLink") else "readFileAlloc" });
         const bytes = if (file.kind == .sym_link) try packageLink(gpa, io, dir, file.path) else try dir.readFileAlloc(io, file.path, gpa, .limited(32 * 1024 * 1024));
         defer gpa.free(bytes);
+        if (trace) std.debug.print("tree: entry {d} after read length {d}\n", .{ ordinal, bytes.len });
         total += bytes.len;
         if (total > (if (allow_links) package_max_bytes else 128 * 1024 * 1024)) return error.SourceTreeTooLarge;
+        if (trace) std.debug.print("tree: entry {d} before hash.update\n", .{ordinal});
         if (has_links) hash.update(&.{if (file.kind == .sym_link) @as(u8, 2) else 1});
         length(&hash, file.path.len);
         // Canonicalize directory separators for identical Windows/POSIX sources.
         for (file.path) |c| hash.update(&.{if (c == '\\') '/' else c});
         length(&hash, bytes.len);
         hash.update(bytes);
+        if (trace) std.debug.print("tree: entry {d} after hash.update\n", .{ordinal});
     }
+    if (@import("builtin").is_test) std.debug.print("tree: return\n", .{});
     return hash.finalResult();
 }
 
