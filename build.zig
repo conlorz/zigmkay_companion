@@ -289,6 +289,7 @@ pub fn build(b: *std.Build) void {
         const tool_fixture = b.addExecutable(.{ .name = "firmware-picotool-offline", .root_module = b.createModule(.{
             .root_source_file = firmware.path("zigmkay/tools/picotool_fixture.zig"),
             .target = b.graph.host,
+            .link_libc = true,
         }) });
         picotool_job_options.addOptionPath("wrapper", wrapper_fixture.getEmittedBin());
         picotool_job_options.addOptionPath("picotool_fixture", tool_fixture.getEmittedBin());
