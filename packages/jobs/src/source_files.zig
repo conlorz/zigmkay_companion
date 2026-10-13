@@ -1,5 +1,8 @@
 //! Deterministic traversal only; callers own exclusions and digest formats.
 const std = @import("std");
+const builtin = @import("builtin");
+
+// Test diagnostics never print source paths, names, or handles.
 pub const Entry = struct { path: []const u8, kind: std.Io.File.Kind };
 pub const Policy = struct {
     excluded: *const fn (path: []const u8, basename: []const u8, kind: std.Io.File.Kind) bool,
@@ -18,11 +21,17 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
         iterator: std.Io.Dir.Iterator,
         prefix: []const u8,
         owns_dir: bool,
+        repeated: usize = 0,
+        previous_name: ?[]u8 = null,
+        previous_state: ?std.Io.Dir.Reader.State = null,
+        previous_index: usize = 0,
+        previous_end: usize = 0,
     };
     var stack: std.ArrayList(Frame) = .empty;
     defer {
         for (stack.items) |*frame| {
             if (frame.owns_dir) frame.dir.close(io);
+            if (builtin.is_test) if (frame.previous_name) |name| gpa.free(name);
             gpa.free(frame.prefix);
         }
         stack.deinit(gpa);
@@ -32,21 +41,47 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
         gpa.free(empty);
         return err;
     };
+    var trace_steps: usize = 0;
     while (stack.items.len != 0) {
         const frame = &stack.items[stack.items.len - 1];
-        const entry = (try frame.iterator.next(io)) orelse {
+        const entry = try frame.iterator.next(io);
+        if (builtin.is_test) {
+            if (trace_steps < 100) {
+                trace_steps += 1;
+                const reader = &frame.iterator.reader;
+                std.debug.print("source traversal step={d} depth={d} state={any} index={d} end={d}\n", .{
+                    trace_steps, stack.items.len, reader.state, reader.index, reader.end,
+                });
+            }
+            const reader = &frame.iterator.reader;
+            if (entry) |item| {
+                const unchanged = frame.previous_state != null and std.meta.eql(frame.previous_state.?, reader.state) and
+                    frame.previous_index == reader.index and frame.previous_end == reader.end and
+                    frame.previous_name != null and std.mem.eql(u8, frame.previous_name.?, item.name);
+                frame.repeated = if (unchanged) frame.repeated + 1 else 0;
+                if (frame.repeated >= 8) return error.SourceTraversalStalled;
+                const name = try gpa.dupe(u8, item.name);
+                if (frame.previous_name) |old| gpa.free(old);
+                frame.previous_name = name;
+                frame.previous_state = reader.state;
+                frame.previous_index = reader.index;
+                frame.previous_end = reader.end;
+            }
+        }
+        const item = entry orelse {
             const done = stack.pop().?;
             if (done.owns_dir) done.dir.close(io);
+            if (builtin.is_test) if (done.previous_name) |name| gpa.free(name);
             gpa.free(done.prefix);
             continue;
         };
-        const path = try std.fs.path.join(gpa, &.{ frame.prefix, entry.name });
-        if (policy.excluded(path, entry.name, entry.kind)) {
+        const path = try std.fs.path.join(gpa, &.{ frame.prefix, item.name });
+        if (policy.excluded(path, item.name, item.kind)) {
             gpa.free(path);
             continue;
         }
-        if (entry.kind == .directory) {
-            const child = frame.dir.openDir(io, entry.name, .{ .iterate = true }) catch |err| {
+        if (item.kind == .directory) {
+            const child = frame.dir.openDir(io, item.name, .{ .iterate = true }) catch |err| {
                 gpa.free(path);
                 return err;
             };
@@ -58,7 +93,7 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
             continue;
         }
         if (policy.included) |included| {
-            if (!included(path, entry.kind)) {
+            if (!included(path, item.kind)) {
                 gpa.free(path);
                 continue;
             }
@@ -67,7 +102,7 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
             gpa.free(path);
             return error.SourceFileLimit;
         }
-        files.append(gpa, .{ .path = path, .kind = entry.kind }) catch |err| {
+        files.append(gpa, .{ .path = path, .kind = item.kind }) catch |err| {
             gpa.free(path);
             return err;
         };
@@ -108,6 +143,8 @@ test "traversal preserves caller policy, sorts paths and enforces bounds" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "other/deeper");
+    try tmp.dir.writeFile(io, .{ .sub_path = "other/deeper/b.zig", .data = "" });
     try tmp.dir.createDirPath(io, "sibling/deeper");
     try tmp.dir.writeFile(io, .{ .sub_path = "sibling/deeper/a.zig", .data = "" });
     try tmp.dir.writeFile(io, .{ .sub_path = "sibling/.hidden.zig", .data = "" });
@@ -127,12 +164,13 @@ test "traversal preserves caller policy, sorts paths and enforces bounds" {
     const policy: Policy = .{ .excluded = CompilerPolicy.excluded, .included = CompilerPolicy.included };
     const files = try collect(gpa, io, tmp.dir, policy);
     defer free(gpa, files);
-    try std.testing.expectEqual(@as(usize, 4), files.len);
+    try std.testing.expectEqual(@as(usize, 5), files.len);
     try std.testing.expectEqualStrings(".hidden.zig", files[0].path);
-    try std.testing.expectEqualStrings("sibling/.hidden.zig", files[1].path);
-    try std.testing.expectEqualStrings("sibling/deeper/a.zig", files[2].path);
-    try std.testing.expectEqualStrings("z.zon", files[3].path);
+    try std.testing.expectEqualStrings("other/deeper/b.zig", files[1].path);
+    try std.testing.expectEqualStrings("sibling/.hidden.zig", files[2].path);
+    try std.testing.expectEqualStrings("sibling/deeper/a.zig", files[3].path);
+    try std.testing.expectEqualStrings("z.zon", files[4].path);
     var bounded = policy;
-    bounded.max_files = 3;
+    bounded.max_files = 4;
     try std.testing.expectError(error.SourceFileLimit, collect(gpa, io, tmp.dir, bounded));
 }
