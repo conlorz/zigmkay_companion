@@ -91,7 +91,7 @@ fn saveRecord(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, source: Sou
     var atomic = try records.createFileAtomic(io, name, .{ .replace = false });
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, encoded.written());
-    try atomic.replace(io);
+    try atomic.link(io);
 }
 fn absolute(path: []const u8) !void {
     if (!std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, 0) != null) return error.AbsolutePackagePathRequired;
@@ -312,7 +312,7 @@ pub fn acquire(gpa: std.mem.Allocator, io: std.Io, environment: *const std.proce
         var blob = try blobs.createFileAtomic(io, blob_name, .{ .replace = false });
         defer blob.deinit(io);
         try blob.file.writeStreamingAll(io, archive_bytes);
-        try blob.replace(io);
+        try blob.link(io);
     }
     var arena: std.heap.ArenaAllocator = .init(gpa);
     errdefer arena.deinit();

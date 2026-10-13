@@ -14,7 +14,7 @@ test "selected toolchain receipts own verified inputs and preserve future sideca
     defer executable.deinit(io);
     try executable.file.writeStreamingAll(io, helper);
     try executable.file.setPermissions(io, .executable_file);
-    try executable.replace(io);
+    try executable.link(io);
     try distribution.writeFile(io, .{ .sub_path = "library.marker", .data = "selected standard library" });
     const root = try distribution.realPathFileAlloc(io, ".", t.allocator);
     defer t.allocator.free(root);

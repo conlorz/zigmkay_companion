@@ -18,7 +18,16 @@ pub const Record = struct {
         if (self.version != 1) return error.UnsupportedRunnerManifest;
         try self.inputs.lock.validate();
         if (self.host_target.len == 0 or self.host_target.len > 96) return error.InvalidRunnerTarget;
-        for (self.host_target) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return error.InvalidRunnerTarget;
+        var components = std.mem.splitScalar(u8, self.host_target, '-');
+        var count: usize = 0;
+        while (components.next()) |component| {
+            count += 1;
+            if (component.len == 0) return error.InvalidRunnerTarget;
+            for (component) |c| {
+                if (!std.ascii.isAlphanumeric(c) and c != '_') return error.InvalidRunnerTarget;
+            }
+        }
+        if (count != 3) return error.InvalidRunnerTarget;
         if (!std.mem.eql(u8, self.optimize, "Debug")) return error.UnsupportedRunnerOptimization;
         if (!std.mem.eql(u8, &self.build_key, &key(self.inputs, self.host_target))) return error.RunnerManifestKeyMismatch;
         if (!std.fs.path.isAbsolute(self.path) or std.mem.indexOfScalar(u8, self.path, 0) != null) return error.InvalidArtifactPath;
@@ -109,7 +118,7 @@ pub fn freeze(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, manifest: M
         defer atomic.deinit(io);
         try atomic.file.writeStreamingAll(io, bytes);
         try atomic.file.setPermissions(io, std.Io.File.Permissions.executable_file.setReadOnly(true));
-        try atomic.replace(io);
+        try atomic.link(io);
     }
     const base = try cache.realPathFileAlloc(io, ".", gpa);
     defer gpa.free(base);
@@ -148,6 +157,18 @@ test "runner manifests bind host captured inputs and actual executable bytes" {
     try t.expectError(error.RunnerHostMismatch, other_host.verify(inputs, "test executable bytes"));
     record.version = 2;
     try t.expectError(error.UnsupportedRunnerManifest, Manifest.clone(t.allocator, record));
+}
+test "runner target accepts Zig Linux ABI names and rejects malformed values" {
+    const t = std.testing;
+    const inputs = firmware.Inputs{ .project_digest = @splat(1), .source_digest = @splat(2), .build_inputs_digest = @splat(3), .profile_id = @splat(4), .identity_digest = @splat(5), .lock = @import("target_lock.zig").fixture() };
+    var record = Record{ .inputs = inputs, .host_target = "x86_64-linux-gnu", .build_key = undefined, .path = "/cache/runner", .size = 1, .hash = @splat(0) };
+    record.build_key = key(inputs, record.host_target);
+    try record.validate();
+    for ([_][]const u8{ "x86_64-linux-gnu/evil", "x86_64-linux-gnu\\evil", "x86_64-linux-gnu\n", "x86_64--gnu", "-linux-gnu", "x86_64-linux-", "x86_64-linux-gnu-extra", "x86_64_linux_gnu" }) |invalid| {
+        record.host_target = invalid;
+        record.build_key = key(inputs, invalid);
+        try t.expectError(error.InvalidRunnerTarget, record.validate());
+    }
 }
 test "frozen runner survives source output replacement and preserves corrupt cache" {
     const t = std.testing;

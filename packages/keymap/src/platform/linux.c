@@ -1,6 +1,7 @@
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-compose.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -114,13 +115,20 @@ size_t linuxKeyMapTranslate(LinuxKeyMap *km, uint32_t keycode, uint8_t mods,
     }
 
     if (km->compose_state) {
-        enum xkb_compose_status status = xkb_compose_state_feed(km->compose_state, xkb_state_key_get_utf8(km->state, keycode, buf, buf_len));
-        if (status == XKB_COMPOSE_COMPOSED) {
-            int written = xkb_compose_state_get_utf8(km->compose_state, buf, buf_len);
-            xkb_compose_state_reset(km->compose_state);
-            return (size_t)(written > 0 ? written : 0);
-        } else if (status == XKB_COMPOSE_CANCELLED) {
-            xkb_compose_state_reset(km->compose_state);
+        xkb_keysym_t sym = xkb_state_key_get_one_sym(km->state, keycode);
+        enum xkb_compose_feed_result feed = xkb_compose_state_feed(km->compose_state, sym);
+        if (feed == XKB_COMPOSE_FEED_ACCEPTED) {
+            enum xkb_compose_status status = xkb_compose_state_get_status(km->compose_state);
+            if (status == XKB_COMPOSE_COMPOSING) return 0;
+            if (status == XKB_COMPOSE_COMPOSED) {
+                int written = xkb_compose_state_get_utf8(km->compose_state, buf, buf_len);
+                xkb_compose_state_reset(km->compose_state);
+                return (size_t)(written > 0 ? written : 0);
+            }
+            if (status == XKB_COMPOSE_CANCELLED) {
+                xkb_compose_state_reset(km->compose_state);
+                return 0;
+            }
         }
     }
 

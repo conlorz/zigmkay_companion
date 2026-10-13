@@ -36,10 +36,10 @@ fn write(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, comptime kind: enu
             defer parsed.deinit();
         } else _ = try provenance.Receipt.parse(gpa, existing);
     }
-    var atomic = try dir.createFileAtomic(io, name, .{ .replace = replacement == .replace_supported });
+    var atomic = try dir.createFileAtomic(io, name, .{ .replace = old != null and replacement == .replace_supported });
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, bytes);
-    try atomic.replace(io);
+    if (old != null and replacement == .replace_supported) try atomic.replace(io) else try atomic.link(io);
 }
 pub fn saveRunner(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, manifest: runner.Manifest, replacement: Replacement) !void {
     const bytes = try manifest.serialize(gpa);
@@ -53,7 +53,7 @@ test "runner sidecar creates supported records and preserves future provenance" 
     const input = firmware.Inputs{ .project_digest = @splat(1), .source_digest = @splat(2), .build_inputs_digest = @splat(3), .profile_id = @splat(4), .identity_digest = @splat(5), .lock = target.fixture() };
     var manifest = try runner.Manifest.complete(t.allocator, .succeeded, runner.key(input, runner.native_target), input, input, "/cache/runner", "executable");
     defer manifest.deinit();
-    try saveRunner(t.allocator, t.io, tmp.dir, manifest, .create);
+    try saveRunner(t.allocator, t.io, tmp.dir, manifest, .replace_supported);
     try t.expectError(error.SidecarAlreadyExists, saveRunner(t.allocator, t.io, tmp.dir, manifest, .create));
     try saveRunner(t.allocator, t.io, tmp.dir, manifest, .replace_supported);
     var future = manifest.record;

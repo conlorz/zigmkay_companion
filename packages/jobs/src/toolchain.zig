@@ -153,8 +153,8 @@ pub fn save(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, receipt: 
     }
     const bytes = try receipt.serialize(gpa);
     defer gpa.free(bytes);
-    var atomic = try directory.createFileAtomic(io, filename, .{ .replace = true });
+    var atomic = try directory.createFileAtomic(io, filename, .{ .replace = old != null });
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, bytes);
-    try atomic.replace(io);
+    if (old != null) try atomic.replace(io) else try atomic.link(io);
 }

@@ -88,7 +88,15 @@ pub fn importBlob(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, expecte
     var atomic = try cache.createFileAtomic(io, &name, .{ .replace = false });
     defer atomic.deinit(io);
     try atomic.file.writeStreamingAll(io, bytes);
-    try atomic.replace(io);
+    atomic.link(io) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            // A concurrent importer won the race. Never overwrite its entry.
+            const existing = try cache.readFileAlloc(io, &name, gpa, .limited(512 * 1024 * 1024));
+            defer gpa.free(existing);
+            if (!std.mem.eql(u8, &expected, &firmware.digest(existing))) return error.CachedBundleCorrupt;
+        },
+        else => return err,
+    };
 }
 
 /// Byte verification is performed immediately before running this deliberately
@@ -112,11 +120,17 @@ test "offline bundle imports are immutable and verify existing cache bytes" {
     const bytes = "offline prepared source bundle";
     const expected = firmware.digest(bytes);
     try std.testing.expectError(error.BundleDigestMismatch, importBlob(gpa, io, tmp.dir, expected, "modified"));
-    try importBlob(gpa, io, tmp.dir, expected, bytes);
-    try importBlob(gpa, io, tmp.dir, expected, bytes);
     const name = std.fmt.bytesToHex(expected, .lower);
+    try importBlob(gpa, io, tmp.dir, expected, bytes);
+    const created = try tmp.dir.readFileAlloc(io, &name, gpa, .limited(512 * 1024 * 1024));
+    defer gpa.free(created);
+    try std.testing.expectEqualStrings(bytes, created);
+    try importBlob(gpa, io, tmp.dir, expected, bytes);
     try tmp.dir.writeFile(io, .{ .sub_path = &name, .data = "corrupt" });
     try std.testing.expectError(error.CachedBundleCorrupt, importBlob(gpa, io, tmp.dir, expected, bytes));
+    const preserved = try tmp.dir.readFileAlloc(io, &name, gpa, .limited(512 * 1024 * 1024));
+    defer gpa.free(preserved);
+    try std.testing.expectEqualStrings("corrupt", preserved);
 }
 
 test "source trees ignore caches but retain hidden and non-Zig build inputs" {
