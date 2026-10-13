@@ -29,11 +29,19 @@ jobs:
       - name: Test nested source traversal before the complete matrix
         timeout-minutes: 2
         run: zig test packages/jobs/src/source_files.zig --test-filter nested
-      - name: Isolate package tree test outside build runner protocol
+      - name: Trace standalone Linux package-tree stall
         timeout-minutes: 2
         run: |
+          sudo apt-get install -y strace
           zig test packages/jobs/src/package_cache.zig --test-filter 'POSIX colon' --test-no-exec -femit-bin="$RUNNER_TEMP/package-colon-test"
-          timeout 25s "$RUNNER_TEMP/package-colon-test"
+          timeout 12s strace -ff -tt -T -yy -e trace=getdents64,lseek,openat,close,futex -o "$RUNNER_TEMP/colon.trace" "$RUNNER_TEMP/package-colon-test" > "$RUNNER_TEMP/colon.out" 2>&1 && exit 0
+          result=$?
+          printf 'standalone exit=%s\n' "$result"
+          for trace in "$RUNNER_TEMP"/colon.trace.*; do
+            printf 'trace syscall tail for one process/thread:\n'
+            grep -E 'getdents64|lseek|futex' "$trace" | tail -n 12 || true
+          done
+          exit 1
       - name: Diagnose Linux fixture cleanup and traversal
         timeout-minutes: 2
         run: zig build test-jobs -j1 --test-timeout 10s --summary failures
