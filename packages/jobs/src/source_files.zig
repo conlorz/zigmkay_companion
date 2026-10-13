@@ -94,6 +94,39 @@ pub fn free(gpa: std.mem.Allocator, files: []Entry) void {
     gpa.free(files);
 }
 
+fn checkMultipleFiles(io: std.Io) !void {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "nested/deeper");
+    try tmp.dir.writeFile(io, .{ .sub_path = "first.zig", .data = "a" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "second.zig", .data = "b" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/deeper/third.zig", .data = "c" });
+    const Accept = struct {
+        fn excluded(_: []const u8, _: []const u8, _: std.Io.File.Kind) bool {
+            return false;
+        }
+    };
+    for (0..2) |_| {
+        const files = try collect(gpa, io, tmp.dir, .{ .excluded = Accept.excluded });
+        defer free(gpa, files);
+        try std.testing.expectEqual(@as(usize, 3), files.len);
+        try std.testing.expectEqualStrings("first.zig", files[0].path);
+        try std.testing.expectEqualStrings("nested/deeper/third.zig", files[1].path);
+        try std.testing.expectEqualStrings("second.zig", files[2].path);
+    }
+}
+
+test "multiple files on one directory handle with testing IO" {
+    try checkMultipleFiles(std.testing.io);
+}
+
+test "multiple files on one directory handle with threaded IO" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    try checkMultipleFiles(threaded.io());
+}
+
 test "nested traversal terminates and preserves relative paths" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
