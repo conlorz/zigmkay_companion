@@ -838,7 +838,26 @@ test "build worker owns verified exports and accepts only the current editor pre
     owns_request = false;
     defer worker.destroy();
     const completed = (try awaitWorker(worker)).result;
-    var candidate = try completed;
+    var candidate = completed catch |err| {
+        std.debug.print("build worker failed: {s}; install directory: {s}; export directory: {s}\n", .{ @errorName(err), install, exported });
+        if (std.Io.Dir.cwd().openDir(t.io, install, .{ .iterate = true })) |directory| {
+            var output = directory;
+            defer output.close(t.io);
+            var entries = output.iterate();
+            while (entries.next(t.io) catch null) |entry| {
+                std.debug.print("build output entry: {s} ({s})\n", .{ entry.name, @tagName(entry.kind) });
+                if (entry.kind != .directory) continue;
+                var child = output.openDir(t.io, entry.name, .{}) catch continue;
+                defer child.close(t.io);
+                for ([_][]const u8{ "build.stdout.log", "build.stderr.log" }) |name| {
+                    const bytes = child.readFileAlloc(t.io, name, t.allocator, .limited(64 * 1024)) catch continue;
+                    defer t.allocator.free(bytes);
+                    std.debug.print("{s}/{s}: {s}\n", .{ entry.name, name, bytes });
+                }
+            }
+        } else |_| {}
+        return err;
+    };
     defer candidate.deinit();
     var stale = candidate.ticket;
     stale.generation += 1;

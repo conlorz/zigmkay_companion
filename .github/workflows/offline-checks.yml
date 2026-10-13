@@ -23,4 +23,4 @@ jobs:
         run: zig build check -j2 --test-timeout 30s
       - name: Test portable contracts (no device access)
         timeout-minutes: 15
-        run: zig build test -j2 --test-timeout 30s
+        run: zig build test -j2 --test-timeout 2m

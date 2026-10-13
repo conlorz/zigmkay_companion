@@ -266,7 +266,7 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
     defer executable.deinit(t.io);
     try executable.file.writeStreamingAll(t.io, helper);
     try executable.file.setPermissions(t.io, .executable_file);
-    try executable.replace(t.io);
+    try executable.link(t.io);
     try distribution.writeFile(t.io, .{ .sub_path = "bundle.tar", .data = "fixture bundle" });
     try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{} }" });
     const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
