@@ -2,6 +2,7 @@
 const std = @import("std");
 pub const State = enum { ready, running, paused, complete };
 pub const Source = enum { os, draft };
+pub const route_modifiers = [_]u8{ 0, 2, 4, 6, 64, 66 };
 pub const lessons = [_][]const u8{
     \\const std = @import("std");
     \\
@@ -75,6 +76,12 @@ pub const Session = struct {
     correct_attempts: usize = 0,
     corrected: usize = 0,
     errors: [8192]u32 = @splat(0),
+    missed: [8192]bool = @splat(false),
+    position_errors: [8192]u32 = @splat(0),
+    outside_errors: usize = 0,
+    substitutions: [256]struct { expected: u21 = 0, typed: u21 = 0, count: u64 = 0 } = @splat(.{}),
+    substitution_count: u16 = 0,
+    substitutions_truncated: bool = false,
     scored: bool = true,
     started: ?u64 = null,
     segment: u64 = 0,
@@ -85,7 +92,14 @@ pub const Session = struct {
         var view = try std.unicode.Utf8View.init(bytes);
         var it = view.iterator();
         var count: usize = 0;
-        while (it.nextCodepoint()) |cp| {
+        var previous_reference_cr = false;
+        while (it.nextCodepoint()) |raw| {
+            if (raw == '\n' and previous_reference_cr) {
+                previous_reference_cr = false;
+                continue;
+            }
+            previous_reference_cr = raw == '\r';
+            const cp: u21 = if (raw == '\r') '\n' else raw;
             if (count == self.reference.len) return error.ExerciseTooLong;
             self.reference[count] = cp;
             count += 1;
@@ -102,6 +116,12 @@ pub const Session = struct {
         self.corrected = 0;
         self.errors = @splat(0);
         self.scored = true;
+        self.missed = @splat(false);
+        self.position_errors = @splat(0);
+        self.outside_errors = 0;
+        self.substitution_count = 0;
+        self.substitutions = @splat(.{});
+        self.substitutions_truncated = false;
         self.started = null;
         self.active_us = 0;
         self.ended = 0;
@@ -130,8 +150,20 @@ pub const Session = struct {
                 self.correct_attempts += 1;
             } else if (self.len < self.reference_len) {
                 const first = std.mem.indexOfScalar(u21, self.reference[0..self.reference_len], self.reference[self.len]).?;
-                self.errors[first] += 1;
+                self.errors[first] +|= 1;
+                self.missed[self.len] = true;
+                self.position_errors[self.len] +|= 1;
+                var index: usize = 0;
+                while (index < self.substitution_count and !(self.substitutions[index].expected == self.reference[self.len] and self.substitutions[index].typed == cp)) : (index += 1) {}
+                if (index < 256) {
+                    if (index == self.substitution_count) {
+                        self.substitutions[index] = .{ .expected = self.reference[self.len], .typed = cp };
+                        self.substitution_count += 1;
+                    }
+                    self.substitutions[index].count +|= 1;
+                } else self.substitutions_truncated = true;
             }
+            if (self.len >= self.reference_len) self.outside_errors += 1;
             self.typed[self.len] = cp;
             self.len += 1;
             if (self.len == self.reference_len and std.mem.eql(u21, self.typed[0..self.len], self.reference[0..self.reference_len])) {
@@ -177,25 +209,13 @@ pub const Session = struct {
     }
 };
 pub fn english(buffer: []u8, seed: u64, length: usize) ![]const u8 {
-    var random = std.Random.DefaultPrng.init(seed);
-    const rng = random.random();
-    const subjects = [_][]const u8{ "The quiet gardener", "A curious student", "The friendly baker", "A patient artist", "The young sailor", "A cheerful neighbor", "The careful teacher", "A busy writer" };
-    const verbs = [_][]const u8{ "finds", "carries", "chooses", "shares", "keeps", "brings", "collects", "notices" };
-    const objects = [_][]const u8{ "a small notebook", "a bright flower", "a fresh apple", "a wooden box", "a warm blanket", "a smooth stone", "a red umbrella", "a useful map" };
-    const endings = [_][]const u8{ "near the old bridge", "before the evening rain", "beside the open window", "on a sunny morning", "after a long walk", "under the tall tree" };
-    var writer: std.Io.Writer = .fixed(buffer);
-    var previous_subject: usize = subjects.len;
-    var previous_ending: usize = endings.len;
-    for (0..length) |i| {
-        var subject = rng.uintLessThan(usize, subjects.len);
-        if (subject == previous_subject) subject = (subject + 1) % subjects.len;
-        var ending = rng.uintLessThan(usize, endings.len);
-        if (ending == previous_ending) ending = (ending + 1) % endings.len;
-        try writer.print("{s}{s} {s} {s} {s}.", .{ if (i == 0) "" else " ", subjects[subject], verbs[rng.uintLessThan(usize, verbs.len)], objects[rng.uintLessThan(usize, objects.len)], endings[ending] });
-        previous_subject = subject;
-        previous_ending = ending;
-    }
-    return writer.buffered();
+    const level: u8 = switch (length) {
+        2 => 0,
+        5 => 1,
+        10 => 2,
+        else => return error.InvalidExerciseLevel,
+    };
+    return @import("practice_generator.zig").generate(buffer, .{ .seed = seed, .length = level }, &.{});
 }
 test "Unicode corrections, pauses and literal scoring" {
     var s: Session = .{};
@@ -273,12 +293,12 @@ pub const Labels = struct {
     pub fn validate(self: Labels) !void {
         if (self.key_count == 0 or self.layer_count == 0 or self.layer_count > 16) return error.InvalidDimensions;
     }
-    fn get(self: Labels, layer: usize, key: usize, mods: u8, active: u16) Label {
+    pub fn get(self: Labels, layer: usize, key: usize, mods: u8, active: u16) Label {
         return self.lookup(self.context, layer, key, mods, active);
     }
 };
 pub const Hint = struct { layer: usize, key: usize, modifiers: u8 };
-pub const KeyMetadata = struct { hand: enum { left, right, neutral } = .neutral, thumb: bool = false };
+pub const KeyMetadata = struct { hand: enum { left, right, neutral } = .neutral, thumb: bool = false, home_row: bool = false };
 /// Every output slot is in the caller's board processing-index order.
 pub const Guidance = struct {
     tap: []bool,
@@ -289,10 +309,10 @@ pub const Guidance = struct {
         @memset(self.hold, false);
     }
 };
-fn layerMask(layer: usize) u16 {
+pub fn layerMask(layer: usize) u16 {
     return 1 | (@as(u16, 1) << @intCast(layer));
 }
-fn matches(entry: Label, cp: u21) bool {
+pub fn matches(entry: Label, cp: u21) bool {
     if (entry.dead or entry.shortcut) return false;
     if (entry.hid_code) |code| {
         if ((cp == '\n' and code == 40) or (cp == '\t' and code == 43) or (cp == ' ' and code == 44)) return true;
@@ -305,7 +325,7 @@ fn matches(entry: Label, cp: u21) bool {
 pub fn hint(labels: Labels, layer: usize, modifiers: u8, cp: u21, active: u16) !?Hint {
     try labels.validate();
     if (layer >= labels.layer_count) return error.InvalidLayer;
-    const variants = [_]u8{ modifiers, 0, 2, 4, 6 };
+    const variants = [_]u8{ modifiers, 0, 2, 4, 6, 64, 66 };
     for (0..labels.layer_count) |offset| {
         const candidate = (layer + offset) % labels.layer_count;
         for (variants) |mods| {
@@ -351,8 +371,10 @@ pub fn guidance(labels: Labels, metadata: ?[]const KeyMetadata, layer: usize, mo
             if (held & accepted == 0) continue;
             var score: usize = 1;
             if (metadata) |keys| {
-                if (keys[key].hand != keys[needed.key].hand and keys[key].hand != .neutral) score += 4;
+                if (keys[key].hand != keys[needed.key].hand and keys[key].hand != .neutral) score += 16;
                 if (!keys[key].thumb) score += 2;
+                if (entry.hold_modifiers != null and !keys[key].thumb) score += 1;
+                if (keys[key].home_row and entry.hold_modifiers != null) score += 8;
             }
             if (score > best_score) {
                 best = key;
@@ -432,4 +454,54 @@ test "lesson corpus remains original text and bounded exercise scoring uses inje
     try session.insert("a", 50, false);
     try t.expectEqual(@as(u64, 0), session.duration(999));
     try t.expectEqual(@as(usize, 1), session.corrected);
+}
+
+test "opposite home row outranks dedicated Shift without assuming letter placement" {
+    const Fixture = struct {
+        fn lookup(_: *const anyopaque, _: usize, key: usize, mods: u8, _: u16) Label {
+            return switch (key) {
+                0 => .{ .text = if (mods & 0x22 != 0) "Q" else "q" },
+                1 => .{ .hid_code = 229 },
+                2 => .{ .hold_modifiers = 32 },
+                3 => .{ .hold_modifiers = 2 },
+                else => .{},
+            };
+        }
+    };
+    var context: u8 = 0;
+    const labels: Labels = .{ .context = &context, .key_count = 4, .layer_count = 1, .lookup = Fixture.lookup };
+    var metadata = [_]KeyMetadata{ .{ .hand = .right }, .{ .hand = .left }, .{ .hand = .left, .home_row = true }, .{ .hand = .right, .home_row = true } };
+    var taps: [4]bool = undefined;
+    var holds: [4]bool = undefined;
+    const next = (try hint(labels, 0, 0, 'Q', 1)).?;
+    try guidance(labels, &metadata, 0, 0, next, .{ .tap = &taps, .hold = &holds });
+    try std.testing.expect(holds[2] and !holds[1] and !holds[3] and !holds[0]);
+    metadata[0].hand = .left;
+    metadata[2].hand = .left;
+    metadata[3].hand = .right;
+    try guidance(labels, &metadata, 0, 0, next, .{ .tap = &taps, .hold = &holds });
+    try std.testing.expect(holds[3] and !holds[2]);
+    try guidance(labels, &metadata, 0, 32, next, .{ .tap = &taps, .hold = &holds });
+    try std.testing.expect(std.mem.indexOfScalar(bool, &holds, true) == null);
+}
+
+test "wrong reentry and split CRLF keep occurrence evidence while outside text stays separate" {
+    var session: Session = .{};
+    try session.load("éa\n", .os);
+    try session.insert("é", 10, false);
+    session.backspace();
+    try session.insert("x", 20, false);
+    session.backspace();
+    try session.insert("éXxx", 30, false);
+    try std.testing.expectEqual(@as(usize, 1), session.outside_errors);
+    session.backspace();
+    session.backspace();
+    session.backspace();
+    try session.insert("a\r", 40, false);
+    try session.insert("\n", 50, false);
+    try std.testing.expectEqual(State.complete, session.state);
+    try std.testing.expect(session.missed[0] and session.missed[1]);
+    const attempts = session.attempts;
+    try session.insert("ignored after completion", 60, false);
+    try std.testing.expectEqual(attempts, session.attempts);
 }

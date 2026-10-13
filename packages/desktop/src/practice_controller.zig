@@ -3,13 +3,21 @@
 //! from OS text. Times are injected microseconds.
 const std = @import("std");
 const practice = @import("practice.zig");
+const generator = @import("practice_generator.zig");
+const results = @import("practice_results.zig");
 pub const Digest = [32]u8;
 pub const Mode = enum { english, zig };
 pub const Config = struct {
     mode: Mode = .english,
     level: usize = 1,
     source: practice.Source = .os,
+    preset: generator.Preset = .words,
+    assistance: results.Assistance = .guided,
+    challenge: ?u64 = null,
+    targets: [5]u21 = @splat(0),
+    target_count: u8 = 0,
     pub fn validate(self: Config) !void {
+        if (self.target_count > 5) return error.TooManyDrillTargets;
         if (self.level >= 3) return error.InvalidExerciseLevel;
     }
 };
@@ -18,7 +26,7 @@ pub const RunnerState = enum { idle, preparing, prepared, running, stopping, fai
 pub const Replacement = struct { previous: ?Operation, operation: Operation };
 pub const RunnerEffect = union(enum) { none, stop: Operation, stop_then_prepare: Replacement, stop_then_start: Replacement, start: Operation };
 pub const Effect = struct { runner: RunnerEffect = .none, reset_text: bool = false };
-pub const Intent = union(enum) { choose: Config, start: bool, new_exercise, pause, resume_run, stop };
+pub const Intent = union(enum) { drill: Config, choose: Config, start: bool, new_exercise, pause, resume_run, stop };
 pub const Action = struct { generation: u64, snapshot: Digest, intent: Intent };
 pub const Controller = struct {
     session: practice.Session = .{},
@@ -29,12 +37,28 @@ pub const Controller = struct {
     generation: u64 = 0,
     active: bool = false,
     seed: u64 = 1,
+    exercise_seed: u64 = 1,
+    normal_coverage: ?generator.HandCoverage = null,
+    cohort: results.Cohort = .{},
+    captured_cohort: results.Cohort = .{},
+    completed: ?results.Record = null,
+    completion_delivered: bool = false,
     runner_state: RunnerState = .idle,
     last_sequence: ?u64 = null,
-    best: [2][3][2]f64 = @splat(@splat(@splat(0))),
     failure: ?anyerror = null,
     pub fn init(snapshot: Digest) Controller {
         return .{ .current = snapshot };
+    }
+    pub fn configCohort(self: *const Controller) results.Cohort {
+        var cohort = self.cohort;
+        cohort.source = self.config.source;
+        cohort.family = @fromBackingInt(@backingInt(self.config.mode));
+        cohort.preset = self.config.preset;
+        cohort.length = @intCast(self.config.level);
+        cohort.lesson = if (self.config.mode == .zig) @intCast(self.config.level) else 0;
+        cohort.assistance = self.config.assistance;
+        cohort.mode = if (self.config.target_count > 0) .drill else if (self.config.challenge != null) .challenge else .normal;
+        return cohort;
     }
     pub fn operation(self: *const Controller) Operation {
         return .{ .generation = self.generation, .snapshot = self.captured };
@@ -47,12 +71,17 @@ pub const Controller = struct {
     pub fn dispatch(self: *Controller, rendered: Action, prepared_snapshot: ?Digest, now: u64) !Effect {
         if (rendered.generation != self.generation or !std.mem.eql(u8, &rendered.snapshot, &self.current)) return error.StalePracticeAction;
         return switch (rendered.intent) {
+            .drill => |config| blk: {
+                try config.validate();
+                self.config = config;
+                break :blk try self.start(true, prepared_snapshot, now);
+            },
             .choose => |config| try self.choose(config, now),
             .start => |fresh_exercise| try self.start(fresh_exercise, prepared_snapshot, now),
             .new_exercise => blk: {
                 try self.config.validate();
                 if (self.generation == std.math.maxInt(u64)) return error.OperationExhausted;
-                self.seed +%= 1;
+                self.config.target_count = 0;
                 if (self.config.mode == .zig) self.config.level = (self.config.level + 1) % 3;
                 break :blk try self.start(true, prepared_snapshot, now);
             },
@@ -77,16 +106,21 @@ pub const Controller = struct {
     }
     /// Only the caller's deliberate Start/Restart/New exercise action calls this.
     /// Preparation completion leaves draft scoring paused until explicit Resume.
-    pub fn start(self: *Controller, fresh_exercise: bool, prepared_snapshot: ?Digest, now: u64) !Effect {
+    pub fn start(self: *Controller, _: bool, prepared_snapshot: ?Digest, now: u64) !Effect {
         try self.config.validate();
         if (self.generation == std.math.maxInt(u64)) return error.OperationExhausted;
-        if (!fresh_exercise and (!self.active or !std.meta.eql(self.config, self.captured_config))) return error.ExerciseRestartRequired;
         const previous: ?Operation = if (self.generation == 0) null else self.operation();
-        if (fresh_exercise) {
-            var buffer: [8192]u8 = undefined;
-            const reference = if (self.config.mode == .english) try practice.english(&buffer, self.seed, ([_]usize{ 2, 5, 10 })[self.config.level]) else practice.lessons[self.config.level];
-            try self.session.load(reference, self.config.source);
-        } else self.session.restart();
+        var buffer: [8192]u8 = undefined;
+        self.seed +%= 0x9e3779b97f4a7c15;
+        self.exercise_seed = self.config.challenge orelse self.seed;
+        const reference = if (self.config.mode == .english)
+            try generator.generateWithCoverage(&buffer, .{ .seed = self.exercise_seed, .preset = self.config.preset, .length = @intCast(self.config.level) }, self.config.targets[0..self.config.target_count], if (self.config.challenge == null and self.config.target_count == 0) self.normal_coverage else null)
+        else
+            practice.lessons[self.config.level];
+        try self.session.load(reference, self.config.source);
+        self.completed = null;
+        self.completion_delivered = false;
+        self.captured_cohort = self.configCohort();
         self.generation += 1;
         self.captured = self.current;
         self.captured_config = self.config;
@@ -118,6 +152,7 @@ pub const Controller = struct {
         return true;
     }
     pub fn resumeRun(self: *Controller, now: u64) !Effect {
+        if (self.failure) |failure| if (failure == error.PracticeContextChanged) return error.PracticeContextChanged;
         if (!self.active or self.session.state != .paused) return error.ExerciseNotPaused;
         if (self.session.source == .draft) {
             if (!self.fresh()) return error.DraftChangedRestartPractice;
@@ -174,12 +209,9 @@ pub const Controller = struct {
         self.last_sequence = sequence;
         return self.finish(now);
     }
-    pub fn finish(self: *Controller, now: u64) Effect {
+    pub fn finish(self: *Controller, _: u64) Effect {
         if (!self.active or self.session.state != .complete) return .{};
-        if (self.session.scored) {
-            const best = &self.best[@backingInt(self.captured_config.mode)][self.captured_config.level][@backingInt(self.captured_config.source)];
-            best.* = @max(best.*, self.session.wpm(now));
-        }
+        self.completion_delivered = true;
         if (self.session.source == .draft and self.runner_state == .running) {
             self.runner_state = .stopping;
             return .{ .runner = .{ .stop = self.operation() }, .reset_text = true };

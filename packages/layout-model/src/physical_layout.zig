@@ -15,6 +15,8 @@ pub const Key = struct {
     rotation: f32 = 0,
     hand: Hand,
     group: Group = .finger,
+    /// Explicit catalog metadata; never inferred from a letter or board size.
+    home_row: bool = false,
 };
 
 pub const ValidationError = error{
