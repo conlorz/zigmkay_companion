@@ -38,9 +38,9 @@ jobs:
           test_pid=$!
           sleep 3
           if kill -0 "$test_pid" 2>/dev/null; then
-            sudo gdb -q -batch -p "$test_pid" -ex 'set pagination off' -ex 'thread apply all bt 30' -ex detach > "$RUNNER_TEMP/colon.bt" 2>&1 || true
-            printf 'blocked test backtrace:\n'
-            grep -E '^Thread |^#[0-9]+ ' "$RUNNER_TEMP/colon.bt" | head -n 120 || true
+            sudo gdb -q -batch -p "$test_pid" -ex 'set pagination off' -ex 'thread 1' -ex 'bt 8' -ex 'frame 0' -ex 'p a.len' -ex 'p b.len' -ex 'frame 2' -ex 'p name.len' -ex 'frame 3' -ex 'p item.name.len' -ex 'p path.len' -ex detach > "$RUNNER_TEMP/colon.bt" 2>&1 || true
+            printf 'numeric slice lengths and blocked stack:\n'
+            grep -E '^#[0-9]+ |^\$[0-9]+ = |^Thread ' "$RUNNER_TEMP/colon.bt" | head -n 70 || true
             kill "$test_pid" 2>/dev/null || true
             wait "$test_pid" 2>/dev/null || true
             exit 1
