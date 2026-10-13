@@ -15,6 +15,7 @@ pub const Frame = struct {
     modifiers: layout.Modifiers = .{},
     pressed: []const bool,
     practicing: bool = false,
+    assistance: desktop.practice_results.Assistance = .guided,
     live: bool = false,
     active_layers: ?u16 = null,
 };
@@ -36,7 +37,9 @@ pub fn draw(model: *const desktop.model.Model, frame: Frame, light: bool) !void 
     const key_y: f32 = 26;
     const bounds: desktop.physical_view.Rect = .{ .x = 20, .y = key_y, .w = @max(0, rect.w - 40), .h = @max(0, rect.h - key_y - 25) };
     if (bounds.w == 0 or bounds.h == 0) return;
-    const keys = try desktop.physical_view.plan(output, frame.geometry, frame.labels, frame.layer, frame.modifiers, bounds, .{ .pressed = frame.pressed, .active_layers = frame.active_layers });
+    const neutral = try dvui.currentWindow().arena().alloc(bool, frame.labels.key_count);
+    @memset(neutral, false);
+    const keys = try desktop.physical_view.plan(output, frame.geometry, frame.labels, frame.layer, frame.modifiers, bounds, .{ .pressed = if (frame.practicing and frame.assistance != .guided) neutral else frame.pressed, .active_layers = frame.active_layers });
     if (keys.len == 0) ui.label(theme, "Physical geometry unavailable", .{ .x = 20, .y = 100, .w = 600, .h = 30 }, 16);
     for (keys) |key| {
         const caption = key.content.caption orelse key.content.label orelse key.content.icon_name;

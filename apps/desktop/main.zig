@@ -24,8 +24,37 @@ const Fixture = struct {
     pub fn keyToText(self: *@This(), input: zkeymap.KeyCodeFire) zkeymap.TextResult {
         var result: zkeymap.TextResult = .{};
         if (input.tap_keycode >= 4 and input.tap_keycode <= 29) {
-            result.data[0] = (if (self.alternate) @as(u8, 'A') else @as(u8, 'a')) + input.tap_keycode - 4;
+            result.data[0] = (if (self.alternate or input.tap_modifiers.toByte() & 0x22 != 0) @as(u8, 'A') else @as(u8, 'a')) + input.tap_keycode - 4;
             result.len = 1;
+        }
+        if (result.len == 0) {
+            const shifted = input.tap_modifiers.toByte() & 0x22 != 0;
+            if (input.tap_keycode >= 30 and input.tap_keycode <= 39) {
+                result.data[0] = (if (shifted) "!@#$%^&*()" else "1234567890")[input.tap_keycode - 30];
+                result.len = 1;
+            } else {
+                const value: u8 = switch (input.tap_keycode) {
+                    40 => '\n',
+                    43 => '\t',
+                    44 => ' ',
+                    45 => if (shifted) '_' else '-',
+                    46 => if (shifted) '+' else '=',
+                    47 => if (shifted) '{' else '[',
+                    48 => if (shifted) '}' else ']',
+                    49 => if (shifted) '|' else '\\',
+                    51 => if (shifted) ':' else ';',
+                    52 => if (shifted) '"' else '\'',
+                    53 => if (shifted) '~' else '`',
+                    54 => if (shifted) '<' else ',',
+                    55 => if (shifted) '>' else '.',
+                    56 => if (shifted) '?' else '/',
+                    else => 0,
+                };
+                if (value != 0) {
+                    result.data[0] = value;
+                    result.len = 1;
+                }
+            }
         }
         return result;
     }
@@ -229,6 +258,8 @@ pub fn main(init: std.process.Init) !void {
     const preview_companion = args.len == 2 and std.mem.eql(u8, args[1], "--light-companion");
     const light = args.len == 2 and (std.mem.eql(u8, args[1], "--light") or preview_tutor or preview_companion);
     var practice_fixture = false;
+    var rundown_fixture = false;
+    const native_rundown = args.len == 3 and std.mem.eql(u8, args[1], "--native-rundown-frames");
     var draft_fixture = false;
     var build_fixture = false;
     var companion_fixture = false;
@@ -251,12 +282,13 @@ pub fn main(init: std.process.Init) !void {
             if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
         } else {
             practice_fixture = std.mem.eql(u8, args[1], "--offline-practice-frames");
+            rundown_fixture = native_rundown or std.mem.eql(u8, args[1], "--offline-rundown-frames");
             companion_fixture = std.mem.eql(u8, args[1], "--offline-companion-frames");
             native_tray_fixture = std.mem.eql(u8, args[1], "--native-tray-frames");
             source_refresh_fixture = std.mem.eql(u8, args[1], "--offline-source-refresh-frames");
-            if (!practice_fixture and !draft_fixture and !build_fixture and !companion_fixture and !native_tray_fixture and !source_refresh_fixture and !std.mem.eql(u8, args[1], "--offline-frames")) return error.Usage;
+            if (!rundown_fixture and !practice_fixture and !draft_fixture and !build_fixture and !companion_fixture and !native_tray_fixture and !source_refresh_fixture and !std.mem.eql(u8, args[1], "--offline-frames")) return error.Usage;
             frame_limit = try std.fmt.parseInt(usize, args[2], 10);
-            const minimum_frames: usize = if (companion_fixture) 9 else if (practice_fixture or native_tray_fixture or source_refresh_fixture) 3 else if (build_fixture) 2 else 1;
+            const minimum_frames: usize = if (rundown_fixture) 20 else if (companion_fixture) 9 else if (practice_fixture or native_tray_fixture or source_refresh_fixture) 3 else if (build_fixture) 2 else 1;
             const maximum_frames: usize = if (build_fixture) 30_000 else if (draft_fixture) 1000 else 100;
             if (frame_limit.? < minimum_frames or frame_limit.? > maximum_frames) return error.InvalidFrameLimit;
             if (build_fixture) {
@@ -272,7 +304,7 @@ pub fn main(init: std.process.Init) !void {
                 if (!std.fs.path.isAbsolute(args[3])) return error.AbsoluteRunnerManifestRequired;
                 draft_manifest = args[3];
             }
-            if (native_tray_fixture) {
+            if (native_tray_fixture or native_rundown) {
                 if (std.c.getenv("SDL_VIDEODRIVER")) |driver| if (std.mem.eql(u8, std.mem.span(driver), "dummy")) return error.NativeVideoRequired;
             } else {
                 const driver = std.c.getenv("SDL_VIDEODRIVER") orelse return error.DummyVideoRequired;
@@ -390,10 +422,15 @@ pub fn main(init: std.process.Init) !void {
     var chooser: desktop.folder_selection.State = .{};
     var exported: ?[32]u8 = null;
     var count: usize = 0;
-    var practicing = practice_fixture or draft_fixture or preview_tutor;
+    var practicing = practice_fixture or rundown_fixture or draft_fixture or preview_tutor;
     var practice = desktop.practice_controller.Controller.init(try model.id());
     if (practice_fixture) _ = try practice.dispatch(practice.action(.{ .start = true }), null, 0);
     var practice_view: tutor.View = .{};
+    if (frame_limit == null) try std.Io.randomSecure(init.io, std.mem.asBytes(&practice.seed));
+    var practice_history = try desktop.practice_history_runtime.Runtime.init(gpa, init.io, if (user_paths) |owned| owned.paths.data else null);
+    defer practice_history.deinit();
+    var practice_history_loaded = false;
+
     var interrupted = false;
     var fonts_installed = false;
     var owner_generation: u64 = 1;
@@ -435,7 +472,7 @@ pub fn main(init: std.process.Init) !void {
             for (driver.signal_events[0..driver.signal_event_count]) |signal| {
                 std.log.debug("Live overlay signal {t} pressed={any}; latched={any} held={any} visible={any}", .{ signal.kind, signal.pressed, visibility.latched, visibility.held, life.companion_visible });
             }
-            if (!life.companion_visible) if (companion_window) |id| if (Backend.c.SDL_GetWindowFromID(id)) |child_window| {
+            if (!life.companion_visible or (practicing and practice.config.assistance == .hidden)) if (companion_window) |id| if (Backend.c.SDL_GetWindowFromID(id)) |child_window| {
                 _ = Backend.c.SDL_HideWindow(child_window);
             };
         }
@@ -878,7 +915,7 @@ pub fn main(init: std.process.Init) !void {
         errdefer if (!ended) {
             _ = window.end(.{ .manage_backend = frame_limit == null }) catch {};
         };
-        if (!fonts_installed and frame_limit == null) {
+        if (!fonts_installed and (frame_limit == null or native_rundown)) {
             try @import("editor-fonts").install(gpa, init.io);
             fonts_installed = true;
         }
@@ -919,29 +956,177 @@ pub fn main(init: std.process.Init) !void {
         const can_build = if (build_plan) |plan| !jobs.busy() and std.mem.eql(u8, &plan.config.board_id, &model.board.id) and std.mem.eql(u8, plan.config.build_board, board.entry.selector) else false;
         const build_status: []const u8 = if (jobs.build != null) "Building" else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id()))) "Built snapshot" else "Build outdated") else if (build_plan != null) "Prepared inputs selected" else "Build environment not selected";
         view.callback.busy = jobs.busy();
+        practice_history.poll();
+        const use_practice_live = practice.config.source == .os and live_frame.labels != null and !live_frame.stale;
+        const practice_labels = if (use_practice_live) &running_captions.labels else &captions.labels;
+        const practice_geometry = if (use_practice_live) running_board.entry.geometry else board.entry.geometry;
+        const practice_model = if (use_practice_live) &running_model else &model;
+        const practice_identity = try project.snapshot.identity(gpa, practice_model.current.snapshot, practice_model.board);
+        var behavior_hash = std.crypto.hash.sha2.Sha256.init(.{});
+        behavior_hash.update(&practice_identity.board_id);
+        behavior_hash.update(&practice_identity.digest);
+        const source_name = if (source) |*active| active.id() else "Offline fixture";
+        const mapping_name = if (source) |*active| try std.fmt.allocPrint(window.arena(), "{s}/{s}", .{ active.id(), active.layoutId() }) else "Offline fixture";
+        practice.cohort.behavior = behavior_hash.finalResult();
+        practice.cohort.mapping = desktop.practice_context.mapping(practice_labels, mapping_name);
+        practice.cohort.verified = (use_practice_live or practice.config.source == .draft) and if (source) |*active| active.hasActiveLayout() else false;
+        if (frame_limit != null and count == 1 and practice.active) {
+            practice.captured_cohort.behavior = practice.cohort.behavior;
+            practice.captured_cohort.mapping = practice.cohort.mapping;
+            practice.captured_cohort.verified = practice.cohort.verified;
+        }
+        if (practice.active and practice.session.state != .complete and
+            (!std.mem.eql(u8, &practice.cohort.behavior, &practice.captured_cohort.behavior) or
+                !std.mem.eql(u8, &practice.cohort.mapping, &practice.captured_cohort.mapping) or
+                practice.cohort.verified != practice.captured_cohort.verified) and practice.generation != 0)
+        {
+            practice.session.scored = false;
+            applyPractice(&draft_runtime, &practice, practice.pause(now_us), built_runner, &model, &view, now_us);
+            practice.failure = error.PracticeContextChanged;
+        }
+        const practice_metadata = try window.arena().alloc(desktop.practice.KeyMetadata, practice_labels.key_count);
+        @memset(practice_metadata, .{});
+        for (practice_geometry) |key| practice_metadata[key.key_index] = .{ .hand = @fromBackingInt(@backingInt(key.hand)), .thumb = key.group == .thumb, .home_row = key.home_row };
+        var hand_coverage: desktop.practice_generator.HandCoverage = .{};
+        for ('A'..'Z' + 1) |capital| {
+            if (try desktop.practice.hint(practice_labels.practiceLabels(), 0, 0, @intCast(capital), 1)) |route| {
+                switch (practice_metadata[route.key].hand) {
+                    .left => hand_coverage.left[capital - 'A'] = true,
+                    .right => hand_coverage.right[capital - 'A'] = true,
+                    .neutral => {},
+                }
+            }
+        }
+        practice.normal_coverage = if (std.mem.indexOfScalar(bool, &hand_coverage.left, true) != null and std.mem.indexOfScalar(bool, &hand_coverage.right, true) != null) hand_coverage else null;
+        const practice_pressed = try window.arena().alloc(bool, practice_labels.key_count);
+        @memset(practice_pressed, false);
+        if (use_practice_live and live_frame.pressed.len == practice_pressed.len) @memcpy(practice_pressed, live_frame.pressed) else if (draft_runtime.owner) |runner| if (runner.pressed.len == practice_pressed.len) {
+            @memcpy(practice_pressed, runner.pressed);
+        };
+        const practice_frame: tutor.Frame = .{
+            .source = if (use_practice_live) .live else if (draft_runtime.owner != null) .simulated else .draft,
+            .labels = practice_labels,
+            .geometry = practice_geometry,
+            .metadata = practice_metadata,
+            .profile = practice_model.document().name,
+            .layer = if (use_practice_live) live_frame.layer else if (draft_runtime.owner != null) draft_runtime.highest_layer else 0,
+            .active_layers = if (use_practice_live) live_frame.active else if (draft_runtime.owner != null) draft_runtime.active_layers else 1,
+            .modifiers = if (use_practice_live) live_frame.modifiers else @bitCast(draft_runtime.modifiers),
+            .pressed = practice_pressed,
+        };
+        if (rundown_fixture and count % 2 == 1) {
+            const scene = (count + 1) / 2;
+            if (scene == 1) {
+                practice.config = .{ .preset = .mixed_case, .level = 0 };
+                _ = try practice.start(true, null, now_us);
+                view.toolbar.light = true;
+            } else if (scene == 2) {
+                practice.config = .{ .preset = .punctuation, .level = 1 };
+                _ = try practice.start(true, null, now_us);
+                for (practice.session.reference[0..practice.session.reference_len], 0..) |cp, index| {
+                    if (index % 17 == 0 or cp == ';' or cp == '"') {
+                        try practice.session.insert("x", now_us + index * 120_000, false);
+                        practice.session.backspace();
+                    }
+                    var bytes: [4]u8 = undefined;
+                    const n = try std.unicode.utf8Encode(cp, &bytes);
+                    try practice.session.insert(bytes[0..n], now_us + index * 120_000, false);
+                }
+                practice_view.rundown.selected = ';';
+            } else if (scene == 3) {
+                const record = practice.completed.?;
+                for (record.stats[0..record.stat_count]) |stat| if (stat.cp == ';' and stat.route_count > 0) {
+                    practice_view.rundown.layer = stat.routes[0].layer;
+                    practice_view.rundown.variant = 0;
+                };
+                practice_view.rundown.selected = ';';
+            } else if (scene == 4) {
+                view.toolbar.light = false;
+            } else if (scene == 5) {
+                practice.config.targets = .{ 'e', 'a', 't', 0, 0 };
+                practice.config.target_count = 3;
+                _ = try practice.start(true, null, now_us);
+            } else if (scene == 6) {
+                for (practice.session.reference[0..practice.session.reference_len], 0..) |cp, index| {
+                    var bytes: [4]u8 = undefined;
+                    const n = try std.unicode.utf8Encode(cp, &bytes);
+                    try practice.session.insert(bytes[0..n], now_us + index * 120_000, false);
+                }
+            } else if (scene == 7) {
+                practice_view.rundown.scope = 1;
+                practice_history.cohort = practice.completed.?.cohort;
+                practice_history.data = .{};
+                practice_history.data.requested_id = practice.completed.?.id;
+                practice_history.data.contains_requested = true;
+                for (0..12) |_| try practice_history.data.all.add(&practice.completed.?);
+                for (0..10) |_| try practice_history.data.recent.add(&practice.completed.?);
+            } else if (scene == 8) {
+                practice.config.target_count = 0;
+                practice.config.assistance = .layout_only;
+                _ = try practice.start(true, null, now_us);
+            } else if (scene == 9) {
+                practice.config.assistance = .hidden;
+                _ = try practice.start(true, null, now_us);
+                if (!Backend.c.SDL_SetWindowSize(native.window, 820, 700)) return error.PracticeFixtureResize;
+            } else if (scene == 10) {
+                practice.config.assistance = .guided;
+                _ = try practice.start(true, null, now_us);
+                try practice.session.load("a;A", .os);
+                try practice.session.insert("a;A", now_us + 1_000_000, false);
+            }
+        }
+        if (practice.session.state == .complete and practice.completed == null) {
+            var record = try desktop.practice_results.capture(&practice.session, practice.captured_cohort, if (std.mem.eql(u8, &practice.cohort.mapping, &practice.captured_cohort.mapping)) practice_labels.practiceLabels() else null);
+            try std.Io.randomSecure(init.io, &record.id);
+            record.timestamp = @intCast(std.Io.Clock.real.now(init.io).toSeconds());
+            record.seed = practice.exercise_seed;
+            record.target_count = practice.captured_config.target_count;
+            record.targets = practice.captured_config.targets;
+            const profile_name = practice_model.document().name;
+            @memcpy(record.profile[0..@min(profile_name.len, record.profile.len - 1)], profile_name[0..@min(profile_name.len, record.profile.len - 1)]);
+            @memcpy(record.input_source[0..@min(source_name.len, record.input_source.len - 1)], source_name[0..@min(source_name.len, record.input_source.len - 1)]);
+            practice.completed = record;
+            if (!rundown_fixture) practice_history.enqueue(record) catch |err| {
+                practice_history.error_value = err;
+            };
+        }
+        const history_cohort = if (practice_view.rundown.reviewed) |record| record.cohort else if (practice.completed) |record| record.cohort else practice.configCohort();
+        const requested_history = practice_view.rundown.refresh or practice_view.rundown.retry or practice_view.rundown.clear;
+        if (practice_history.worker == null and (practice_history.error_value == null or practice_view.rundown.retry) and (practice_history.queued > 0 or requested_history or (practicing and !rundown_fixture and (!practice_history_loaded or !std.meta.eql(history_cohort, practice_history.cohort))))) {
+            practice_history.request(history_cohort, practice_view.rundown.before, practice_view.rundown.clear, practice_view.rundown.retry, if (practice_view.rundown.reviewed) |record| record.id else if (practice.completed) |record| record.id else null) catch |err| {
+                practice_history.error_value = err;
+            };
+            practice_history_loaded = true;
+            practice_view.rundown.refresh = false;
+            practice_view.rundown.retry = false;
+            practice_view.rundown.clear = false;
+        }
         var leave_practice = false;
         var practice_action: ?desktop.practice_controller.Action = null;
+        var practice_input_effect: desktop.practice_controller.Effect = .{};
         var rendered = if (practicing) tutor_frame: {
             const theme = ui.Theme.get(view.toolbar.light);
             const canvas = dvui.box(@src(), .{}, .{ .expand = .both, .padding = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
             defer canvas.deinit();
             leave_practice = ui.button(theme, "Back to editor", "practice.back", .{ .x = 24, .y = 12, .w = 160, .h = 36 });
-            const pressed = try window.arena().alloc(bool, model.selected.len);
-            @memset(pressed, false);
-            if (draft_runtime.owner) |runner| if (runner.pressed.len == pressed.len) @memcpy(pressed, runner.pressed);
             const input: tutor.Input = .{
                 .now_us = now_us,
                 .window_focused = frame_limit != null or Backend.c.SDL_GetWindowFlags(native.window) & Backend.c.SDL_WINDOW_INPUT_FOCUS != 0,
                 .owns_input = true,
                 .fixture = frame_limit != null,
                 .diagnostic = std.mem.sliceTo(&view.diagnostic, 0),
-                .frame = .{ .source = .draft, .labels = &captions.labels, .geometry = board.entry.geometry, .profile = document.name, .layer = if (draft_runtime.owner != null) draft_runtime.highest_layer else model.layer, .active_layers = if (draft_runtime.owner != null) draft_runtime.active_layers else 1 | (@as(u16, 1) << @intCast(model.layer)), .modifiers = @bitCast(draft_runtime.modifiers), .pressed = pressed },
+                .frame = if (practice.config.source == .os and live_enabled and !use_practice_live) null else practice_frame,
+                .history = &practice_history.data,
+                .history_cohort = practice_history.cohort,
+                .history_saving = practice_history.worker != null,
+                .history_failure = practice_history.error_value,
             };
             const drawn = tutor.draw(&practice, &practice_view, theme, .{ .x = 24, .y = 64, .w = @max(300, window.data().rect.w - 48), .h = @max(300, window.data().rect.h - 88) }, input) catch |err| failed: {
                 view.report(err);
                 break :failed tutor.DrawResult{};
             };
             practice_action = drawn.action;
+            practice_input_effect = drawn.input_effect;
             break :tutor_frame editor.Result{ .effect = .none };
         } else if (!life.editor_visible) editor.Result{ .effect = .none } else editor.draw(&view, &owner, &model, .{
             .toolbar = .{ .board_name = board.entry.selector, .connection = switch (liveStatus(if (live) |*driver| driver else null, live_frame)) {
@@ -966,10 +1151,10 @@ pub fn main(init: std.process.Init) !void {
             rendered = .{ .effect = try owner.request(&model, try desktop.editor_dispatch.Request.capture(&model, .build)) };
         }
         if (live_enabled and (live_frame.labels == null or live_frame.stale)) life.companion_visible = false;
-        if (!life.companion_visible) if (companion_window) |id| if (Backend.c.SDL_GetWindowFromID(id)) |child_window| {
+        if (!life.companion_visible or (practicing and practice.config.assistance == .hidden)) if (companion_window) |id| if (Backend.c.SDL_GetWindowFromID(id)) |child_window| {
             _ = Backend.c.SDL_HideWindow(child_window);
         };
-        if (life.companion_visible) {
+        if (life.companion_visible and (!practicing or practice.config.assistance != .hidden)) {
             // Child creation inherits this flag from the backend's saved options.
             // The editor's existing native window remains opaque.
             const parent_transparent = native.init_opts_save.?.transparent;
@@ -995,7 +1180,8 @@ pub fn main(init: std.process.Init) !void {
                 .pressed = if (live_enabled) live_frame.pressed else held,
                 .live = live_enabled,
                 .active_layers = if (live_enabled) live_frame.active else null,
-                .practicing = draft_runtime.owner != null,
+                .practicing = practicing,
+                .assistance = practice.config.assistance,
             }, view.toolbar.light) catch |err| {
                 view.report(err);
             };
@@ -1029,14 +1215,26 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = life.companion_visible });
+        if (rundown_fixture) {
+            if (dvui.tagGet(if (practice.completed != null) "practice.rundown" else "practice.word") == null) return error.PracticeRundownNotDrawn;
+            if (practice.config.assistance == .hidden and practice_view.drawn_keyboard) return error.HiddenPracticeKeyboardVisible;
+        }
         const delay = try window.end(.{ .manage_backend = frame_limit == null });
+        if (rundown_fixture) {
+            try std.Io.Dir.cwd().createDirPath(init.io, ".zig-cache/typing-practice-gallery");
+            const surface = Backend.c.SDL_RenderReadPixels(native.renderer, null) orelse return error.PracticeScreenshotRead;
+            defer Backend.c.SDL_DestroySurface(surface);
+            const file = try std.fmt.allocPrintSentinel(window.arena(), ".zig-cache/typing-practice-gallery/{d}.bmp", .{count}, 0);
+            if (!Backend.c.SDL_SaveBMP(surface, file)) return error.PracticeScreenshotSave;
+        }
         ended = true;
         if (frame_limit != null) native.renderPresent();
+        applyPractice(&draft_runtime, &practice, practice_input_effect, built_runner, &model, &view, now_us);
         if (leave_practice) {
             applyPractice(&draft_runtime, &practice, practice.pause(now_us), built_runner, &model, &view, now_us);
             practicing = false;
         } else if (practice_action) |action| {
-            const effect = tutor.apply(&practice, &practice_view, action, .{ .now_us = now_us }) catch |err| failed: {
+            const effect = tutor.apply(&practice, &practice_view, action, .{ .now_us = now_us, .prepared_snapshot = if (built_runner) |runner| runner.record.inputs.project_digest else null }) catch |err| failed: {
                 view.report(err);
                 break :failed desktop.practice_controller.Effect{};
             };

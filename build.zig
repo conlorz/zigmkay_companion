@@ -28,6 +28,15 @@ pub fn build(b: *std.Build) void {
     const flash_presenter = b.addModule("flash-presenter", .{ .root_source_file = b.path("packages/desktop/src/flash_presenter.zig"), .target = b.graph.host, .imports = &.{.{ .name = "flash-controller", .module = flash_controller }} });
     const desktop_geometry = b.addModule("desktop-geometry", .{ .root_source_file = b.path("packages/desktop/src/geometry.zig") });
     const desktop_tests_step = b.step("test-desktop-core", "Validate practice and explicit flash intents without GUI or devices");
+    for ([_][]const u8{ "practice_generator.zig", "practice_results.zig", "practice_history.zig", "practice_history_runtime.zig" }) |name| {
+        const practice_tests = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("packages/desktop/src/{s}", .{name})),
+            .target = b.graph.host,
+        }) });
+        desktop_tests_step.dependOn(&b.addRunArtifact(practice_tests).step);
+        check.dependOn(&practice_tests.step);
+    }
+
     for ([_][]const u8{ "practice.zig", "practice_view.zig", "practice_controller.zig", "try_state.zig", "flash_controller.zig", "auto_build.zig", "geometry.zig", "encoder_state.zig" }) |file| {
         const desktop_test = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("packages/desktop/src/{s}", .{file})),
@@ -700,6 +709,12 @@ pub fn build(b: *std.Build) void {
                 practice_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
                 practice_fixture.setEnvironmentVariable("SDL_RENDER_DRIVER", "software");
                 b.step("test-desktop-practice", "Route injected OS text through bounded dummy/software tutor frames").dependOn(&practice_fixture.step);
+                const rundown_fixture = b.addRunArtifact(app);
+                rundown_fixture.addArgs(&.{ "--offline-rundown-frames", "20" });
+                rundown_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
+                rundown_fixture.setEnvironmentVariable("SDL_RENDER_DRIVER", "software");
+                const rundown_step = b.step("test-desktop-rundown", "Exercise tutor results, scope variants and assistance; capture offline screenshots in cache");
+                rundown_step.dependOn(&rundown_fixture.step);
                 const companion_fixture = b.addRunArtifact(app);
                 companion_fixture.addArgs(&.{ "--offline-companion-frames", "9" });
                 companion_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");

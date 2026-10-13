@@ -37,13 +37,7 @@ pub fn focusWord(s: *const practice.Session, active: bool, t: ui.Theme, bounds: 
     }
     if (s.state == .complete) {
         caption("Exercise complete", .{ .x = 0, .y = 8, .w = bounds.w, .h = bounds.h - 36 }, @min(44, bounds.h * 0.5), ui.color(0x36A77C), null);
-        var worst: usize = 0;
-        for (s.errors[0..s.reference_len], 0..) |count, i| if (count > s.errors[worst]) {
-            worst = i;
-        };
-        var bytes: [4]u8 = undefined;
-        const result = if (s.reference_len > 0 and s.errors[worst] > 0) std.fmt.allocPrint(dvui.currentWindow().arena(), "Most troublesome: «{s}» · {d} mistakes · try again or start a new exercise", .{ view.glyph(s.reference[worst], true, &bytes), s.errors[worst] }) catch "Start again or try a new exercise" else "Start again or try a new exercise";
-        caption(result, .{ .x = 0, .y = bounds.h - 34, .w = bounds.w, .h = 28 }, 16, t.muted, null);
+        caption("Your character rundown is ready", .{ .x = 0, .y = bounds.h - 34, .w = bounds.w, .h = 28 }, 16, t.muted, null);
         return;
     }
     const range = view.word(s.reference[0..s.reference_len], focus);
