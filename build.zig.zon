@@ -1,0 +1,29 @@
+.{
+    .name = .zigmkay_companion,
+    .version = "0.1.0",
+    .fingerprint = 0xf34c18ab8685e700,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .freetype = .{
+            .url = "git+https://github.com/david-vanderson/freetype#4938878b58e8481bc11ac52d6fe10a7cf6c3c7d5",
+            .hash = "freetype-2.14.1-alzUkceCqgDRZIP8PnxnNCd8jwfbwY0k1VhlTV2O5Ivo",
+            .lazy = true,
+        },
+        .sdl3 = .{
+            .url = "git+https://github.com/allyourcodebase/SDL#0a9d5c36488aad32fcf989d465eb879db6e356b4",
+            .hash = "sdl-1.0.3+3.4.16-i4QD0e0HqgDYP8m4T3rMJShyaDLy8ksp8qzCrCSncaPB",
+            .lazy = true,
+        },
+        .microzig = .{
+            .url = "https://github.com/ZigEmbeddedGroup/microzig/releases/download/0.17.12/microzig.tar.gz",
+            .hash = "microzig-0.17.12-D20YSbDKAAA_aWCmmydsldbUrhmCUzNFqseEIAE4__5g",
+            .lazy = true,
+        },
+        .zigmkay_firmware = .{
+            .url = "git+https://github.com/EuroZig/zigmkay_firmware.git#ba67fda557e2dffb4b86fba797ce2d2bd57fa9a4",
+            .hash = "zigmkay_firmware-0.1.0-EZ4qw7A3PwDa4i6OQYIg4wcVJpsXfyNSr2BvLXDawttF",
+            .lazy = true,
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "mise.toml", "AGENTS.md", "README.md", "LICENSE", "NOTICE", "compatibility", "tests", "packages", "tools", "apps" },
+}

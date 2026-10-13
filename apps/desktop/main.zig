@@ -1,0 +1,1236 @@
+//! Native editor/companion startup monitors HID by default. Explicit offline
+//! modes and fixtures avoid devices; flashing and acquisition remain explicit.
+const std = @import("std");
+const dvui = @import("dvui");
+const Backend = @import("dvui_backend");
+const desktop = @import("desktop-core");
+const project = @import("project");
+const boards = @import("catalog-project");
+const editor = @import("editor-frame-ui");
+const paths = @import("paths-ui");
+const callbacks = @import("callback-ui");
+const dialog = @import("folder-dialog");
+const Source = @import("input-source").Source;
+const installed = @import("app-paths");
+const tutor = @import("practice-ui");
+const ui = @import("editor-ui");
+const tray_backend = @import("native-tray");
+const companion_ui = @import("companion-ui");
+const zkeymap = @import("zkeymap");
+const LiveDriver = @import("live-adapter").Driver(@import("native-hid").Native(Backend.c));
+const Fixture = struct {
+    alternate: bool = false,
+    pub fn keyToText(self: *@This(), input: zkeymap.KeyCodeFire) zkeymap.TextResult {
+        var result: zkeymap.TextResult = .{};
+        if (input.tap_keycode >= 4 and input.tap_keycode <= 29) {
+            result.data[0] = (if (self.alternate) @as(u8, 'A') else @as(u8, 'a')) + input.tap_keycode - 4;
+            result.len = 1;
+        }
+        return result;
+    }
+};
+const Events = struct {
+    root: u32,
+    close: bool = false,
+    quit: bool = false,
+    lost_focus: bool = false,
+    draft: ?*desktop.runner_runtime.Runtime = null,
+    practice: ?*desktop.practice_controller.Controller = null,
+    model: ?*desktop.model.Model = null,
+    view: ?*editor.View = null,
+    now_us: u64 = 0,
+    pub fn raw(self: *Events, event: Backend.c.SDL_Event) !bool {
+        if (event.type == Backend.c.SDL_EVENT_QUIT) {
+            self.quit = true;
+            return true;
+        }
+        if (event.type == Backend.c.SDL_EVENT_WINDOW_CLOSE_REQUESTED and event.window.windowID == self.root) {
+            self.close = true;
+            return true;
+        }
+        if (event.type == Backend.c.SDL_EVENT_WINDOW_FOCUS_LOST and event.window.windowID == self.root) self.lost_focus = true;
+        if (self.draft) |runtime| if (self.practice) |practice| if (self.model) |model| if (@import("native-draft-input").convert(&event)) |converted| {
+            const consumed = runtime.route(practice, model, converted, self.now_us) catch |err| failed: {
+                runtime.fail(practice, err, self.now_us);
+                if (self.view) |view| view.report(err);
+                break :failed false;
+            };
+            if (consumed) return true;
+        };
+        return false;
+    }
+};
+const Captions = struct {
+    labels: desktop.label_cache.LabelCache,
+    host: desktop.host_palette.Cache,
+    snapshot: [32]u8,
+    revision: u64,
+    fn init(gpa: std.mem.Allocator, model: *const desktop.model.Model, translator: anytype, identity: []const u8, revision: u64) !Captions {
+        var labels = try desktop.label_cache.buildProjectCache(gpa, translator, model.document());
+        errdefer labels.deinit();
+        var host = try desktop.host_palette.Cache.init(gpa, desktop.labels.running_host, identity, revision, translator);
+        errdefer host.deinit();
+        return .{ .labels = labels, .host = host, .snapshot = try model.id(), .revision = revision };
+    }
+    fn deinit(self: *Captions) void {
+        self.labels.deinit();
+        self.host.deinit();
+    }
+};
+// Build both caches before replacing either one. A source change must never
+// relabel the verified running project with an unsaved editor draft.
+fn refreshRunningCaptions(gpa: std.mem.Allocator, captions: *Captions, running: *const desktop.model.Model, translator: anytype, identity: []const u8, revision: u64) !void {
+    if (captions.revision == revision) return;
+    const replacement = try Captions.init(gpa, running, translator, identity, revision);
+    captions.deinit();
+    captions.* = replacement;
+}
+
+// Read the selected saved project independently of the mutable editor. Build
+// every replacement before releasing the accepted running binding.
+fn loadSavedRunning(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !desktop.model.Model {
+    if (!std.fs.path.isAbsolute(path)) return error.AbsoluteProjectPathRequired;
+    var directory = try std.Io.Dir.cwd().openDir(io, path, .{});
+    defer directory.close(io);
+    const bytes = try directory.readFileAlloc(io, "project.zon", gpa, .limited(project.Limits.document_bytes));
+    defer gpa.free(bytes);
+    const document = try project.parse(gpa, bytes, null);
+    defer project.deinit(gpa, document);
+    var board = try boards.OwnedBoard.fromDocument(gpa, document);
+    defer board.deinit();
+    var loaded = try project.snapshot.load(gpa, io, directory, board.board);
+    defer loaded.deinit();
+    return desktop.model.Model.init(gpa, board.board, loaded.snapshot);
+}
+fn liveStatus(driver: ?*const LiveDriver, frame: desktop.live_keyboard.Frame) desktop.tray_lifecycle.Status {
+    const active = driver orelse return .offline;
+    if (active.session.phase == .incompatible) return .incompatible;
+    if (!active.connected) return if (active.status == .searching) .connecting else .disconnected;
+    if (frame.labels != null and !frame.stale) return .live;
+    return if (active.session.token == 0) .connecting else .stale;
+}
+fn resetLivePresentation(presenter: *desktop.live_keyboard.Presenter, visibility: *desktop.live_keyboard.Visibility, frame: *desktop.live_keyboard.Frame, pressed: []bool, life: *desktop.tray_lifecycle.Lifecycle) void {
+    presenter.invalidate();
+    visibility.* = .{ .mode = visibility.mode };
+    frame.* = .{};
+    @memset(pressed, false);
+    life.companion_visible = false;
+}
+
+fn captureFile(gpa: std.mem.Allocator, io: std.Io, view: *editor.View, model: *desktop.model.Model, action: paths.Action) !desktop.project_files.Request {
+    var selected: ?boards.OwnedBoard = null;
+    defer if (selected) |*board| board.deinit();
+    if (action.kind == .open or action.kind == .open_discard) {
+        try paths.validate(action, view.paths, model);
+        var directory = try std.Io.Dir.cwd().openDir(io, std.mem.sliceTo(&action.project, 0), .{});
+        defer directory.close(io);
+        const bytes = try directory.readFileAlloc(io, "project.zon", gpa, .limited(project.Limits.document_bytes));
+        defer gpa.free(bytes);
+        const document = try project.parse(gpa, bytes, null);
+        defer project.deinit(gpa, document);
+        selected = try boards.OwnedBoard.fromDocument(gpa, document);
+    }
+    return paths.request(action, view.paths, model, if (selected) |board| board.board else null);
+}
+fn fileOperation(gpa: std.mem.Allocator, io: std.Io, view: *editor.View, model: *desktop.model.Model, action: paths.Action) !?[32]u8 {
+    var request = try captureFile(gpa, io, view, model, action);
+    defer request.deinit();
+    var prepared = try request.prepare(gpa, io);
+    defer prepared.deinit();
+    _ = try prepared.promote(model);
+    return prepared.exported;
+}
+const FileJob = struct {
+    worker: *desktop.project_worker.Owner,
+    action: paths.Action,
+    editor_generation: u64,
+    close: ?desktop.editor_dispatch.Request = null,
+};
+const SourceJob = struct { worker: *desktop.source_worker.Owner, action: callbacks.Action, editor_generation: u64 };
+const ProfileJob = struct { worker: *desktop.profile_switch.Worker, action: desktop.editor_dispatch.Request, editor_generation: u64, previous_path: [4096]u8 };
+const BuildJob = struct { worker: *desktop.build_worker.Owner, editor_generation: u64 };
+const Jobs = struct {
+    file: ?FileJob = null,
+    source: ?SourceJob = null,
+    profile: ?ProfileJob = null,
+    build: ?BuildJob = null,
+    fn busy(self: *const Jobs) bool {
+        return self.file != null or self.source != null or self.profile != null or self.build != null;
+    }
+    fn cancel(self: *Jobs) void {
+        if (self.file) |job| job.worker.destroy();
+        if (self.source) |job| job.worker.destroy();
+        if (self.profile) |job| job.worker.destroy();
+        if (self.build) |job| job.worker.destroy();
+        self.* = .{};
+    }
+};
+fn startFile(gpa: std.mem.Allocator, io: std.Io, view: *editor.View, model: *desktop.model.Model, action: paths.Action, generation: u64, editor_generation: u64) !FileJob {
+    var request = try captureFile(gpa, io, view, model, action);
+    errdefer request.deinit();
+    return .{ .worker = try desktop.project_worker.Owner.create(gpa, io, &request, generation), .action = action, .editor_generation = editor_generation };
+}
+fn startBuild(gpa: std.mem.Allocator, io: std.Io, model: *const desktop.model.Model, config: desktop.build_worker.Config, environment: *const std.process.Environ.Map, generation: u64, editor_generation: u64) !BuildJob {
+    var request = try desktop.build_worker.Request.capture(model, config, environment, generation);
+    errdefer request.deinit();
+    return .{ .worker = try desktop.build_worker.Owner.create(gpa, io, &request, generation), .editor_generation = editor_generation };
+}
+fn applyPractice(runtime: *desktop.runner_runtime.Runtime, practice: *desktop.practice_controller.Controller, effect: desktop.practice_controller.Effect, runner: ?desktop.build_worker.Runner, model: *const desktop.model.Model, view: *editor.View, now_us: u64) void {
+    runtime.apply(practice, effect, runner, model, now_us) catch |err| {
+        runtime.fail(practice, err, now_us);
+        view.report(err);
+    };
+}
+fn captureSource(view: *editor.View, model: *desktop.model.Model, action: callbacks.Action) !desktop.source_worker.Request {
+    try callbacks.validate(action, view.callback, model);
+    const path = std.mem.sliceTo(&action.root, 0);
+    if (action.kind == .checkout) return desktop.source_worker.Request.captureCheckout(model, path, action.index);
+    var request = try callbacks.request(action, view.callback, model);
+    errdefer request.deinit();
+    return desktop.source_worker.Request.prepareCallback(&request, path);
+}
+fn installedPaths(init: std.process.Init) !installed.OwnedPaths {
+    const executable = try std.process.executablePathAlloc(init.io, init.gpa);
+    defer init.gpa.free(executable);
+    return installed.resolve(init.gpa, .{
+        .platform = switch (@import("builtin").os.tag) {
+            .macos => .macos,
+            .windows => .windows,
+            .linux => .linux,
+            else => return error.UnsupportedPlatform,
+        },
+        .executable_path = executable,
+        .env = .{ .home = init.environ_map.get("HOME"), .appdata = init.environ_map.get("APPDATA"), .localappdata = init.environ_map.get("LOCALAPPDATA"), .xdg_config_home = init.environ_map.get("XDG_CONFIG_HOME"), .xdg_data_home = init.environ_map.get("XDG_DATA_HOME"), .xdg_cache_home = init.environ_map.get("XDG_CACHE_HOME") },
+    });
+}
+fn remember(gpa: std.mem.Allocator, io: std.Io, user_paths: installed.Paths, view: *editor.View, model: *const desktop.model.Model) !void {
+    var config = try std.Io.Dir.cwd().createDirPathOpen(io, user_paths.config, .{});
+    defer config.close(io);
+    try desktop.startup_project.save(gpa, io, config, std.mem.sliceTo(&view.paths.project, 0));
+    var registry = try desktop.profile_projects.Registry.load(gpa, io, config, null);
+    defer registry.deinit();
+    try registry.set(.{ .board_id = model.document().board_id, .profile_id = model.document().profile_id }, std.mem.sliceTo(&view.paths.project, 0));
+    try registry.save(io, config);
+}
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const args = try init.minimal.args.toSlice(gpa);
+    defer gpa.free(args);
+    var frame_limit: ?usize = null;
+    const background_offline = args.len == 2 and std.mem.eql(u8, args[1], "--background-offline");
+    const offline = background_offline or (args.len == 2 and std.mem.eql(u8, args[1], "--offline"));
+    const background = background_offline or (args.len == 2 and std.mem.eql(u8, args[1], "--background"));
+    const live_hold = (args.len == 2 or args.len == 3) and std.mem.eql(u8, args[1], "--live-hold");
+    const live_toggle = (args.len == 2 or args.len == 3) and std.mem.eql(u8, args[1], "--live-toggle");
+    const live_tap_hold = (args.len == 2 or args.len == 3) and std.mem.eql(u8, args[1], "--live");
+    const explicit_live = live_hold or live_toggle or live_tap_hold;
+    const preview_tutor = args.len == 2 and std.mem.eql(u8, args[1], "--light-tutor");
+    const preview_companion = args.len == 2 and std.mem.eql(u8, args[1], "--light-companion");
+    const light = args.len == 2 and (std.mem.eql(u8, args[1], "--light") or preview_tutor or preview_companion);
+    var practice_fixture = false;
+    var draft_fixture = false;
+    var build_fixture = false;
+    var companion_fixture = false;
+    var native_tray_fixture = false;
+    var source_refresh_fixture = false;
+    var draft_manifest: ?[]const u8 = null;
+    var build_plan: ?desktop.build_worker.Plan = null;
+    defer if (build_plan) |plan| project.owned_zon.free(gpa, plan);
+    if (args.len != 1 and !background and !offline and !light and !explicit_live) {
+        draft_fixture = std.mem.eql(u8, args[1], "--offline-draft-frames");
+        build_fixture = std.mem.eql(u8, args[1], "--offline-build-frames");
+        if (args.len != (if (draft_fixture or build_fixture) @as(usize, 4) else 3)) return error.Usage;
+        if (std.mem.eql(u8, args[1], "--prepared-build-config")) {
+            if (!std.fs.path.isAbsolute(args[2])) return error.AbsoluteBuildConfigRequired;
+            const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[2], gpa, .limited(1024 * 1024));
+            defer gpa.free(bytes);
+            const text = try gpa.dupeSentinel(u8, bytes, 0);
+            defer gpa.free(text);
+            build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
+            if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
+        } else {
+            practice_fixture = std.mem.eql(u8, args[1], "--offline-practice-frames");
+            companion_fixture = std.mem.eql(u8, args[1], "--offline-companion-frames");
+            native_tray_fixture = std.mem.eql(u8, args[1], "--native-tray-frames");
+            source_refresh_fixture = std.mem.eql(u8, args[1], "--offline-source-refresh-frames");
+            if (!practice_fixture and !draft_fixture and !build_fixture and !companion_fixture and !native_tray_fixture and !source_refresh_fixture and !std.mem.eql(u8, args[1], "--offline-frames")) return error.Usage;
+            frame_limit = try std.fmt.parseInt(usize, args[2], 10);
+            const minimum_frames: usize = if (companion_fixture) 9 else if (practice_fixture or native_tray_fixture or source_refresh_fixture) 3 else if (build_fixture) 2 else 1;
+            const maximum_frames: usize = if (build_fixture) 30_000 else if (draft_fixture) 1000 else 100;
+            if (frame_limit.? < minimum_frames or frame_limit.? > maximum_frames) return error.InvalidFrameLimit;
+            if (build_fixture) {
+                if (!std.fs.path.isAbsolute(args[3])) return error.AbsoluteBuildConfigRequired;
+                const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[3], gpa, .limited(1024 * 1024));
+                defer gpa.free(bytes);
+                const text = try gpa.dupeSentinel(u8, bytes, 0);
+                defer gpa.free(text);
+                build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
+                if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
+            }
+            if (draft_fixture) {
+                if (!std.fs.path.isAbsolute(args[3])) return error.AbsoluteRunnerManifestRequired;
+                draft_manifest = args[3];
+            }
+            if (native_tray_fixture) {
+                if (std.c.getenv("SDL_VIDEODRIVER")) |driver| if (std.mem.eql(u8, std.mem.span(driver), "dummy")) return error.NativeVideoRequired;
+            } else {
+                const driver = std.c.getenv("SDL_VIDEODRIVER") orelse return error.DummyVideoRequired;
+                if (!std.mem.eql(u8, std.mem.span(driver), "dummy")) return error.DummyVideoRequired;
+            }
+        }
+    }
+    const live_enabled = explicit_live or (!offline and !light and frame_limit == null);
+    if (frame_limit != null and live_enabled) return error.OfflineFixtureOpenedLiveMode;
+    std.log.info("Keyboard monitoring: {s}", .{if (live_enabled) "enabled" else "offline"});
+    var template = try project.profiles.create(gpa, if (draft_fixture) .eurkey else .qwerty);
+    defer template.deinit();
+    var model = try desktop.model.Model.init(gpa, project.profiles.board, template.snapshot);
+    defer model.deinit();
+    var owner = try desktop.editor_dispatch.State.init(&model);
+    defer owner.deinit();
+    var view: editor.View = .{};
+    view.toolbar.light = light;
+    var registry = desktop.profile_projects.Registry.init(gpa);
+    defer registry.deinit();
+    var user_paths: ?installed.OwnedPaths = null;
+    defer if (user_paths) |*owned| owned.deinit();
+    if (frame_limit == null) {
+        user_paths = installedPaths(init) catch |err| unavailable: {
+            view.report(err);
+            break :unavailable null;
+        };
+        if (user_paths) |owned| {
+            const default_path = try std.fs.path.join(gpa, &.{ owned.paths.projects, "qwerty" });
+            defer gpa.free(default_path);
+            if (default_path.len >= view.paths.project.len) return error.InvalidProjectPath;
+            @memcpy(view.paths.project[0..default_path.len], default_path);
+            const export_path = try std.fs.path.join(gpa, &.{ owned.paths.builds, "export" });
+            defer gpa.free(export_path);
+            if (export_path.len >= view.paths.exported.len) return error.InvalidProjectPath;
+            @memcpy(view.paths.exported[0..export_path.len], export_path);
+            // Startup reads existing preferences only; missing/corrupt/future data
+            // never triggers a default preference or project write.
+            const config = std.Io.Dir.cwd().openDir(init.io, owned.paths.config, .{}) catch |err| unavailable: {
+                if (err != error.FileNotFound) view.report(err);
+                break :unavailable null;
+            };
+            if (config) |directory| {
+                defer directory.close(init.io);
+                const associated = desktop.profile_projects.Registry.load(gpa, init.io, directory, null) catch |err| unavailable: {
+                    view.report(err);
+                    break :unavailable null;
+                };
+                if (associated) |loaded_registry| {
+                    registry.deinit();
+                    registry = loaded_registry;
+                }
+                const remembered = desktop.startup_project.load(gpa, init.io, directory) catch |err| unavailable: {
+                    view.report(err);
+                    break :unavailable null;
+                };
+                if (remembered) |path| {
+                    defer gpa.free(path);
+                    view.paths.project = @splat(0);
+                    @memcpy(view.paths.project[0..path.len], path);
+                    _ = fileOperation(gpa, init.io, &view, &model, view.paths.action(try model.id(), .open)) catch |err| unavailable: {
+                        view.report(err);
+                        break :unavailable null;
+                    };
+                    try owner.sync(&model);
+                }
+            }
+        }
+    }
+    if (explicit_live and args.len == 3) {
+        if (!std.fs.path.isAbsolute(args[2]) or args[2].len >= view.paths.project.len) return error.AbsoluteProjectPathRequired;
+        view.paths.project = @splat(0);
+        @memcpy(view.paths.project[0..args[2].len], args[2]);
+        _ = try fileOperation(gpa, init.io, &view, &model, view.paths.action(try model.id(), .open));
+        try owner.sync(&model);
+    }
+    var source: ?Source = if (frame_limit == null) Source.init() else null;
+    defer if (source) |*active| active.deinit();
+    var fixture: Fixture = .{};
+    var revision: u64 = 1;
+    var captions = if (source) |*active| try Captions.init(gpa, &model, active, active.id(), revision) else try Captions.init(gpa, &model, &fixture, "Offline launch fixture", revision);
+    defer captions.deinit();
+    var native = try Backend.initWindow(.{ .io = init.io, .size = if (frame_limit != null) .{ .w = 1536, .h = 1024 } else .{ .w = desktop.geometry.initial.w, .h = desktop.geometry.initial.h }, .min_size = .{ .w = desktop.geometry.minimum.w, .h = desktop.geometry.minimum.h }, .title = "Zigmkay Editor", .vsync = true, .hidden = frame_limit != null or background, .persist_window_geometry = false });
+    defer native.deinit();
+    var window = try dvui.Window.init(@src(), gpa, native.backend(), .{});
+    defer window.deinit();
+    var tray = tray_backend.NativeTray.init(.{ .allocator = gpa }, frame_limit == null or native_tray_fixture);
+    defer tray.deinit();
+    if (native_tray_fixture and !tray.installed) return error.NativeTrayUnavailable;
+    if (background and !tray.installed) return error.BackgroundTrayUnavailable;
+    var life = desktop.tray_lifecycle.Lifecycle{ .resident = tray.installed or companion_fixture, .editor_visible = !background, .companion_visible = preview_companion };
+    var companion_window: ?u32 = null;
+    var companion_view: companion_ui.View = .{};
+    // Freeze the startup project independently of all later editor mutations.
+    var running_model = try desktop.model.Model.init(gpa, model.board, model.current.snapshot);
+    defer running_model.deinit();
+    var running_captions = if (source) |*active| try Captions.init(gpa, &running_model, active, active.id(), revision) else try Captions.init(gpa, &running_model, &fixture, "Offline live fixture", revision);
+    defer running_captions.deinit();
+    var running_board = try boards.OwnedBoard.fromDocument(gpa, running_model.document());
+    defer running_board.deinit();
+    var running_identity = if (live_enabled) try project.snapshot.identity(gpa, running_model.current.snapshot, running_model.board) else null;
+    var seed: u32 = 0;
+    if (live_enabled) try std.Io.randomSecure(init.io, std.mem.asBytes(&seed));
+    var live: ?LiveDriver = if (live_enabled) try LiveDriver.init(.{ .io = init.io }, running_identity.?, seed, null) else null;
+    defer if (live) |*driver| driver.disconnect(driver.transport.now());
+    var presenter = desktop.live_keyboard.Presenter{};
+    var visibility = desktop.live_keyboard.Visibility{ .mode = if (live_hold) .hold else if (live_toggle) .toggle else .tap_hold };
+    var live_pressed: [128]bool = @splat(false);
+    var live_frame = desktop.live_keyboard.Frame{};
+    var last_live_status: ?desktop.tray_lifecycle.Status = null;
+    var retained_fixture: ?[32]u8 = null;
+    var events = Events{ .root = Backend.c.SDL_GetWindowID(native.window) };
+    var chooser: desktop.folder_selection.State = .{};
+    var exported: ?[32]u8 = null;
+    var count: usize = 0;
+    var practicing = practice_fixture or draft_fixture or preview_tutor;
+    var practice = desktop.practice_controller.Controller.init(try model.id());
+    if (practice_fixture) _ = try practice.dispatch(practice.action(.{ .start = true }), null, 0);
+    var practice_view: tutor.View = .{};
+    var interrupted = false;
+    var fonts_installed = false;
+    var owner_generation: u64 = 1;
+    var job_generation: u64 = 0;
+    var jobs: Jobs = .{};
+    defer jobs.cancel();
+    var built: ?desktop.build_worker.Artifact = null;
+    defer if (built) |*artifact| artifact.deinit();
+    var built_runner: ?desktop.build_worker.Runner = null;
+    defer if (built_runner) |*runner| runner.deinit();
+    var draft_runtime = desktop.runner_runtime.Runtime.init(gpa, init.io, events.root, frame_limit != null);
+    defer draft_runtime.deinit();
+    events.draft = &draft_runtime;
+    events.practice = &practice;
+    events.model = &model;
+    events.view = &view;
+    if (draft_manifest) |path| {
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, path, gpa, .limited(32 * 1024));
+        defer gpa.free(bytes);
+        built_runner = try desktop.build_worker.Runner.parse(gpa, bytes);
+        _ = try practice.choose(.{ .source = .draft }, 0);
+        const effect = try practice.start(true, built_runner.?.record.inputs.project_digest, 0);
+        try practice.session.load("aa", .draft);
+        try draft_runtime.apply(&practice, effect, built_runner, &model, 0);
+    }
+    var draft_phase: enum { starting, input, paused } = .starting;
+    var build_checked = false;
+    var build_scheduler: desktop.auto_build.Scheduler = .{};
+    while (!owner.closed) {
+        if (live) |*driver| {
+            driver.poll(driver.transport.now());
+            live_frame = try presenter.select(&running_captions.labels, running_identity, &driver.session, &live_pressed);
+            const status = liveStatus(driver, live_frame);
+            if (last_live_status == null or last_live_status.? != status) {
+                std.log.info("Keyboard connection: {t}", .{status});
+                last_live_status = status;
+            }
+            life.companion_visible = visibility.updateAt(live_frame, driver.signal_events[0..driver.signal_event_count], driver.transport.now());
+            for (driver.signal_events[0..driver.signal_event_count]) |signal| {
+                std.log.debug("Live overlay signal {t} pressed={any}; latched={any} held={any} visible={any}", .{ signal.kind, signal.pressed, visibility.latched, visibility.held, life.companion_visible });
+            }
+            if (!life.companion_visible) if (companion_window) |id| if (Backend.c.SDL_GetWindowFromID(id)) |child_window| {
+                _ = Backend.c.SDL_HideWindow(child_window);
+            };
+        }
+        if (build_fixture and !build_checked and count >= 2 and jobs.build == null) {
+            if (built) |artifact| {
+                if (!std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id()))) return error.ManagedEditorBuildStale;
+                const runner = built_runner orelse return error.ManagedEditorRunnerMissing;
+                try runner.verifyFile(gpa, init.io, artifact.inputs);
+                build_checked = true;
+                practicing = true;
+                const fixture_now: u64 = @intCast(@max(0, native.nanoTime()) / 1000);
+                _ = try practice.choose(.{ .source = .draft }, fixture_now);
+                const effect = try practice.start(true, artifact.inputs.project_digest, fixture_now);
+                try practice.session.load("aa", .draft);
+                try draft_runtime.apply(&practice, effect, built_runner, &model, fixture_now);
+            } else {
+                std.log.err("Managed editor build failed: {s}", .{std.mem.sliceTo(&view.diagnostic, 0)});
+                return error.ManagedEditorBuildFailed;
+            }
+        }
+        const check_draft = draft_fixture or (build_fixture and build_checked);
+        if (check_draft and draft_phase == .paused and practice.session.state == .paused and draft_runtime.owner == null) break;
+        if (frame_limit) |limit| if (count == limit) break;
+        count += 1;
+        if (tray.poll()) |action| switch (action) {
+            .open_editor => {
+                life.action(action);
+                _ = Backend.c.SDL_ShowWindow(native.window);
+                _ = Backend.c.SDL_RaiseWindow(native.window);
+            },
+            .toggle_companion => {
+                life.action(action);
+                if (visibility.mode != .hold and live_frame.labels != null and !live_frame.stale) visibility.latched = life.companion_visible;
+            },
+            .quit => events.quit = true,
+            .bind_saved_project => bind: {
+                if (!live_enabled) break :bind;
+                if (jobs.busy()) {
+                    view.report(error.ProjectJobInProgress);
+                    break :bind;
+                }
+                var replacement = loadSavedRunning(gpa, init.io, std.mem.sliceTo(&view.paths.project, 0)) catch |err| {
+                    view.report(err);
+                    break :bind;
+                };
+                defer replacement.deinit();
+                var next_captions = if (source) |*active| Captions.init(gpa, &replacement, active, active.id(), revision) catch |err| {
+                    view.report(err);
+                    break :bind;
+                } else Captions.init(gpa, &replacement, &fixture, "Offline live fixture", revision) catch |err| {
+                    view.report(err);
+                    break :bind;
+                };
+                defer next_captions.deinit();
+                var next_board = boards.OwnedBoard.fromDocument(gpa, replacement.document()) catch |err| {
+                    view.report(err);
+                    break :bind;
+                };
+                defer next_board.deinit();
+                const next_identity = project.snapshot.identity(gpa, replacement.current.snapshot, replacement.board) catch |err| {
+                    view.report(err);
+                    break :bind;
+                };
+                var next_seed: u32 = 0;
+                std.Io.randomSecure(init.io, std.mem.asBytes(&next_seed)) catch |err| {
+                    view.report(err);
+                    break :bind;
+                };
+                const next_driver = LiveDriver.init(.{ .io = init.io }, next_identity, next_seed, null) catch |err| {
+                    view.report(err);
+                    break :bind;
+                };
+                if (live) |*driver| driver.disconnect(driver.transport.now());
+                live = next_driver;
+                std.mem.swap(desktop.model.Model, &running_model, &replacement);
+                std.mem.swap(Captions, &running_captions, &next_captions);
+                std.mem.swap(boards.OwnedBoard, &running_board, &next_board);
+                running_identity = next_identity;
+                resetLivePresentation(&presenter, &visibility, &live_frame, &live_pressed, &life);
+                view.diagnostic = @splat(0);
+            },
+            .zoom_out, .zoom_in, .zoom_reset => life.action(action),
+        };
+        life.resident = tray.installed or companion_fixture;
+        if (!life.resident and !life.editor_visible and !life.companion_visible) {
+            life.editor_visible = true;
+            _ = Backend.c.SDL_ShowWindow(native.window);
+        }
+        if (life.quit_requested and owner.close_requested == null and owner.pending == null and !owner.closed) life.cancelQuit();
+        if (frame_limit == null and !life.editor_visible and !life.companion_visible and !jobs.busy() and draft_runtime.owner == null) {
+            // An idle resident does not construct editor frames or redraw hidden
+            // windows. SDL waits for native events between bounded tray polls.
+            tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = false });
+            var event: Backend.c.SDL_Event = undefined;
+            while (Backend.c.SDL_PollEvent(&event)) _ = try events.raw(event);
+            if (!events.quit and !events.close) {
+                interrupted = try native.waitEventTimeout(desktop.live_keyboard.waitBudget(live_enabled, false, true));
+                continue;
+            }
+        }
+        if (companion_fixture) switch (count) {
+            2 => {
+                try model.rename("Retained draft");
+                retained_fixture = try model.id();
+                life.action(.toggle_companion);
+            },
+            3 => {
+                if (companion_window == null) return error.CompanionWindowMissing;
+                events.close = true;
+            },
+            4 => {
+                if (life.editor_visible or owner.closed or !life.keepRunning()) return error.ResidentEditorCloseFailed;
+                life.action(.open_editor);
+                life.action(.toggle_companion);
+                _ = Backend.c.SDL_ShowWindow(native.window);
+            },
+            5 => {
+                if (companion_window) |id| if (Backend.c.SDL_GetWindowFromID(id)) |child_window| {
+                    if (Backend.c.SDL_GetWindowFlags(child_window) & Backend.c.SDL_WINDOW_HIDDEN == 0) return error.CompanionNativeHideFailed;
+                };
+                life.action(.toggle_companion);
+                companion_view.overlay = true;
+                companion_view.applied_window = null;
+            },
+            6 => {
+                const id = companion_window orelse return error.CompanionWindowMissing;
+                const child_window = Backend.c.SDL_GetWindowFromID(id) orelse return error.CompanionWindowMissing;
+                if (companion_view.applied_window != id) return error.CompanionModeNotApplied;
+                const flags = Backend.c.SDL_GetWindowFlags(child_window);
+                if (flags & Backend.c.SDL_WINDOW_HIDDEN != 0) return error.CompanionNativeShowFailed;
+                const overlay_flags = Backend.c.SDL_WINDOW_BORDERLESS | Backend.c.SDL_WINDOW_ALWAYS_ON_TOP | Backend.c.SDL_WINDOW_NOT_FOCUSABLE;
+                if ((flags & overlay_flags) != (if (companion_view.overlay) overlay_flags else 0)) {
+                    std.log.err("Companion mode flags: actual={x} expected={x} overlay={any}", .{ flags & overlay_flags, if (companion_view.overlay) overlay_flags else 0, companion_view.overlay });
+                    return error.CompanionModeFlagsMismatch;
+                }
+                var event: Backend.c.SDL_Event = std.mem.zeroes(Backend.c.SDL_Event);
+                event.window.type = Backend.c.SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+                event.window.windowID = id;
+                if (!Backend.c.SDL_PushEvent(&event)) return error.FixtureEventRejected;
+            },
+            7 => {
+                if (life.companion_visible or !life.editor_visible or owner.closed) return error.CompanionCloseFailed;
+                events.quit = true;
+            },
+            8 => {
+                if (owner.close_requested == null or owner.closed) return error.ResidentDirtyQuitNotGuarded;
+                _ = try owner.inspect(&model, try desktop.inspector_action.Action.capture(&owner.inspector, &model, .keep_close));
+                life.cancelQuit();
+            },
+            9 => {
+                if (owner.closed or owner.close_requested != null or life.quit_requested or !life.keepRunning() or !std.mem.eql(u8, &retained_fixture.?, &(try model.id()))) return error.ResidentDraftRetentionFailed;
+                // Simulate a clean saved document, then exercise accepted Quit
+                // after hide/reopen and cancelled dirty Quit in the same loop.
+                model.saved_id = try model.id();
+                var quit_event: Backend.c.SDL_Event = std.mem.zeroes(Backend.c.SDL_Event);
+                quit_event.type = Backend.c.SDL_EVENT_QUIT;
+                if (!Backend.c.SDL_PushEvent(&quit_event)) return error.FixtureEventRejected;
+            },
+            else => {},
+        };
+        if (source_refresh_fixture and count == 2) {
+            const frozen = try running_model.id();
+            const cache_path = try std.fmt.allocPrint(gpa, ".zig-cache/live-binding-{d}", .{native.nanoTime()});
+            defer gpa.free(cache_path);
+            defer std.Io.Dir.cwd().deleteTree(init.io, cache_path) catch {};
+            var saved_directory = try std.Io.Dir.cwd().createDirPathOpen(init.io, cache_path, .{});
+            defer saved_directory.close(init.io);
+            try project.snapshot.save(gpa, init.io, saved_directory, running_model.current.snapshot, running_model.board);
+            var absolute_buffer: [4096]u8 = undefined;
+            const absolute_len = try saved_directory.realPath(init.io, &absolute_buffer);
+            const saved_path = absolute_buffer[0..absolute_len];
+            var letter: ?usize = null;
+            for (running_model.document().layers[0].actions, 0..) |action, index| {
+                if (action) |value| switch (value) {
+                    .tap_only => |tap| {
+                        if (tap.key_press) |press| {
+                            if (press.tap_keycode >= 4 and press.tap_keycode <= 29 and running_captions.labels.lookup(0, index, .{}).label != null) {
+                                letter = index;
+                                break;
+                            }
+                        }
+                    },
+                    else => {},
+                };
+            }
+            const key = letter orelse return error.NoFixtureLetter;
+            const saved_label = try gpa.dupe(u8, running_captions.labels.lookup(0, key, .{}).label.?);
+            defer gpa.free(saved_label);
+            model.select(key, false);
+            try model.apply(.{ .tap_only = .{ .key_press = .{ .tap_keycode = 30 } } });
+            try model.rename("Unsaved editor draft");
+            if (std.mem.eql(u8, &frozen, &(try model.id()))) return error.EditorFixtureNotChanged;
+            var saved_binding = try loadSavedRunning(gpa, init.io, saved_path);
+            defer saved_binding.deinit();
+            if (!std.mem.eql(u8, &frozen, &(try saved_binding.id())) or
+                std.mem.eql(u8, &(try model.id()), &(try saved_binding.id()))) return error.LiveBindingUsedUnsavedDraft;
+            // A deliberately saved replacement can be prepared without changing
+            // the editor or the still-accepted startup binding.
+            try saved_binding.rename("Saved replacement binding");
+            saved_binding.select(key, false);
+            try saved_binding.apply(.{ .tap_only = .{ .key_press = .{ .tap_keycode = 5 } } });
+            try project.snapshot.save(gpa, init.io, saved_directory, saved_binding.current.snapshot, saved_binding.board);
+            var replacement_binding = try loadSavedRunning(gpa, init.io, saved_path);
+            defer replacement_binding.deinit();
+            if (!std.mem.eql(u8, &(try saved_binding.id()), &(try replacement_binding.id())) or
+                !std.mem.eql(u8, &frozen, &(try running_model.id()))) return error.LiveReplacementChangedAcceptedBinding;
+            const replacement_identity = try project.snapshot.identity(gpa, replacement_binding.current.snapshot, replacement_binding.board);
+            var offline_driver = try LiveDriver.init(.{ .io = init.io }, replacement_identity, 123, null);
+            if (offline_driver.connected or offline_driver.session.token != 0 or
+                !std.meta.eql(replacement_identity, offline_driver.session.expected)) return error.LiveRebindSkippedNegotiation;
+            var replacement_captions = try Captions.init(gpa, &replacement_binding, &fixture, "Offline replacement", revision);
+            defer replacement_captions.deinit();
+            var replacement_presenter = desktop.live_keyboard.Presenter{};
+            var replacement_pressed: [128]bool = @splat(false);
+            const unverified = try replacement_presenter.select(&replacement_captions.labels, replacement_identity, &offline_driver.session, &replacement_pressed);
+            if (unverified.labels != null or !unverified.stale or liveStatus(&offline_driver, unverified) != .connecting) return error.UnverifiedReplacementVisible;
+            var old_visibility = desktop.live_keyboard.Visibility{ .mode = .hold, .latched = true, .held = true, .down = true };
+            var old_frame = desktop.live_keyboard.Frame{ .labels = &running_captions.labels, .stale = false };
+            var old_life = desktop.tray_lifecycle.Lifecycle{ .companion_visible = true };
+            replacement_presenter.accepted_identity = replacement_identity;
+            @memset(&replacement_pressed, true);
+            resetLivePresentation(&replacement_presenter, &old_visibility, &old_frame, &replacement_pressed, &old_life);
+            if (replacement_presenter.accepted_identity != null or old_visibility.held or old_visibility.latched or old_visibility.down or
+                old_visibility.mode != .hold or old_frame.labels != null or old_life.companion_visible or
+                std.mem.indexOfScalar(bool, &replacement_pressed, true) != null) return error.LiveRebindRetainedOldPresentation;
+            const accepted_entries = running_captions.labels.entries.ptr;
+            try saved_directory.writeFile(init.io, .{ .sub_path = "project.zon", .data = "not a project" });
+            if (loadSavedRunning(gpa, init.io, saved_path)) |loaded_value| {
+                var unexpected = loaded_value;
+                unexpected.deinit();
+                return error.InvalidSavedBindingAccepted;
+            } else |_| {}
+            if (!std.mem.eql(u8, &frozen, &(try running_model.id())) or running_captions.labels.entries.ptr != accepted_entries) return error.FailedBindingDiscardedAcceptedProject;
+            const old_entries = running_captions.labels.entries.ptr;
+            try refreshRunningCaptions(gpa, &running_captions, &running_model, &fixture, "Offline live fixture", revision);
+            if (running_captions.labels.entries.ptr != old_entries) return error.SameRevisionRebuiltCaptions;
+            var empty_storage: [0]u8 = .{};
+            var failing: std.heap.FixedBufferAllocator = .init(&empty_storage);
+            if (refreshRunningCaptions(failing.allocator(), &running_captions, &running_model, &fixture, "Offline live fixture", revision + 1)) |_| {
+                return error.FailedAllocationUnexpectedlySucceeded;
+            } else |err| if (err != error.OutOfMemory) return err;
+            if (running_captions.labels.entries.ptr != old_entries or running_captions.revision != revision or
+                !std.mem.eql(u8, running_captions.labels.lookup(0, key, .{}).label orelse "", saved_label)) return error.FailedRefreshDiscardedCaptions;
+            fixture.alternate = true;
+            revision = try std.math.add(u64, revision, 1);
+            try refreshRunningCaptions(gpa, &running_captions, &running_model, &fixture, "Offline live fixture", revision);
+            const translated = running_captions.labels.lookup(0, key, .{}).label orelse return error.MissingTranslatedLetter;
+            if (std.mem.eql(u8, translated, saved_label) or
+                !std.mem.eql(u8, &frozen, &(try running_model.id())) or
+                !std.mem.eql(u8, &running_captions.snapshot, &frozen) or
+                std.mem.eql(u8, &running_captions.snapshot, &(try model.id())) or
+                running_captions.revision != revision) return error.RunningSourceRefreshChangedProject;
+        }
+        if (source_refresh_fixture and count == 3) {
+            if (captions.revision != revision or running_captions.revision != revision) return error.SourceRefreshNotApplied;
+        }
+        if (native_tray_fixture and count == 2) {
+            life.companion_visible = true;
+            companion_view.overlay = true;
+            companion_view.applied_window = null;
+        }
+        if (native_tray_fixture and count == 3) {
+            const id = companion_window orelse return error.CompanionWindowMissing;
+            if (companion_view.applied_window != id) return error.CompanionModeNotApplied;
+            const child_window = Backend.c.SDL_GetWindowFromID(id) orelse return error.CompanionWindowMissing;
+            const flags = Backend.c.SDL_GetWindowFlags(child_window);
+            const mask = Backend.c.SDL_WINDOW_BORDERLESS | Backend.c.SDL_WINDOW_ALWAYS_ON_TOP | Backend.c.SDL_WINDOW_NOT_FOCUSABLE;
+            if ((flags & mask) != (if (companion_view.overlay) mask else 0)) return error.CompanionModeFlagsMismatch;
+            std.log.info("Native companion overlay supported: {any}", .{companion_view.overlay});
+        }
+        if (jobs.build) |job| if (job.worker.poll()) |event| {
+            jobs.build = null;
+            defer job.worker.destroy();
+            var prepared = event.result catch |err| {
+                view.report(err);
+                continue;
+            };
+            defer prepared.deinit();
+            if (job.editor_generation != owner_generation or !std.meta.eql(event.ticket, job.worker.ticket)) {
+                view.report(error.StaleBuild);
+                continue;
+            }
+            const bundle = prepared.takeBundle(&model, .{ .generation = job_generation, .snapshot = try model.id() }) catch |err| {
+                view.report(err);
+                continue;
+            };
+            if (built) |*previous| previous.deinit();
+            if (built_runner) |*previous| previous.deinit();
+            built = bundle.firmware;
+            built_runner = bundle.runner;
+            view.diagnostic = @splat(0);
+        };
+        if (jobs.file) |job| if (job.worker.poll()) |event| {
+            jobs.file = null;
+            defer job.worker.destroy();
+            var prepared = event.result catch |err| {
+                view.report(err);
+                continue;
+            };
+            defer prepared.deinit();
+            if (job.editor_generation != owner_generation or !std.meta.eql(event.ticket, job.worker.ticket)) {
+                view.report(error.StaleProjectAction);
+                continue;
+            }
+            paths.validate(job.action, view.paths, &model) catch |err| {
+                view.report(err);
+                continue;
+            };
+            if ((job.action.kind == .open or job.action.kind == .open_discard) and (owner.inspector.dirty() or owner.pending != null)) {
+                view.report(error.PendingEditorRequest);
+                continue;
+            }
+            _ = prepared.promote(&model) catch |err| {
+                view.report(err);
+                continue;
+            };
+            if (job.action.kind == .open or job.action.kind == .open_discard) owner_generation = try std.math.add(u64, owner_generation, 1);
+            if (job.action.kind == .open or job.action.kind == .open_discard or job.action.kind == .save) {
+                registry.set(.{ .board_id = model.document().board_id, .profile_id = model.document().profile_id }, std.mem.sliceTo(&view.paths.project, 0)) catch |err| view.report(err);
+                if (user_paths) |owned| remember(gpa, init.io, owned.paths, &view, &model) catch |err| view.report(err);
+            }
+            if (prepared.exported) |id| exported = id;
+            if (job.close) |captured| {
+                _ = owner.savedClose(&model, captured) catch |err| failed: {
+                    view.report(err);
+                    break :failed desktop.editor_dispatch.Effect.none;
+                };
+            }
+            if (owner.closed) break;
+        };
+        if (jobs.source) |job| if (job.worker.poll()) |event| {
+            jobs.source = null;
+            defer job.worker.destroy();
+            var prepared = event.result catch |err| {
+                view.report(err);
+                continue;
+            };
+            defer prepared.deinit();
+            if (job.editor_generation != owner_generation or !std.meta.eql(event.ticket, job.worker.ticket)) {
+                view.report(error.StaleCallbackAction);
+                continue;
+            }
+            callbacks.validate(job.action, view.callback, &model) catch |err| {
+                view.report(err);
+                continue;
+            };
+            if ((job.action.kind == .attach or job.action.kind == .refresh) and (owner.inspector.dirty() or owner.pending != null)) {
+                view.report(error.PendingEditorRequest);
+                continue;
+            }
+            const changed = prepared.promote(&model) catch |err| {
+                view.report(err);
+                continue;
+            };
+            if (job.action.kind == .check) {
+                view.diagnostic = @splat(0);
+                const message = if (changed) "External source differs · refresh explicitly to accept" else "External source matches the attached snapshot";
+                @memcpy(view.diagnostic[0..message.len], message);
+            }
+        };
+        if (jobs.profile) |job| if (job.worker.poll()) |event| {
+            jobs.profile = null;
+            defer job.worker.destroy();
+            var prepared = event.result catch |err| {
+                view.report(err);
+                continue;
+            };
+            defer prepared.deinit();
+            if (job.editor_generation != owner_generation or !std.meta.eql(event.ticket, job.worker.ticket) or !std.meta.eql(job.previous_path, view.paths.project)) {
+                view.report(error.StaleProfileAction);
+                continue;
+            }
+            job.action.validate(&model) catch |err| {
+                view.report(err);
+                continue;
+            };
+            if (owner.inspector.dirty() or owner.pending != null) {
+                view.report(error.PendingEditorRequest);
+                continue;
+            }
+            const next_owner = try std.math.add(u64, owner_generation, 1);
+            prepared.promote(&model) catch |err| {
+                view.report(err);
+                continue;
+            };
+            owner_generation = next_owner;
+            const target = job.worker.request.path;
+            view.paths.project = @splat(0);
+            @memcpy(view.paths.project[0..target.len], target);
+            registry.set(.{ .board_id = model.document().board_id, .profile_id = model.document().profile_id }, target) catch |err| view.report(err);
+            if (prepared.existing) if (user_paths) |owned| remember(gpa, init.io, owned.paths, &view, &model) catch |err| view.report(err);
+        };
+        const now_us: u64 = @intCast(@max(0, native.nanoTime()) / 1000);
+        if (source) |*active| if (active.refresh()) {
+            revision = try std.math.add(u64, revision, 1);
+            applyPractice(&draft_runtime, &practice, practice.pause(now_us), built_runner, &model, &view, now_us);
+        };
+        applyPractice(&draft_runtime, &practice, practice.observe(try model.id(), now_us), built_runner, &model, &view, now_us);
+        draft_runtime.poll(&practice, &model, now_us) catch |err| {
+            draft_runtime.fail(&practice, err, now_us);
+            view.report(err);
+        };
+        if (check_draft) {
+            if (practice.failure) |failure| return failure;
+            if (practice.session.len > 1) return error.DraftRepeatRoutingFailed;
+        }
+        events.now_us = now_us;
+        draft_runtime.router.owns_practice_input = practicing;
+        draft_runtime.router.focused = frame_limit != null or Backend.c.SDL_GetWindowFlags(native.window) & Backend.c.SDL_WINDOW_INPUT_FOCUS != 0;
+        if (captions.revision != revision or !std.mem.eql(u8, &captions.snapshot, &(try model.id()))) {
+            const replacement = if (source) |*active| try Captions.init(gpa, &model, active, active.id(), revision) else try Captions.init(gpa, &model, &fixture, "Offline launch fixture", revision);
+            captions.deinit();
+            captions = replacement;
+        }
+        if (source) |*active| {
+            refreshRunningCaptions(gpa, &running_captions, &running_model, active, active.id(), revision) catch |err| view.report(err);
+        }
+        if (dialog.pollCorrelated()) |completion| if (chooser.pending) |ticket| {
+            if (completion.token == ticket.generation and chooser.accept(ticket, owner_generation, try model.id())) {
+                if (completion.path) |path| {
+                    if (path[0] != 0) switch (ticket.target) {
+                        .project => view.paths.project = path,
+                        .export_directory => view.paths.exported = path,
+                        .callback_source => view.callback.root = path,
+                    };
+                } else |err| view.report(err);
+            }
+        };
+        var board = try boards.OwnedBoard.fromDocument(gpa, model.document());
+        defer board.deinit();
+        const available = window.backend.windowSize();
+        const system_scale = window.backend.contentScale();
+        // Match the reference editor: fit the whole design canvas, accounting
+        // for macOS display density. Menu zoom is relative to that fitted size.
+        window.content_scale = desktop.geometry.fitScale(available.w / system_scale, available.h / system_scale) * life.editor_scale;
+        window.snap_to_pixels = window.content_scale == 1;
+        window.themeSet(if (view.toolbar.light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark);
+        try window.begin(if (frame_limit == null) window.beginWait(interrupted) else native.nanoTime());
+        var ended = false;
+        errdefer if (!ended) {
+            _ = window.end(.{ .manage_backend = frame_limit == null }) catch {};
+        };
+        if (!fonts_installed and frame_limit == null) {
+            try @import("editor-fonts").install(gpa, init.io);
+            fonts_installed = true;
+        }
+        if (practice_fixture and count == 3) {
+            var lost: Backend.c.SDL_Event = std.mem.zeroes(Backend.c.SDL_Event);
+            lost.window.type = Backend.c.SDL_EVENT_WINDOW_FOCUS_LOST;
+            lost.window.windowID = events.root;
+            if (!Backend.c.SDL_PushEvent(&lost)) return error.FixtureEventRejected;
+        }
+        if (check_draft and draft_phase == .starting and draft_runtime.router.runner_running) {
+            var key: Backend.c.SDL_Event = std.mem.zeroes(Backend.c.SDL_Event);
+            key.key.type = Backend.c.SDL_EVENT_KEY_DOWN;
+            key.key.windowID = events.root;
+            key.key.scancode = 4;
+            key.key.down = true;
+            if (!Backend.c.SDL_PushEvent(&key)) return error.FixtureEventRejected;
+            key.key.repeat = true;
+            if (!Backend.c.SDL_PushEvent(&key)) return error.FixtureEventRejected;
+            draft_phase = .input;
+        } else if (check_draft and draft_phase == .input and practice.session.len == 1) {
+            var lost: Backend.c.SDL_Event = std.mem.zeroes(Backend.c.SDL_Event);
+            lost.window.type = Backend.c.SDL_EVENT_WINDOW_FOCUS_LOST;
+            lost.window.windowID = events.root;
+            if (!Backend.c.SDL_PushEvent(&lost)) return error.FixtureEventRejected;
+            draft_phase = .paused;
+        }
+        try @import("native-events").pump(&native, &window, &events);
+        if (practice_fixture and count == 2) {
+            var text: [4]u8 = undefined;
+            const len = try std.unicode.utf8Encode(practice.session.reference[0], &text);
+            _ = try window.addEventText(.{ .text = text[0..len] });
+        }
+        if (events.lost_focus) {
+            events.lost_focus = false;
+            applyPractice(&draft_runtime, &practice, practice.pause(now_us), built_runner, &model, &view, now_us);
+        }
+        const document = model.document();
+        const can_build = if (build_plan) |plan| !jobs.busy() and std.mem.eql(u8, &plan.config.board_id, &model.board.id) and std.mem.eql(u8, plan.config.build_board, board.entry.selector) else false;
+        const build_status: []const u8 = if (jobs.build != null) "Building" else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id()))) "Built snapshot" else "Build outdated") else if (build_plan != null) "Prepared inputs selected" else "Build environment not selected";
+        view.callback.busy = jobs.busy();
+        var leave_practice = false;
+        var practice_action: ?desktop.practice_controller.Action = null;
+        var rendered = if (practicing) tutor_frame: {
+            const theme = ui.Theme.get(view.toolbar.light);
+            const canvas = dvui.box(@src(), .{}, .{ .expand = .both, .padding = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
+            defer canvas.deinit();
+            leave_practice = ui.button(theme, "Back to editor", "practice.back", .{ .x = 24, .y = 12, .w = 160, .h = 36 });
+            const pressed = try window.arena().alloc(bool, model.selected.len);
+            @memset(pressed, false);
+            if (draft_runtime.owner) |runner| if (runner.pressed.len == pressed.len) @memcpy(pressed, runner.pressed);
+            const input: tutor.Input = .{
+                .now_us = now_us,
+                .window_focused = frame_limit != null or Backend.c.SDL_GetWindowFlags(native.window) & Backend.c.SDL_WINDOW_INPUT_FOCUS != 0,
+                .owns_input = true,
+                .fixture = frame_limit != null,
+                .diagnostic = std.mem.sliceTo(&view.diagnostic, 0),
+                .frame = .{ .source = .draft, .labels = &captions.labels, .geometry = board.entry.geometry, .profile = document.name, .layer = if (draft_runtime.owner != null) draft_runtime.highest_layer else model.layer, .active_layers = if (draft_runtime.owner != null) draft_runtime.active_layers else 1 | (@as(u16, 1) << @intCast(model.layer)), .modifiers = @bitCast(draft_runtime.modifiers), .pressed = pressed },
+            };
+            const drawn = tutor.draw(&practice, &practice_view, theme, .{ .x = 24, .y = 64, .w = @max(300, window.data().rect.w - 48), .h = @max(300, window.data().rect.h - 88) }, input) catch |err| failed: {
+                view.report(err);
+                break :failed tutor.DrawResult{};
+            };
+            practice_action = drawn.action;
+            break :tutor_frame editor.Result{ .effect = .none };
+        } else if (!life.editor_visible) editor.Result{ .effect = .none } else editor.draw(&view, &owner, &model, .{
+            .toolbar = .{ .board_name = board.entry.selector, .connection = switch (liveStatus(if (live) |*driver| driver else null, live_frame)) {
+                .offline => "Offline editor",
+                .connecting => "Keyboard connecting",
+                .live => "Keyboard connected",
+                .stale => "Keyboard state stale",
+                .disconnected => "Keyboard disconnected",
+                .incompatible => "Keyboard layout mismatch",
+            }, .can_build = can_build, .build_status = build_status, .profiles = if (std.mem.eql(u8, &model.board.id, &project.profiles.board.id)) &.{ .{ .id = "danish\x00\x00".*, .name = project.profiles.names[0] }, .{ .id = "qwerty\x00\x00".*, .name = project.profiles.names[1] }, .{ .id = "eurkey\x00\x00".*, .name = project.profiles.names[2] }, .{ .id = "eurmac\x00\x00".*, .name = project.profiles.names[3] } } else &.{} },
+            .keyboard = .{ .snapshot = try model.id(), .board_id = document.board_id, .physical_layout = document.physical_layout, .geometry = board.entry.geometry, .labels = &captions.labels, .board_name = board.entry.selector, .fidelity = "Catalog geometry · physical acceptance pending" },
+            .host = &captions.host,
+            .paths = .{ .exported = exported, .can_choose = frame_limit == null and !dialog.active(), .busy = jobs.busy() },
+        }) catch |err| failed: {
+            view.report(err);
+            break :failed editor.Result{ .effect = .none };
+        };
+        if (build_fixture and count == 2) {
+            if (!can_build or built != null or jobs.busy()) return error.ManagedEditorStartupNotIdle;
+            rendered = .{ .effect = try owner.request(&model, try desktop.editor_dispatch.Request.capture(&model, .build)) };
+        }
+        if (live_enabled and (live_frame.labels == null or live_frame.stale)) life.companion_visible = false;
+        if (!life.companion_visible) if (companion_window) |id| if (Backend.c.SDL_GetWindowFromID(id)) |child_window| {
+            _ = Backend.c.SDL_HideWindow(child_window);
+        };
+        if (life.companion_visible) {
+            // Child creation inherits this flag from the backend's saved options.
+            // The editor's existing native window remains opaque.
+            const parent_transparent = native.init_opts_save.?.transparent;
+            native.init_opts_save.?.transparent = true;
+            const child = dvui.osWindow(@src(), .{ .title = "Zigmkay Companion", .size = .{ .w = 880, .h = 300 }, .min_size = .{ .w = 400, .h = 180 }, .hidden = true }, .{ .open_flag = &life.companion_visible });
+            native.init_opts_save.?.transparent = parent_transparent;
+            defer child.deinit();
+            companion_window = switch (child.inner) {
+                .os => |active| Backend.c.SDL_GetWindowID(active.backend.window),
+                .floating => null,
+            };
+            if (frame_limit == null and companion_view.applied_window != companion_window) try @import("editor-fonts").install(gpa, init.io);
+            const held = try dvui.currentWindow().arena().alloc(bool, model.document().key_ids.len);
+            @memset(held, false);
+            if (draft_runtime.owner) |active| if (active.pressed.len == held.len) @memcpy(held, active.pressed);
+            companion_ui.draw(if (live_enabled) &running_model else &model, .{
+                .snapshot = if (live_enabled) try running_model.id() else try model.id(),
+                .geometry = if (live_enabled) running_board.entry.geometry else board.entry.geometry,
+                .labels = if (live_enabled) &running_captions.labels else &captions.labels,
+                .board_name = if (live_enabled) running_board.entry.selector else board.entry.selector,
+                .layer = if (live_enabled) live_frame.layer else if (draft_runtime.owner != null) draft_runtime.highest_layer else model.layer,
+                .modifiers = if (live_enabled) live_frame.modifiers else if (draft_runtime.owner != null) @bitCast(draft_runtime.modifiers) else .{},
+                .pressed = if (live_enabled) live_frame.pressed else held,
+                .live = live_enabled,
+                .active_layers = if (live_enabled) live_frame.active else null,
+                .practicing = draft_runtime.owner != null,
+            }, view.toolbar.light) catch |err| {
+                view.report(err);
+            };
+            if (companion_fixture and (dvui.tagGet("companion.open_editor") != null or dvui.tagGet("companion.overlay") != null)) return error.InteractiveCompanionControl;
+            switch (child.inner) {
+                .os => |active| {
+                    const id = Backend.c.SDL_GetWindowID(active.backend.window);
+                    if (companion_view.applied_window != id) {
+                        const requested = companion_view.overlay;
+                        @import("companion-window").mode(active.backend.window, requested) catch |err| {
+                            companion_view.unavailable = requested;
+                            if (frame_limit != null) {
+                                companion_view.overlay = false;
+                                @import("companion-window").mode(active.backend.window, false) catch {};
+                            } else {
+                                view.report(err);
+                                life.companion_visible = false;
+                                _ = Backend.c.SDL_HideWindow(active.backend.window);
+                            }
+                        };
+                        companion_view.applied_window = id;
+                    }
+                    // Native child windows can survive skipped draw frames. Sync
+                    // visibility on every visible frame, not only initial mode setup.
+                    if (companion_fixture or (frame_limit == null and !companion_view.unavailable)) _ = Backend.c.SDL_ShowWindow(active.backend.window);
+                },
+                .floating => {
+                    companion_view.unavailable = companion_view.overlay;
+                    if (frame_limit != null) companion_view.overlay = false else life.companion_visible = false;
+                },
+            }
+        }
+        tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = life.companion_visible });
+        const delay = try window.end(.{ .manage_backend = frame_limit == null });
+        ended = true;
+        if (frame_limit != null) native.renderPresent();
+        if (leave_practice) {
+            applyPractice(&draft_runtime, &practice, practice.pause(now_us), built_runner, &model, &view, now_us);
+            practicing = false;
+        } else if (practice_action) |action| {
+            const effect = tutor.apply(&practice, &practice_view, action, .{ .now_us = now_us }) catch |err| failed: {
+                view.report(err);
+                break :failed desktop.practice_controller.Effect{};
+            };
+            applyPractice(&draft_runtime, &practice, effect, built_runner, &model, &view, now_us);
+        }
+        // Filesystem replacement and native chooser starts run after retained draw.
+        switch (rendered) {
+            .paths => |action| switch (action.kind) {
+                .cancel => {
+                    jobs.cancel();
+                },
+                .choose_project, .choose_export => {
+                    const ticket = chooser.begin(owner_generation, action.snapshot, if (action.kind == .choose_project) .project else .export_directory) catch |err| {
+                        view.report(err);
+                        continue;
+                    };
+                    dialog.startCorrelated(native.window, ticket.generation) catch |err| {
+                        _ = chooser.discard(ticket);
+                        view.report(err);
+                    };
+                },
+                else => {
+                    if (jobs.busy()) {
+                        view.report(error.ProjectOperationAlreadyRunning);
+                        continue;
+                    }
+                    const next_job = try std.math.add(u64, job_generation, 1);
+                    jobs.file = startFile(gpa, init.io, &view, &model, action, next_job, owner_generation) catch |err| {
+                        view.report(err);
+                        continue;
+                    };
+                    job_generation = next_job;
+                },
+            },
+            .callback => |action| {
+                if (action.kind == .cancel) {
+                    jobs.cancel();
+                    continue;
+                }
+                if (jobs.busy()) {
+                    view.report(error.ProjectOperationAlreadyRunning);
+                    continue;
+                }
+                if (action.kind == .choose_root) {
+                    const ticket = chooser.begin(owner_generation, action.snapshot, .callback_source) catch |err| {
+                        view.report(err);
+                        continue;
+                    };
+                    dialog.startCorrelated(native.window, ticket.generation) catch |err| {
+                        _ = chooser.discard(ticket);
+                        view.report(err);
+                    };
+                } else {
+                    const next_job = try std.math.add(u64, job_generation, 1);
+                    var request = captureSource(&view, &model, action) catch |err| {
+                        view.report(err);
+                        continue;
+                    };
+                    const worker = desktop.source_worker.Owner.create(gpa, init.io, &request, next_job) catch |err| {
+                        request.deinit();
+                        view.report(err);
+                        continue;
+                    };
+                    jobs.source = .{ .worker = worker, .action = action, .editor_generation = owner_generation };
+                    job_generation = next_job;
+                }
+            },
+            .effect => |effect| switch (effect) {
+                .save, .save_close => |captured| {
+                    captured.validate(&model) catch |err| {
+                        view.report(err);
+                        continue;
+                    };
+                    if (jobs.busy()) {
+                        view.report(error.ProjectOperationAlreadyRunning);
+                        continue;
+                    }
+                    const next_job = try std.math.add(u64, job_generation, 1);
+                    jobs.file = startFile(gpa, init.io, &view, &model, view.paths.action(try model.id(), .save), next_job, owner_generation) catch |err| {
+                        view.report(err);
+                        view.modal = .paths;
+                        continue;
+                    };
+                    job_generation = next_job;
+                    if (effect == .save_close) jobs.file.?.close = captured;
+                },
+                .open => |target| {
+                    if (target == .practice) {
+                        practicing = true;
+                        view.diagnostic = @splat(0);
+                    } else view.report(error.NavigationNotConnected);
+                },
+                .profile => |captured| {
+                    if (jobs.busy()) {
+                        view.report(error.ProjectOperationAlreadyRunning);
+                        continue;
+                    }
+                    captured.validate(&model) catch |err| {
+                        view.report(err);
+                        continue;
+                    };
+                    const owned = user_paths orelse {
+                        view.report(error.UserPathsUnavailable);
+                        continue;
+                    };
+                    const id = captured.intent.profile;
+                    const key = desktop.profile_projects.Key{ .board_id = model.document().board_id, .profile_id = id };
+                    const target = if (registry.path(key)) |associated| try gpa.dupe(u8, associated) else try std.fs.path.join(gpa, &.{ owned.paths.projects, std.mem.sliceTo(&id, 0) });
+                    defer gpa.free(target);
+                    const next_job = try std.math.add(u64, job_generation, 1);
+                    var request = desktop.profile_switch.Request.capture(&model, id, target) catch |err| {
+                        view.report(err);
+                        continue;
+                    };
+                    const worker = desktop.profile_switch.Worker.create(gpa, init.io, &request, next_job) catch |err| {
+                        request.deinit();
+                        view.report(err);
+                        continue;
+                    };
+                    jobs.profile = .{ .worker = worker, .action = captured, .editor_generation = owner_generation, .previous_path = view.paths.project };
+                    job_generation = next_job;
+                },
+                .build => |captured| {
+                    if (jobs.busy()) {
+                        view.report(error.ProjectOperationAlreadyRunning);
+                        continue;
+                    }
+                    captured.validate(&model) catch |err| {
+                        view.report(err);
+                        continue;
+                    };
+                    const plan = build_plan orelse {
+                        view.report(error.CapabilityNotPrepared);
+                        continue;
+                    };
+                    const next_job = try std.math.add(u64, job_generation, 1);
+                    const job = startBuild(gpa, init.io, &model, plan.config, init.environ_map, next_job, owner_generation) catch |err| {
+                        view.report(err);
+                        continue;
+                    };
+                    jobs.build = job;
+                    job_generation = next_job;
+                    build_scheduler.manual(try model.id());
+                    view.diagnostic = @splat(0);
+                },
+                .flash => view.report(error.CapabilityNotPrepared),
+                else => {},
+            },
+        }
+        if (events.close) {
+            events.close = false;
+            view.modal = .none;
+            view.combo = null;
+            view.encoders = null;
+            practicing = false;
+            applyPractice(&draft_runtime, &practice, practice.pause(now_us), built_runner, &model, &view, now_us);
+            if (life.resident) {
+                life.editor_visible = false;
+                _ = Backend.c.SDL_HideWindow(native.window);
+            } else events.quit = true;
+        }
+        if (events.quit) {
+            events.quit = false;
+            view.modal = .none;
+            view.combo = null;
+            view.encoders = null;
+            practicing = false;
+            applyPractice(&draft_runtime, &practice, practice.pause(now_us), built_runner, &model, &view, now_us);
+            life.action(.quit);
+            _ = owner.request(&model, try desktop.editor_dispatch.Request.capture(&model, .close)) catch |err| failed: {
+                view.report(err);
+                break :failed desktop.editor_dispatch.Effect.none;
+            };
+            if (!owner.closed) {
+                life.editor_visible = true;
+                _ = Backend.c.SDL_ShowWindow(native.window);
+            }
+        }
+        build_scheduler.observe(try model.id(), now_us / 1000);
+        if (build_scheduler.take(now_us / 1000, build_plan == null or !can_build or jobs.busy() or practicing or view.modal != .none or owner.closed or owner.close_requested != null or owner.pending != null or owner.inspector.dirty())) {
+            const next_job = try std.math.add(u64, job_generation, 1);
+            jobs.build = startBuild(gpa, init.io, &model, build_plan.?.config, init.environ_map, next_job, owner_generation) catch |err| failed: {
+                view.report(err);
+                break :failed null;
+            };
+            if (jobs.build != null) job_generation = next_job;
+        }
+        // Never enter SDL's potentially unbounded wait after accepting Quit.
+        if (owner.closed) {
+            if (companion_fixture and (count != 9 or !life.quit_requested)) return error.ResidentCleanQuitFailed;
+            break;
+        }
+        if (frame_limit == null) interrupted = try native.waitEventTimeout(@min(window.waitTime(delay), desktop.live_keyboard.waitBudget(live_enabled, jobs.busy() or draft_runtime.owner != null, false)));
+        if (draft_fixture or build_fixture) try std.Io.sleep(init.io, .fromMilliseconds(10), .awake);
+    }
+    if (practice_fixture and (practice.session.len != 1 or practice.session.matched() != 1 or practice.session.state != .paused)) return error.PracticeTextRoutingFailed;
+    if ((draft_fixture or build_fixture) and (draft_phase != .paused or practice.session.len != 1 or practice.session.matched() != 1 or practice.session.state != .paused or draft_runtime.owner != null)) return error.DraftProcessorRoutingFailed;
+    if (build_fixture and !build_checked) return error.ManagedEditorBuildIncomplete;
+    if (companion_fixture and (retained_fixture == null or !std.mem.eql(u8, &retained_fixture.?, &(try model.id())))) return error.ResidentDraftRetentionFailed;
+    if (companion_fixture and !owner.closed) return error.ResidentCleanQuitFailed;
+    if (native_tray_fixture and !tray.installed) return error.NativeTrayLifecycleFailed;
+}

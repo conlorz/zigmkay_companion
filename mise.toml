@@ -1,0 +1,38 @@
+[tools]
+zig = "0.17.0"
+
+[tasks.test]
+description = "Run offline companion checks"
+run = "zig build test"
+
+[tasks.check]
+description = "Check the bootstrap and compiler pin without device access"
+run = "zig build check"
+
+[tasks.check-compatibility]
+description = "Require accepted compatibility gates (currently reports pending gates)"
+run = "zig build check-compatibility"
+
+[tasks.editor]
+description = "Launch the editor and automatically connect to the keyboard"
+run = "zig build run-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+
+[tasks."editor:build"]
+description = "Compile the current native GUI without launching"
+run = "zig build build-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+
+
+[tasks."companion"]
+description = "Start the resident companion and automatically connect to the keyboard"
+run = "zig build run-companion -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+
+[tasks."companion:build"]
+description = "Compile the resident companion without launching"
+run = "zig build build-companion -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+
+[tasks."companion:test"]
+description = "Test companion visibility and placement without hardware"
+run = "zig build test-desktop-companion test-companion-placement -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+[tasks."editor:test"]
+description = "Run offline GUI launch, practice and companion fixtures"
+run = "zig build test-desktop-launch test-desktop-practice test-desktop-companion test-companion-placement -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
