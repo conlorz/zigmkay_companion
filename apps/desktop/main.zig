@@ -968,6 +968,11 @@ pub fn main(init: std.process.Init) !void {
         behavior_hash.update(&practice_identity.board_id);
         behavior_hash.update(&practice_identity.digest);
         const source_name = if (source) |*active| active.id() else "Offline fixture";
+        practice.context_profile = @splat(0);
+        practice.context_source = @splat(0);
+        const context_profile = practice_model.document().name;
+        @memcpy(practice.context_profile[0..@min(context_profile.len, 95)], context_profile[0..@min(context_profile.len, 95)]);
+        @memcpy(practice.context_source[0..@min(source_name.len, 95)], source_name[0..@min(source_name.len, 95)]);
         const mapping_name = if (source) |*active| try std.fmt.allocPrint(window.arena(), "{s}/{s}", .{ active.id(), active.layoutId() }) else "Offline fixture";
         practice.cohort.behavior = behavior_hash.finalResult();
         practice.cohort.mapping = desktop.practice_context.mapping(practice_labels, mapping_name);
@@ -1084,17 +1089,22 @@ pub fn main(init: std.process.Init) !void {
             record.seed = practice.exercise_seed;
             record.target_count = practice.captured_config.target_count;
             record.targets = practice.captured_config.targets;
-            const profile_name = practice_model.document().name;
-            @memcpy(record.profile[0..@min(profile_name.len, record.profile.len - 1)], profile_name[0..@min(profile_name.len, record.profile.len - 1)]);
-            @memcpy(record.input_source[0..@min(source_name.len, record.input_source.len - 1)], source_name[0..@min(source_name.len, record.input_source.len - 1)]);
+            record.profile = practice.captured_profile;
+            record.input_source = practice.captured_source;
             practice.completed = record;
-            if (!rundown_fixture) practice_history.enqueue(record) catch |err| {
-                practice_history.error_value = err;
-            };
+            practice.completed_enqueued = rundown_fixture;
         }
+        if (practice_view.rundown.cleared) practice.completed_enqueued = true;
+        if (practice.completed) |record| if (!practice.completed_enqueued and practice_history.queued < practice_history.queue.len) {
+            if (practice_history.enqueue(record)) |_| {
+                practice.completed_enqueued = true;
+            } else |err| practice_history.error_value = err;
+        };
+        practice.save_blocked = practice.completed != null and !practice.completed_enqueued and practice_history.queued == practice_history.queue.len;
+        if (practice.save_blocked) practice_history.error_value = error.PracticeSaveQueueFull;
         const history_cohort = if (practice_view.rundown.reviewed) |record| record.cohort else if (practice.completed) |record| record.cohort else practice.configCohort();
         const requested_history = practice_view.rundown.refresh or practice_view.rundown.retry or practice_view.rundown.clear;
-        if (practice_history.worker == null and (practice_history.error_value == null or practice_view.rundown.retry) and (practice_history.queued > 0 or requested_history or (practicing and !rundown_fixture and (!practice_history_loaded or !std.meta.eql(history_cohort, practice_history.cohort))))) {
+        if (practice_history.worker == null and (practice_history.error_value == null or practice_view.rundown.retry or practice_view.rundown.clear) and (practice_history.queued > 0 or requested_history or (practicing and !rundown_fixture and (!practice_history_loaded or !std.meta.eql(history_cohort, practice_history.cohort))))) {
             practice_history.request(history_cohort, practice_view.rundown.before, practice_view.rundown.clear, practice_view.rundown.retry, if (practice_view.rundown.reviewed) |record| record.id else if (practice.completed) |record| record.id else null) catch |err| {
                 practice_history.error_value = err;
             };
@@ -1172,6 +1182,20 @@ pub fn main(init: std.process.Init) !void {
             const held = try dvui.currentWindow().arena().alloc(bool, model.document().key_ids.len);
             @memset(held, false);
             if (draft_runtime.owner) |active| if (active.pressed.len == held.len) @memcpy(held, active.pressed);
+            const companion_labels = if (live_enabled) &running_captions.labels else &captions.labels;
+            const companion_layer = if (live_enabled) live_frame.layer else if (draft_runtime.owner != null) draft_runtime.highest_layer else model.layer;
+            const companion_mods = if (live_enabled) live_frame.modifiers else if (draft_runtime.owner != null) @as(@TypeOf(live_frame.modifiers), @bitCast(draft_runtime.modifiers)) else @as(@TypeOf(live_frame.modifiers), .{});
+            const practice_taps = try dvui.currentWindow().arena().alloc(bool, companion_labels.key_count);
+            const practice_holds = try dvui.currentWindow().arena().alloc(bool, companion_labels.key_count);
+            @memset(practice_taps, false);
+            @memset(practice_holds, false);
+            if (practicing and practice.config.assistance == .guided and practice.active and practice.session.state != .complete and
+                (!live_enabled or use_practice_live) and companion_labels == practice_labels)
+            {
+                const next_position = desktop.practice_view.focus(&practice.session);
+                const next_hint = if (next_position < practice.session.reference_len) try desktop.practice.hint(companion_labels.practiceLabels(), companion_layer, companion_mods.toByte(), practice.session.reference[next_position], if (live_enabled) live_frame.active else if (draft_runtime.owner != null) draft_runtime.active_layers else desktop.practice.layerMask(companion_layer)) else null;
+                try desktop.practice.guidance(companion_labels.practiceLabels(), practice_metadata, companion_layer, companion_mods.toByte(), next_hint, .{ .tap = practice_taps, .hold = practice_holds });
+            }
             companion_ui.draw(if (live_enabled) &running_model else &model, .{
                 .snapshot = if (live_enabled) try running_model.id() else try model.id(),
                 .geometry = if (live_enabled) running_board.entry.geometry else board.entry.geometry,
@@ -1184,6 +1208,8 @@ pub fn main(init: std.process.Init) !void {
                 .active_layers = if (live_enabled) live_frame.active else null,
                 .practicing = practicing,
                 .assistance = practice.config.assistance,
+                .targets = practice_taps,
+                .holds = practice_holds,
             }, view.toolbar.light) catch |err| {
                 view.report(err);
             };

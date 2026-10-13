@@ -44,6 +44,12 @@ pub const Controller = struct {
     captured_cohort: results.Cohort = .{},
     completed: ?results.Record = null,
     completion_delivered: bool = false,
+    completed_enqueued: bool = false,
+    save_blocked: bool = false,
+    context_profile: [96]u8 = @splat(0),
+    context_source: [96]u8 = @splat(0),
+    captured_profile: [96]u8 = @splat(0),
+    captured_source: [96]u8 = @splat(0),
     runner_state: RunnerState = .idle,
     last_sequence: ?u64 = null,
     failure: ?anyerror = null,
@@ -109,6 +115,8 @@ pub const Controller = struct {
     /// Preparation completion leaves draft scoring paused until explicit Resume.
     pub fn start(self: *Controller, _: bool, prepared_snapshot: ?Digest, now: u64) !Effect {
         try self.config.validate();
+        if (self.save_blocked) return error.PracticeSaveQueueFull;
+        if (self.session.state == .complete and self.completed == null and self.completion_delivered) return error.PracticeResultPending;
         if (self.generation == std.math.maxInt(u64)) return error.OperationExhausted;
         const previous: ?Operation = if (self.generation == 0) null else self.operation();
         var buffer: [8192]u8 = undefined;
@@ -129,6 +137,9 @@ pub const Controller = struct {
         }
         try self.session.load(reference, self.config.source);
         self.completed = null;
+        self.completed_enqueued = false;
+        self.captured_profile = self.context_profile;
+        self.captured_source = self.context_source;
         self.completion_delivered = false;
         self.captured_cohort = self.configCohort();
         self.generation += 1;
@@ -316,4 +327,30 @@ test "normal starts stay fresh challenges stay reproducible and completion is id
     const repeated_effect = owner.finish(7);
     try std.testing.expect(owner.completion_delivered);
     try std.testing.expectEqualDeep(first_effect, repeated_effect);
+}
+
+test "display context is frozen and a full save queue cannot replace a completed run" {
+    var owner = Controller.init(@splat(1));
+    @memcpy(owner.context_profile[0..5], "First");
+    _ = try owner.start(true, null, 0);
+    owner.context_profile[0] = 'X';
+    try std.testing.expectEqualStrings("First", std.mem.sliceTo(&owner.captured_profile, 0));
+    owner.completed = .{ .id = @splat(7) };
+    owner.save_blocked = true;
+    try std.testing.expectError(error.PracticeSaveQueueFull, owner.start(true, null, 1));
+    try std.testing.expectEqual(@as(u8, 7), owner.completed.?.id[0]);
+}
+
+test "completion and a fresh-run click in one input batch cannot discard the result" {
+    var owner = Controller.init(@splat(1));
+    _ = try owner.start(true, null, 0);
+    try owner.session.load("a", .os);
+    _ = try owner.insertOs(true, "a", 1, false);
+    const generation = owner.generation;
+    try std.testing.expectError(error.PracticeResultPending, owner.dispatch(owner.action(.new_exercise), null, 2));
+    try std.testing.expectEqual(generation, owner.generation);
+    try std.testing.expectEqual(practice.State.complete, owner.session.state);
+    owner.completed = try results.capture(&owner.session, owner.captured_cohort, null);
+    _ = try owner.dispatch(owner.action(.new_exercise), null, 3);
+    try std.testing.expect(owner.generation > generation);
 }

@@ -68,6 +68,10 @@ pub const Record = struct {
         if (self.version != 1 or self.cohort.metric_version != 1 or self.cohort.generation_version != 1 or self.drill_policy != 1) return error.UnsupportedPracticeHistory;
         if (self.stat_count > 256 or self.substitution_count > 256 or self.target_count > 5 or self.correct_attempts > self.attempts) return error.InvalidPracticeHistory;
         for (self.targets[0..self.target_count]) |cp| if (cp > 0x10ffff or (cp >= 0xd800 and cp <= 0xdfff)) return error.InvalidPracticeHistory;
+        for (self.substitutions[0..self.substitution_count], 0..) |sub, index| {
+            if (sub.expected > 0x10ffff or sub.typed > 0x10ffff or (sub.expected >= 0xd800 and sub.expected <= 0xdfff) or (sub.typed >= 0xd800 and sub.typed <= 0xdfff)) return error.InvalidPracticeHistory;
+            for (self.substitutions[0..index]) |old| if (old.expected == sub.expected and old.typed == sub.typed) return error.InvalidPracticeHistory;
+        }
         var opportunities: u64 = 0;
         for (self.stats[0..self.stat_count], 0..) |stat, index| {
             if (stat.cp > 0x10ffff or (stat.cp >= 0xd800 and stat.cp <= 0xdfff) or stat.misses > stat.opportunities or stat.route_count > 4) return error.InvalidPracticeHistory;
@@ -259,4 +263,15 @@ pub fn dateLabel(timestamp: i64, buffer: []u8) ![]const u8 {
 test "history timestamps have readable UTC labels" {
     var buffer: [32]u8 = undefined;
     try std.testing.expectEqualStrings("1970-01-01 00:00:00 UTC", try dateLabel(0, &buffer));
+}
+
+test "corrupt substitution codepoints and duplicate pairs are rejected before rendering" {
+    var record: Record = .{ .substitution_count = 1 };
+    record.substitutions[0] = .{ .expected = ';', .typed = 0x110000, .count = 1 };
+    try std.testing.expectError(error.InvalidPracticeHistory, record.validate());
+    record.substitutions[0].typed = 'x';
+    try record.validate();
+    record.substitution_count = 2;
+    record.substitutions[1] = record.substitutions[0];
+    try std.testing.expectError(error.InvalidPracticeHistory, record.validate());
 }

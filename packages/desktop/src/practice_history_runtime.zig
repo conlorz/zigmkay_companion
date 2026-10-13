@@ -11,6 +11,7 @@ pub const Runtime = struct {
     queue: [16]results.Record = @splat(.{}),
     queued: usize = 0,
     writing: bool = false,
+    clearing: bool = false,
     data: history.Query = .{},
     cohort: results.Cohort = .{},
     requested_cohort: results.Cohort = .{},
@@ -23,6 +24,7 @@ pub const Runtime = struct {
             if (worker.future) |*future| {
                 const outcome = future.await(self.io);
                 if (outcome) |_| {
+                    if (self.clearing) self.queued = 0;
                     if (self.writing) {
                         self.queued -= 1;
                         std.mem.copyForwards(results.Record, self.queue[0..self.queued], self.queue[1 .. self.queued + 1]);
@@ -65,6 +67,7 @@ pub const Runtime = struct {
                 self.error_value = err;
                 return;
             };
+            if (self.clearing) self.queued = 0;
             self.data = data;
             self.cohort = self.requested_cohort;
             self.error_value = null;
@@ -76,12 +79,12 @@ pub const Runtime = struct {
     }
     pub fn request(self: *Runtime, cohort: results.Cohort, before: ?results.Record, clearing: bool, retry: bool, current_id: ?[16]u8) !void {
         if (self.worker != null) return;
-        if (self.error_value != null and !retry) return;
+        if (self.error_value != null and !retry and !clearing) return;
         const path = self.path orelse return error.PracticeStorageUnavailable;
         var work_request = try history.Request.init(self.gpa, path, cohort);
         errdefer work_request.deinit();
-        if (clearing) self.queued = 0;
-        self.writing = self.queued > 0;
+        self.clearing = clearing;
+        self.writing = !clearing and self.queued > 0;
         if (self.writing) work_request.record = self.queue[0];
         work_request.before = before;
         work_request.current_id = current_id;
@@ -143,4 +146,38 @@ test "background saves drain once retries retain IDs and reopening restores comp
     }
     try t.expect(runtime.error_value != null);
     try t.expectEqual(@as(usize, 1), runtime.queued);
+}
+
+test "queue limits and failed deliberate clearing retain pending records" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{ .iterate = true });
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    var runtime = try Runtime.init(t.allocator, t.io, root);
+    defer runtime.deinit();
+    for (0..16) |index| {
+        var record: results.Record = .{};
+        record.id[0] = @intCast(index);
+        try runtime.enqueue(record);
+    }
+    var extra: results.Record = .{};
+    extra.id[0] = 20;
+    try t.expectError(error.PracticeSaveQueueFull, runtime.enqueue(extra));
+    var directory = try std.Io.Dir.cwd().createDirPathOpen(t.io, runtime.path.?, .{});
+    defer directory.close(t.io);
+    try directory.writeFile(t.io, .{ .sub_path = "00000000000000000000000000000000.zon", .data = ".{ .version = 999 }" });
+    runtime.error_value = error.PracticeSaveQueueFull;
+    try runtime.request(.{}, null, true, false, null);
+    const deadline = std.Io.Clock.awake.now(t.io).toMilliseconds() + 5000;
+    while (runtime.worker != null) {
+        runtime.poll();
+        if (std.Io.Clock.awake.now(t.io).toMilliseconds() > deadline) return error.PracticeWorkerDeadline;
+        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
+    }
+    try t.expect(runtime.error_value != null);
+    try t.expectEqual(@as(usize, 16), runtime.queued);
+    // Explicit fixture cleanup prevents shutdown from trying to publish over
+    // the intentionally future record. No pending ID was removed by the failure.
+    runtime.queued = 0;
 }

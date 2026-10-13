@@ -18,6 +18,8 @@ pub const Frame = struct {
     assistance: desktop.practice_results.Assistance = .guided,
     live: bool = false,
     active_layers: ?u16 = null,
+    targets: ?[]const bool = null,
+    holds: ?[]const bool = null,
 };
 pub fn draw(model: *const desktop.model.Model, frame: Frame, light: bool) !void {
     if (!std.mem.eql(u8, &frame.snapshot, &(try model.id()))) return error.StaleKeyboardLabels;
@@ -39,7 +41,7 @@ pub fn draw(model: *const desktop.model.Model, frame: Frame, light: bool) !void 
     if (bounds.w == 0 or bounds.h == 0) return;
     const neutral = try dvui.currentWindow().arena().alloc(bool, frame.labels.key_count);
     @memset(neutral, false);
-    const keys = try desktop.physical_view.plan(output, frame.geometry, frame.labels, frame.layer, frame.modifiers, bounds, .{ .pressed = if (frame.practicing and frame.assistance != .guided) neutral else frame.pressed, .active_layers = frame.active_layers });
+    const keys = try desktop.physical_view.plan(output, frame.geometry, frame.labels, frame.layer, frame.modifiers, bounds, .{ .pressed = if (frame.practicing and frame.assistance != .guided) neutral else frame.pressed, .active_layers = frame.active_layers, .targets = if (frame.practicing and frame.assistance == .guided) frame.targets else null, .holds = if (frame.practicing and frame.assistance == .guided) frame.holds else null, .hold_source_layer = frame.layer });
     if (keys.len == 0) ui.label(theme, "Physical geometry unavailable", .{ .x = 20, .y = 100, .w = 600, .h = 30 }, 16);
     for (keys) |key| {
         const caption = key.content.caption orelse key.content.label orelse key.content.icon_name;
@@ -48,10 +50,12 @@ pub fn draw(model: *const desktop.model.Model, frame: Frame, light: bool) !void 
         options.padding = .all(2);
         options.id_extra = key.placed.id;
         options.rotation = key.placed.rotation;
-        options.background = key.pressed;
+        options.background = key.pressed or key.target or key.hold;
+        if (key.target) options.color_fill = .{ .color = ui.color(0xD6A54D) };
+        if (key.hold) options.color_fill = .{ .color = ui.color(0x267FA5) };
         options.border = .all(1);
         if (key.pressed) options.color_fill = .{ .color = ui.color(0x3296FF) };
-        dvui.labelNoFmt(@src(), caption, .{ .align_x = 0.5, .align_y = 0.5 }, options);
+        dvui.labelNoFmt(@src(), if (key.hold) try std.fmt.allocPrint(dvui.currentWindow().arena(), "{s}\nHOLD", .{caption}) else if (key.target) try std.fmt.allocPrint(dvui.currentWindow().arena(), "{s}\nTAP", .{caption}) else caption, .{ .align_x = 0.5, .align_y = 0.5 }, options);
         if (std.mem.eql(u8, key.content.icon_name, "companion") or std.mem.eql(u8, key.content.icon_name, "shutdown")) {
             var icon_options = options;
             icon_options.background = false;

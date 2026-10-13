@@ -183,7 +183,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     presentation.caption(detail.written(), .{ .y = detail_y, .w = width, .h = 58 }, 15, theme.text, "practice.result.details");
     const actions_y = detail_y + 64;
     var action: Action = .none;
-    if (ui.button(theme, "Practice weak spots", "practice.drill", .{ .y = actions_y, .w = 200, .h = 38 })) {
+    if (ui.buttonEnabled(theme, "Practice weak spots", "practice.drill", .{ .y = actions_y, .w = 200, .h = 38 }, !owner.save_blocked)) {
         var config = owner.config;
         config.challenge = null;
         config.target_count = 0;
@@ -200,7 +200,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
             if (config.target_count > 0) action = .{ .drill = config };
         }
     }
-    if (ui.button(theme, "New exercise", "practice.result.new", .{ .x = 210, .y = actions_y, .w = 145, .h = 38 })) action = .new_exercise;
+    if (ui.buttonEnabled(theme, "New exercise", "practice.result.new", .{ .x = 210, .y = actions_y, .w = 145, .h = 38 }, !owner.save_blocked)) action = .new_exercise;
     if (ui.button(theme, "Saved history", "practice.history", .{ .x = 365, .y = actions_y, .w = 145, .h = 38 })) {
         view.history_open = !view.history_open;
         view.refresh = true;

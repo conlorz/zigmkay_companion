@@ -159,7 +159,9 @@ files. Reads stream bounded records (maximum 512 KiB each); history has no silen
 retention cutoff. Pages/aggregates are rebuildable from those records. A worker
 performs file I/O outside keystroke/render processing. Failed writes retain the
 in-memory result and a pending queue (up to sixteen runs); **Retry** attempts the
-same ID. Shutdown drains queued writes where storage remains available.
+same ID. If the queue fills, the newest rundown is retained and fresh starts wait
+for Retry or deliberate clearing, instead of losing a result. Shutdown drains
+queued writes where storage remains available.
 
 Records contain result counts, context, routes, seed and drill metadata and
 bounded substitution counts. They contain no arbitrary typed-text log or raw

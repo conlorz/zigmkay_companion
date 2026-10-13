@@ -263,8 +263,8 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         if (input.frame) |frame| try keyboard(owner, frame, theme, keyboard_bounds, focus, input.resources) else presentation.caption("Companion · no verified keyboard layout", keyboard_bounds, 18, theme.muted, "practice.keyboard.source");
     }
     view.drawn_len = session.len;
-    if (ui.button(theme, if (owner.active) "Fresh run" else "Start", "practice.start", .{ .x = 0, .y = footer_y, .w = 120, .h = 40 }) and pending == null) pending = .{ .start = true };
-    if (ui.button(theme, "New exercise", "practice.new", .{ .x = 130, .y = footer_y, .w = 150, .h = 40 }) and pending == null) pending = .new_exercise;
+    if (ui.buttonEnabled(theme, if (owner.active) "Fresh run" else "Start", "practice.start", .{ .x = 0, .y = footer_y, .w = 120, .h = 40 }, session.state != .complete) and pending == null) pending = .{ .start = true };
+    if (ui.buttonEnabled(theme, "New exercise", "practice.new", .{ .x = 130, .y = footer_y, .w = 150, .h = 40 }, session.state != .complete) and pending == null) pending = .new_exercise;
     if (ui.button(theme, if (session.state == .paused) "Resume" else "Pause", "practice.pause", .{ .x = 290, .y = footer_y, .w = 120, .h = 40 }) and owner.active and pending == null) pending = if (session.state == .paused) .resume_run else .pause;
     if (ui.button(theme, "Stop", "practice.stop", .{ .x = 420, .y = footer_y, .w = 100, .h = 40 }) and pending == null) pending = .stop;
     const progress = if (session.reference_len == 0) @as(f32, 0) else @as(f32, @floatFromInt(session.matched())) / @as(f32, @floatFromInt(session.reference_len));

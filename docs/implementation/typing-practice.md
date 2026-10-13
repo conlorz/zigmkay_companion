@@ -88,3 +88,40 @@ runners. Their results must be recorded before cross-platform storage acceptance
 Native Windows/Linux GUI/input-source behavior, human typing trials and required
 user review remain pending; no extraction, firmware or release gate is closed by
 this feature. The requested PR is left open for morning review and testing.
+
+## Post-implementation code review
+
+Reviewed the complete feature diff against the committed integration base after
+implementation/docs were finished. Review corrections:
+
+- **P1, completed-result loss:** a completion and New exercise click in the same
+  input batch could replace the session before the application froze it. Fresh
+  starts now wait for result capture; an explicit batch regression retains the
+  completed state and generation until acknowledgement.
+- **P1, full-queue loss:** a seventeenth result during sustained save failure
+  could remain outside the queue and be overwritten by another exercise. It now
+  stays in the rundown, retries enqueue after capacity returns, and blocks fresh
+  starts until it is retained or history is deliberately cleared.
+- **P2, failed clearing:** prior errors could prevent Clear from running, and a
+  failed clear could discard queued records. Clear now bypasses the prior-error
+  guard and only discards pending records after successful clearing. A future
+  schema fixture verifies pending IDs survive a failed clear.
+- **P2, frozen display context:** result names could come from a later renamed
+  project/input source even though IDs were frozen. Names are now captured at
+  start. A real project identity fixture confirms renames and caption changes
+  do not change the comparison identity; changed translated routes do.
+- **P2, corrupted Unicode:** stored substitution codepoints and duplicate pairs
+  now receive explicit validation before aggregation/rendering.
+
+The review also checked atomic file ownership, weighted aggregation, scored
+last-ten eligibility, current-run inclusion, case/symbol separation, modifier
+variants, runner replacement/cancellation, stale live state, assistance scope,
+keyboard-event forwarding on results, bounded generation and fixture hardware
+guards. Remaining validation limitations are listed above; no cross-platform
+GUI or human-learning acceptance is claimed.
+
+Guided companion rendering was also brought into the same assistance policy:
+TAP/HOLD guidance is shown only when its actual labels match the practice frame.
+Layout only suppresses every guidance/pressed highlight, and Hidden suppresses
+the participating window. Unrelated verified running profiles do not receive
+hints from an unflashed draft.
