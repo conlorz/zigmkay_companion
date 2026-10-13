@@ -29,9 +29,14 @@ jobs:
       - name: Test nested source traversal before the complete matrix
         timeout-minutes: 2
         run: zig test packages/jobs/src/source_files.zig --test-filter nested
+      - name: Isolate package tree test outside build runner protocol
+        timeout-minutes: 2
+        run: |
+          zig test packages/jobs/src/package_cache.zig --test-filter 'POSIX colon' --test-no-exec -femit-bin="$RUNNER_TEMP/package-colon-test"
+          timeout 25s "$RUNNER_TEMP/package-colon-test"
       - name: Diagnose Linux fixture cleanup and traversal
         timeout-minutes: 2
-        run: zig build test-jobs -j2 --test-timeout 10s --summary failures
+        run: zig build test-jobs -j1 --test-timeout 10s --summary failures
       - name: Test portable contracts (no device access)
         timeout-minutes: 15
         run: zig build test -j2 --test-timeout 45s
