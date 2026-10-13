@@ -1,8 +1,6 @@
 //! Deterministic traversal only; callers own exclusions and digest formats.
 const std = @import("std");
 const builtin = @import("builtin");
-
-// Test diagnostics never print source paths, names, or handles.
 pub const Entry = struct { path: []const u8, kind: std.Io.File.Kind };
 pub const Policy = struct {
     excluded: *const fn (path: []const u8, basename: []const u8, kind: std.Io.File.Kind) bool,
@@ -21,17 +19,11 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
         iterator: std.Io.Dir.Iterator,
         prefix: []const u8,
         owns_dir: bool,
-        repeated: usize = 0,
-        previous_name: ?[]u8 = null,
-        previous_state: ?std.Io.Dir.Reader.State = null,
-        previous_index: usize = 0,
-        previous_end: usize = 0,
     };
     var stack: std.ArrayList(Frame) = .empty;
     defer {
         for (stack.items) |*frame| {
             if (frame.owns_dir) frame.dir.close(io);
-            if (builtin.is_test) if (frame.previous_name) |name| gpa.free(name);
             gpa.free(frame.prefix);
         }
         stack.deinit(gpa);
@@ -41,65 +33,37 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
         gpa.free(empty);
         return err;
     };
-    var trace_steps: usize = 0;
+    var entries_seen: usize = 0;
     while (stack.items.len != 0) {
         const frame = &stack.items[stack.items.len - 1];
-        if (builtin.is_test and trace_steps < 30) {
-            trace_steps += 1;
-            std.debug.print("source traversal step={d} depth={d} before next\n", .{ trace_steps, stack.items.len });
-        }
         const entry = try frame.iterator.next(io);
-        if (builtin.is_test) {
-            if (trace_steps > 0 and trace_steps <= 30) {
-                const reader = &frame.iterator.reader;
-                std.debug.print("source traversal step={d} depth={d} after next state={any} index={d} end={d}\n", .{
-                    trace_steps, stack.items.len, reader.state, reader.index, reader.end,
-                });
-            }
-            const reader = &frame.iterator.reader;
-            if (entry) |item| {
-                const unchanged = frame.previous_state != null and std.meta.eql(frame.previous_state.?, reader.state) and
-                    frame.previous_index == reader.index and frame.previous_end == reader.end and
-                    frame.previous_name != null and std.mem.eql(u8, frame.previous_name.?, item.name);
-                frame.repeated = if (unchanged) frame.repeated + 1 else 0;
-                if (frame.repeated >= 8) return error.SourceTraversalStalled;
-                const name = try gpa.dupe(u8, item.name);
-                if (frame.previous_name) |old| gpa.free(old);
-                frame.previous_name = name;
-                frame.previous_state = reader.state;
-                frame.previous_index = reader.index;
-                frame.previous_end = reader.end;
-            }
-        }
         const item = entry orelse {
             const done = stack.pop().?;
             if (done.owns_dir) done.dir.close(io);
-            if (builtin.is_test) if (done.previous_name) |name| gpa.free(name);
             gpa.free(done.prefix);
             continue;
         };
-        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} before join\n", .{trace_steps});
+        // Test-only protection against an iterator repeatedly returning entries.
+        // Production source trees are never subject to this diagnostic bound.
+        if (builtin.is_test) {
+            if (entries_seen == 20_000) return error.SourceTraversalStalled;
+            entries_seen += 1;
+        }
         const path = try std.fs.path.join(gpa, &.{ frame.prefix, item.name });
-        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after join, before excluded\n", .{trace_steps});
-        const excluded = policy.excluded(path, item.name, item.kind);
-        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after excluded\n", .{trace_steps});
-        if (excluded) {
+        if (policy.excluded(path, item.name, item.kind)) {
             gpa.free(path);
             continue;
         }
         if (item.kind == .directory) {
-            if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} before child open\n", .{trace_steps});
             const child = frame.dir.openDir(io, item.name, .{ .iterate = true }) catch |err| {
                 gpa.free(path);
                 return err;
             };
-            if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after child open, before stack append\n", .{trace_steps});
             stack.append(gpa, .{ .dir = child, .iterator = child.iterate(), .prefix = path, .owns_dir = true }) catch |err| {
                 child.close(io);
                 gpa.free(path);
                 return err;
             };
-            if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after stack append\n", .{trace_steps});
             continue;
         }
         if (policy.included) |included| {
@@ -112,12 +76,10 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
             gpa.free(path);
             return error.SourceFileLimit;
         }
-        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} before file append\n", .{trace_steps});
         files.append(gpa, .{ .path = path, .kind = item.kind }) catch |err| {
             gpa.free(path);
             return err;
         };
-        if (builtin.is_test and trace_steps <= 30) std.debug.print("source traversal step={d} after file append\n", .{trace_steps});
     }
     std.mem.sort(Entry, files.items, {}, struct {
         fn less(_: void, lhs: Entry, rhs: Entry) bool {
