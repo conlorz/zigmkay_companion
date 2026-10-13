@@ -13,19 +13,64 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
         for (files.items) |file| gpa.free(file.path);
         files.deinit(gpa);
     }
-    var walker = try root.walk(gpa);
-    defer walker.deinit();
-    while (try walker.next(io)) |entry| {
-        if (policy.excluded(entry.path, entry.basename, entry.kind)) {
-            if (entry.kind == .directory) walker.leave(io);
+    const Frame = struct {
+        dir: std.Io.Dir,
+        iterator: std.Io.Dir.Iterator,
+        prefix: []const u8,
+        owns_dir: bool,
+    };
+    var stack: std.ArrayList(Frame) = .empty;
+    defer {
+        for (stack.items) |*frame| {
+            if (frame.owns_dir) frame.dir.close(io);
+            gpa.free(frame.prefix);
+        }
+        stack.deinit(gpa);
+    }
+    const empty = try gpa.dupe(u8, "");
+    stack.append(gpa, .{ .dir = root, .iterator = root.iterate(), .prefix = empty, .owns_dir = false }) catch |err| {
+        gpa.free(empty);
+        return err;
+    };
+    while (stack.items.len != 0) {
+        const frame = &stack.items[stack.items.len - 1];
+        const entry = (try frame.iterator.next(io)) orelse {
+            const done = stack.pop().?;
+            if (done.owns_dir) done.dir.close(io);
+            gpa.free(done.prefix);
+            continue;
+        };
+        const path = try std.fs.path.join(gpa, &.{ frame.prefix, entry.name });
+        if (policy.excluded(path, entry.name, entry.kind)) {
+            gpa.free(path);
             continue;
         }
-        if (entry.kind == .directory) continue;
-        if (policy.included) |included| if (!included(entry.path, entry.kind)) continue;
-        if (files.items.len == policy.max_files) return error.SourceFileLimit;
-        const path = try gpa.dupe(u8, entry.path);
-        errdefer gpa.free(path);
-        try files.append(gpa, .{ .path = path, .kind = entry.kind });
+        if (entry.kind == .directory) {
+            const child = frame.dir.openDir(io, entry.name, .{ .iterate = true }) catch |err| {
+                gpa.free(path);
+                return err;
+            };
+            stack.append(gpa, .{ .dir = child, .iterator = child.iterate(), .prefix = path, .owns_dir = true }) catch |err| {
+                child.close(io);
+                gpa.free(path);
+                return err;
+            };
+            continue;
+        }
+        if (policy.included) |included| {
+            if (!included(path, entry.kind)) {
+                gpa.free(path);
+                continue;
+            }
+        }
+        if (files.items.len == policy.max_files) {
+            gpa.free(path);
+            return error.SourceFileLimit;
+        }
+        files.append(gpa, .{ .path = path, .kind = entry.kind }) catch |err| {
+            gpa.free(path);
+            return err;
+        };
     }
     std.mem.sort(Entry, files.items, {}, struct {
         fn less(_: void, lhs: Entry, rhs: Entry) bool {
@@ -63,6 +108,9 @@ test "traversal preserves caller policy, sorts paths and enforces bounds" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "sibling/deeper");
+    try tmp.dir.writeFile(io, .{ .sub_path = "sibling/deeper/a.zig", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "sibling/.hidden.zig", .data = "" });
     try tmp.dir.createDirPath(io, ".zig-cache");
     try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache/ignored.zig", .data = "" });
     try tmp.dir.writeFile(io, .{ .sub_path = ".hidden.zig", .data = "" });
@@ -79,10 +127,12 @@ test "traversal preserves caller policy, sorts paths and enforces bounds" {
     const policy: Policy = .{ .excluded = CompilerPolicy.excluded, .included = CompilerPolicy.included };
     const files = try collect(gpa, io, tmp.dir, policy);
     defer free(gpa, files);
-    try std.testing.expectEqual(@as(usize, 2), files.len);
+    try std.testing.expectEqual(@as(usize, 4), files.len);
     try std.testing.expectEqualStrings(".hidden.zig", files[0].path);
-    try std.testing.expectEqualStrings("z.zon", files[1].path);
+    try std.testing.expectEqualStrings("sibling/.hidden.zig", files[1].path);
+    try std.testing.expectEqualStrings("sibling/deeper/a.zig", files[2].path);
+    try std.testing.expectEqualStrings("z.zon", files[3].path);
     var bounded = policy;
-    bounded.max_files = 1;
+    bounded.max_files = 3;
     try std.testing.expectError(error.SourceFileLimit, collect(gpa, io, tmp.dir, bounded));
 }
