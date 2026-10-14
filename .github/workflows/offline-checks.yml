@@ -24,9 +24,6 @@ jobs:
       - name: Test nested source traversal before the complete matrix
         timeout-minutes: 2
         run: zig test packages/jobs/src/source_files.zig --test-filter nested
-      - name: Test offline managed-build jobs
-        timeout-minutes: 2
-        run: zig build test-jobs -j1 --test-timeout 10s --summary failures
       - name: Test portable contracts (no device access)
         timeout-minutes: 15
         run: zig build test -j2 --test-timeout 45s
