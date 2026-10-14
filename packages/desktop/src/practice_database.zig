@@ -8,6 +8,7 @@ const Backup = opaque {};
 extern "c" fn sqlite3_open_v2([*:0]const u8, *?*Handle, c_int, ?[*:0]const u8) c_int;
 extern "c" fn sqlite3_close_v2(*Handle) c_int;
 extern "c" fn sqlite3_busy_timeout(*Handle, c_int) c_int;
+extern "c" fn sqlite3_sleep(c_int) c_int;
 extern "c" fn sqlite3_exec(*Handle, [*:0]const u8, ?*const anyopaque, ?*anyopaque, ?*?[*:0]u8) c_int;
 extern "c" fn sqlite3_prepare_v2(*Handle, [*:0]const u8, c_int, *?*RawStatement, ?*?[*:0]const u8) c_int;
 extern "c" fn sqlite3_finalize(*RawStatement) c_int;
@@ -80,6 +81,7 @@ pub fn encode(gpa: std.mem.Allocator, value: anytype) ![]u8 {
 // Adding defaulted fields to the public model must not hide historical cohorts.
 pub fn cohortKey(gpa: std.mem.Allocator, cohort: results.Cohort) ![]u8 {
     const base = .{ .behavior = cohort.behavior, .mapping = cohort.mapping, .verified = cohort.verified, .source = cohort.source, .family = cohort.family, .preset = cohort.preset, .length = cohort.length, .assistance = cohort.assistance, .mode = cohort.mode, .metric_version = cohort.metric_version, .generation_version = cohort.generation_version, .lesson = cohort.lesson };
+    if (cohort.hints.policy != .full or cohort.hints.revealed) return encode(gpa, .{ .version = @as(u16, 3), .base = base, .curriculum = cohort.curriculum, .hints = cohort.hints });
     if (cohort.curriculum.version == 0) return encode(gpa, base);
     return encode(gpa, .{ .version = @as(u16, 2), .base = base, .curriculum = cohort.curriculum });
 }
@@ -126,11 +128,11 @@ test "schema one migration preserves old record bytes and default-field identity
         try update.bindBlob(1, old_bytes);
         try update.bindBlob(2, &record.id);
         _ = try update.step();
-        try db.exec("DROP INDEX runs_practice_chronological; ALTER TABLE runs DROP COLUMN practice_scope; PRAGMA user_version=1");
+        try db.exec("DROP INDEX runs_practice_chronological; ALTER TABLE runs DROP COLUMN practice_scope; ALTER TABLE events DROP COLUMN cue_visible; PRAGMA user_version=1");
     }
     var migrated = try Database.open(t.allocator, path, false);
     defer migrated.deinit();
-    try t.expectEqual(@as(i64, 2), try migrated.number("PRAGMA user_version"));
+    try t.expectEqual(@as(i64, 3), try migrated.number("PRAGMA user_version"));
     try migrated.save(&record, null);
     var rows = try migrated.rowsFor(.{});
     defer rows.deinit();
@@ -153,7 +155,7 @@ test "invalid legacy payload rolls back the complete scope migration" {
         defer db.deinit();
         const record: results.Record = .{ .id = @splat(1) };
         try db.save(&record, null);
-        try db.exec("UPDATE runs SET record=CAST('.{ .version=999 }' AS BLOB); DROP INDEX runs_practice_chronological; ALTER TABLE runs DROP COLUMN practice_scope; PRAGMA user_version=1");
+        try db.exec("UPDATE runs SET record=CAST('.{ .version=999 }' AS BLOB); DROP INDEX runs_practice_chronological; ALTER TABLE runs DROP COLUMN practice_scope; ALTER TABLE events DROP COLUMN cue_visible; PRAGMA user_version=1");
     }
     try t.expectError(error.UnsupportedPracticeHistory, Database.open(t.allocator, path, false));
     var preserved = try Database.open(t.allocator, path, true);
@@ -164,6 +166,35 @@ test "invalid legacy payload rolls back the complete scope migration" {
     defer rows.deinit();
     try t.expect(try rows.step());
     try t.expectEqualStrings(".{ .version=999 }", try rows.blob(1));
+}
+test "older timing defaults remain idempotent without rewriting original payload bytes" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    const path = try std.fs.path.join(t.allocator, &.{ root, "old-timing.sqlite3" });
+    defer t.allocator.free(path);
+    var db = try Database.open(t.allocator, path, false);
+    defer db.deinit();
+    var recorder = timing.Recorder.init(t.allocator);
+    defer recorder.deinit();
+    recorder.reset(&.{'a'});
+    recorder.record(.attempt, 100, 0, 0, 'a', .ordinary);
+    var record: results.Record = .{ .id = @splat(3), .timing_available = true, .matched = 1, .attempts = 1, .correct_attempts = 1, .stat_count = 1 };
+    record.stats[0] = .{ .cp = 'a', .opportunities = 1 };
+    try db.save(&record, recorder.payload());
+    const old = ".{ .reference=.{97}, .events=.{ .{ .observed_us=100, .elapsed_us=0, .active_us=0, .kind=.attempt, .position=0, .expected=97, .typed=97, .correct=true, .eligibility=.first_input } } }";
+    var update = try db.prepare("UPDATE runs SET timing=?1 WHERE id=?2");
+    defer update.deinit();
+    try update.bindBlob(1, old);
+    try update.bindBlob(2, &record.id);
+    _ = try update.step();
+    try db.save(&record, recorder.payload());
+    var rows = try db.rows();
+    defer rows.deinit();
+    try t.expect(try rows.step());
+    try t.expectEqualStrings(old, try rows.blob(2));
 }
 pub const Database = struct {
     handle: *Handle,
@@ -188,10 +219,25 @@ pub const Database = struct {
         const app = try self.number("PRAGMA application_id");
         if (!readonly and version == 0 and app == 0 and try self.number("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'") == 0) {
             try self.exec("CREATE TABLE IF NOT EXISTS runs(id BLOB PRIMARY KEY CHECK(length(id)=16), timestamp INTEGER NOT NULL, record BLOB NOT NULL, timing BLOB, cohort BLOB NOT NULL) STRICT; CREATE INDEX IF NOT EXISTS runs_chronological ON runs(timestamp,id); CREATE INDEX IF NOT EXISTS runs_cohort_chronological ON runs(cohort,timestamp,id); CREATE TABLE IF NOT EXISTS events(run_id BLOB NOT NULL REFERENCES runs(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, elapsed_us INTEGER NOT NULL, active_us INTEGER NOT NULL, kind INTEGER NOT NULL, position INTEGER NOT NULL, expected INTEGER, typed INTEGER, batch INTEGER NOT NULL, input INTEGER NOT NULL, eligibility INTEGER NOT NULL, interval_us INTEGER, correct INTEGER NOT NULL, assistance INTEGER NOT NULL, observed_us INTEGER NOT NULL, clock INTEGER NOT NULL, PRIMARY KEY(run_id,ordinal)) STRICT; CREATE TABLE IF NOT EXISTS legacy_imports(id BLOB PRIMARY KEY, record BLOB NOT NULL) STRICT; PRAGMA application_id=0x5a4d5052; PRAGMA user_version=1;");
-        } else if ((version != 1 and version != 2) or app != application_id) return error.UnsupportedPracticeDatabase;
-        if (!readonly and version != 2) try self.migrateScope();
+        } else if ((version != 1 and version != 2 and version != 3) or app != application_id) return error.UnsupportedPracticeDatabase;
+        if (!readonly and version < 2) try self.migrateScope();
+        if (!readonly and version < 3) try self.exec("ALTER TABLE events ADD COLUMN cue_visible INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=3");
         if (!readonly) try self.exec("COMMIT");
-        if (!readonly) try self.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
+        if (!readonly) {
+            // Concurrent first opens can conflict while switching journal mode.
+            // SQLite can return BUSY here without invoking its busy handler.
+            var attempts: usize = 0;
+            while (true) : (attempts += 1) {
+                const result = sqlite3_exec(self.handle, "PRAGMA journal_mode=WAL", null, null, null);
+                if ((result == 5 or result == 6) and attempts < 3) {
+                    _ = sqlite3_sleep(10);
+                    continue;
+                }
+                try check(result);
+                break;
+            }
+            try self.exec("PRAGMA synchronous=FULL");
+        }
         return self;
     }
     pub fn deinit(self: *Database) void {
@@ -264,6 +310,8 @@ pub const Database = struct {
     fn put(self: *Database, record: *const results.Record, payload: ?timing.Payload) !void {
         try record.validate();
         if (payload) |p| try p.validate();
+        if (payload != null and record.cue_evidence != payload.?.cue_tracking) return error.InvalidPracticeTiming;
+        if (payload) |p| if (record.cohort.assistance != .guided and p.help_revealed and !record.cohort.hints.revealed) return error.InvalidPracticeTiming;
         if (record.timing_available != (payload != null) or (payload != null and record.timing_truncated != payload.?.truncated)) return error.InvalidPracticeTiming;
         if (payload) |p| {
             if ((record.status == .completed and p.reference.len != record.matched) or record.matched > p.reference.len) return error.InvalidPracticeTiming;
@@ -285,7 +333,15 @@ pub const Database = struct {
         if (try found.step()) {
             if (!try sameRecord(self.gpa, try found.blob(0), record)) return error.PracticeRunCollision;
             if (samples) |b| {
-                if (sqlite3_column_type(found.raw, 1) == 5 or !std.mem.eql(u8, b, try found.blob(1))) return error.PracticeRunCollision;
+                _ = b;
+                if (sqlite3_column_type(found.raw, 1) == 5) return error.PracticeRunCollision;
+                var arena = std.heap.ArenaAllocator.init(self.gpa);
+                defer arena.deinit();
+                const old_payload = try decode(timing.Payload, arena.allocator(), try found.blob(1));
+                try old_payload.validate();
+                const current_payload = payload.?;
+                if (old_payload.version != current_payload.version or old_payload.truncated != current_payload.truncated or old_payload.dropped != current_payload.dropped or old_payload.cue_tracking != current_payload.cue_tracking or old_payload.help_revealed != current_payload.help_revealed or !std.mem.eql(u21, old_payload.reference, current_payload.reference) or old_payload.events.len != current_payload.events.len) return error.PracticeRunCollision;
+                for (old_payload.events, current_payload.events) |old_event, event| if (!std.meta.eql(old_event, event)) return error.PracticeRunCollision;
             }
             return;
         }
@@ -302,7 +358,7 @@ pub const Database = struct {
         try stmt.bindBlob(6, &scope);
         _ = try stmt.step();
         if (payload) |p| for (p.events, 0..) |event, index| {
-            var e = try self.prepare("INSERT INTO events VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)");
+            var e = try self.prepare("INSERT INTO events VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)");
             defer e.deinit();
             try e.bindBlob(1, &record.id);
             try e.integer(2, @intCast(index));
@@ -320,6 +376,7 @@ pub const Database = struct {
             try e.integer(14, event.assistance);
             try e.integer(15, std.math.cast(i64, event.observed_us) orelse return error.InvalidPracticeTiming);
             try e.integer(16, @backingInt(event.clock));
+            try e.integer(17, @intFromBool(event.cue_visible));
             _ = try e.step();
         };
     }
@@ -532,8 +589,6 @@ test "native independent writers share a Unicode database and readonly handles c
     defer temp.cleanup();
     const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
     defer t.allocator.free(root);
-    const path = try std.fs.path.join(t.allocator, &.{ root, "practice café.sqlite3" });
-    defer t.allocator.free(path);
     const Writer = struct {
         fn write(database_path: []const u8, id: u8) !void {
             var db = try Database.open(std.heap.page_allocator, database_path, false);
@@ -543,13 +598,21 @@ test "native independent writers share a Unicode database and readonly handles c
             try db.save(&record, null);
         }
     };
-    var a = try std.Io.concurrent(t.io, Writer.write, .{ path, @as(u8, 1) });
-    var b = try std.Io.concurrent(t.io, Writer.write, .{ path, @as(u8, 2) });
-    try a.await(t.io);
-    try b.await(t.io);
-    var read = try Database.open(t.allocator, path, true);
-    defer read.deinit();
-    try t.expectEqual(@as(usize, 2), try read.runCount());
-    const record = results.Record{ .id = @splat(3) };
-    try t.expectError(error.PracticeDatabaseReadOnly, read.save(&record, null));
+    for (0..8) |round| {
+        const name = try std.fmt.allocPrint(t.allocator, "practice café-{d}.sqlite3", .{round});
+        defer t.allocator.free(name);
+        const path = try std.fs.path.join(t.allocator, &.{ root, name });
+        defer t.allocator.free(path);
+        var a = try std.Io.concurrent(t.io, Writer.write, .{ path, @as(u8, 1) });
+        defer a.cancel(t.io) catch {};
+        var b = try std.Io.concurrent(t.io, Writer.write, .{ path, @as(u8, 2) });
+        defer b.cancel(t.io) catch {};
+        try a.await(t.io);
+        try b.await(t.io);
+        var read = try Database.open(t.allocator, path, true);
+        defer read.deinit();
+        try t.expectEqual(@as(usize, 2), try read.runCount());
+        const record = results.Record{ .id = @splat(3) };
+        try t.expectError(error.PracticeDatabaseReadOnly, read.save(&record, null));
+    }
 }

@@ -11,6 +11,8 @@ const rundown = @import("practice_rundown.zig");
 const progress_ui = @import("practice_progress_ui.zig");
 const diagnostics_ui = @import("practice_diagnostics_ui.zig");
 const curriculum_ui = @import("practice_curriculum_ui.zig");
+const help = desktop.practice_help;
+const help_ui = @import("practice_help_ui.zig");
 pub const Frame = struct {
     /// Live frames must come from the coherent identity-checked session adapter.
     /// Native text and an editable draft never establish a live frame.
@@ -53,8 +55,6 @@ pub const View = struct {
     challenge_enabled: bool = false,
     challenge_seed: u64 = 1,
     was_focused: ?bool = null,
-    hint_generation: u64 = 0,
-    hint_position: ?usize = null,
     data_open: bool = false,
     progress_open: bool = false,
     progress: progress_ui.View = .{},
@@ -62,6 +62,11 @@ pub const View = struct {
     diagnostics: diagnostics_ui.View = .{},
     curriculum_open: bool = false,
     curriculum: curriculum_ui.View = .{},
+    help: help.State = .{},
+    help_open: bool = false,
+    help_config: control.Config = .{},
+    review_open: bool = false,
+    review: help_ui.Review = .{},
     data_path: [4096]u8 = @splat(0),
     transfer: enum { none, export_database, import_database } = .none,
 };
@@ -124,7 +129,7 @@ fn consumeInput(owner: *control.Controller, data: *dvui.WidgetData, input: Input
     }
     return effect;
 }
-fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bounds: dvui.Rect, focus: usize, resources: geometry.Resources) !void {
+fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bounds: dvui.Rect, focus: usize, resources: geometry.Resources, show_hint: bool) !void {
     const panel = dvui.box(@src(), .{}, .{ .rect = bounds, .background = true, .color_fill = .{ .color = theme.bg }, .corners = .all(12), .padding = .{}, .tag = "practice.keyboard" });
     defer panel.deinit();
     if (frame.geometry.len == 0) {
@@ -135,7 +140,7 @@ fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bou
     var layer = @min(frame.layer, labels.layer_count - 1);
     var active = frame.active_layers;
     var mods = frame.modifiers;
-    const guided = owner.config.assistance == .guided;
+    const guided = show_hint;
     const next = if (guided and owner.active and owner.session.state != .complete and focus < owner.session.reference_len) desktop.practice_curriculum.hintFor(labels.practiceLabels(), owner.config.curriculum, owner.session.reference[focus]) orelse try desktop.practice.hint(labels.practiceLabels(), layer, mods.toByte(), owner.session.reference[focus], active) else null;
     const arena = dvui.currentWindow().arena();
     const tap = try arena.alloc(bool, labels.key_count);
@@ -170,13 +175,28 @@ fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bou
                 };
             }
         }
-        const instruction = try std.fmt.allocPrint(arena, "{s} · layer {d}{s}", .{ if (has_holds) "Hold blue HOLD keys first; keep holding, then tap gold TAP" else "Tap the gold TAP key", hint.layer, shift_note });
+        const instruction = try std.fmt.allocPrint(arena, "{s} · layer {d}{s}", .{ if (has_holds) "Hold HOLD keys, tap TAP, then release the holds" else "Tap the TAP key, then release any required holds", hint.layer, shift_note });
         presentation.caption(instruction, .{ .x = 8, .y = 28, .w = bounds.w - 16, .h = 23 }, 14, ui.color(if (theme.bg.r > 100) 0x8B6318 else 0xFFD179), null);
+        if (owner.config.hints.policy != .full or owner.config.assistance != .guided) {
+            var covered: u8 = frame.modifiers.toByte();
+            var layer_provider = hint.layer == hold_source_layer;
+            for (hold, 0..) |held, key| if (held) {
+                const entry = labels.practiceLabels().get(hold_source_layer, key, frame.modifiers.toByte(), desktop.practice.layerMask(hold_source_layer));
+                covered |= entry.hold_modifiers orelse if (entry.hid_code) |code| (if (code >= 224 and code <= 231) @as(u8, 1) << @intCast(code - 224) else 0) else 0;
+                if (entry.hold_layer == hint.layer) layer_provider = true;
+            };
+            if (covered & 0x22 != 0) covered |= 2;
+            const supported = hint.modifiers & ~covered == 0 and layer_provider;
+            const cue = dvui.box(@src(), .{}, .{ .rect = .{ .x = 8, .y = 56, .w = bounds.w - 16, .h = 56 }, .padding = .all(6), .background = true, .color_fill = .{ .color = theme.panel }, .tag = "practice.hint" });
+            presentation.paragraph(if (!supported) "The output is known, but its required hold provider is unavailable. Use another proven route." else if (has_holds) "Release unneeded modifier/layer holds first. Hold the keys marked HOLD, tap the key marked TAP, then release the holds." else "Release unneeded modifier/layer holds first. Tap the key marked TAP; release required holds when finished.", .{ .w = bounds.w - 40, .h = 44 }, 14, theme.text);
+            cue.deinit();
+        }
     } else if (guided and owner.active and owner.session.state != .complete) presentation.caption("Use your layout's composition or custom action for this character", .{ .x = 8, .y = 28, .w = bounds.w - 16, .h = 23 }, 14, theme.muted, null);
     const neutral_pressed = try arena.alloc(bool, labels.key_count);
     @memset(neutral_pressed, false);
     const output = try arena.alloc(desktop.physical_view.DrawKey, frame.geometry.len);
-    const plan = try desktop.physical_view.plan(output, frame.geometry, labels, layer, mods, .{ .x = 18, .y = 52, .w = @max(0, bounds.w - 36), .h = @max(0, bounds.h - 62) }, .{ .pressed = if (guided) frame.pressed else neutral_pressed, .targets = tap, .holds = hold, .hold_source_layer = hold_source_layer, .active_layers = active, .stale = frame.stale });
+    const top: f32 = if (next != null and (owner.config.hints.policy != .full or owner.config.assistance != .guided)) 120 else 52;
+    const plan = try desktop.physical_view.plan(output, frame.geometry, labels, layer, mods, .{ .x = 18, .y = top, .w = @max(0, bounds.w - 36), .h = @max(0, bounds.h - top - 10) }, .{ .pressed = if (guided) frame.pressed else neutral_pressed, .targets = tap, .holds = hold, .hold_source_layer = hold_source_layer, .active_layers = active, .stale = frame.stale });
     try geometry.draw(layer, plan, resources);
 }
 pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dvui.Rect, input: Input) !DrawResult {
@@ -191,6 +211,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         return .{};
     }
     view.drawn_panel = true;
+    if (owner.session.recorder) |recorder| recorder.clock = .frame;
     var focus_effect: control.Effect = .{};
     if (owner.active and owner.session.state != .complete) {
         if (view.was_focused) |previous| if (previous != input.window_focused) {
@@ -199,6 +220,9 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         };
     }
     view.was_focused = input.window_focused;
+    const auxiliary = view.data_open or view.progress_open or view.diagnostics_open or view.curriculum_open or view.help_open or view.review_open;
+    view.help.tick(owner.generation, desktop.practice_view.focus(&owner.session), input.now_us, !owner.active or owner.session.state == .paused or owner.session.state == .complete or auxiliary or !input.window_focused);
+    if (auxiliary and owner.active and owner.session.state != .complete) if (owner.session.recorder) |recorder| recorder.setCue(false, owner.session.len, input.now_us, owner.session.duration(input.now_us));
     if (view.data_open) {
         presentation.caption("Practice data", .{ .w = width, .h = 42 }, 28, theme.text, "practice.data.title");
         presentation.caption("Timing datapoints are saved locally during practice. Older runs keep their original counts.", .{ .y = 52, .w = width, .h = 48 }, 17, theme.muted, null);
@@ -297,6 +321,32 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         }
         return .{ .input_effect = focus_effect };
     }
+    if (view.help_open) {
+        if (try help_ui.settings(&view.help_config, theme, .{ .w = width, .h = height })) {
+            view.help_open = false;
+            return .{ .input_effect = focus_effect, .action = owner.action(.{ .choose = view.help_config }) };
+        }
+        return .{ .input_effect = focus_effect };
+    }
+    if (view.review_open) {
+        const context = owner.configCohort();
+        const matches = context.verified == input.history_cohort.verified and context.source == input.history_cohort.source and context.family == input.history_cohort.family and std.mem.eql(u8, &context.behavior, &input.history_cohort.behavior) and std.mem.eql(u8, &context.mapping, &input.history_cohort.mapping);
+        const action = try help_ui.reviews(&view.review, owner, if (matches) input.history else null, input.history_failure, input.history_saving or !matches, theme, .{ .w = width, .h = height });
+        if (view.review.retry) {
+            view.rundown.retry = true;
+            view.review.retry = false;
+        }
+        switch (action) {
+            .none => {},
+            .back => view.review_open = false,
+            .start => |config| {
+                view.review_open = false;
+                view.rundown.reviewed = null;
+                return .{ .input_effect = focus_effect, .action = owner.action(.{ .drill = config }) };
+            },
+        }
+        return .{ .input_effect = focus_effect };
+    }
     // Exercise input precedes controls so Space cannot toggle a focused checkbox.
     var input_effect = try consumeInput(owner, window.data(), input);
     if (focus_effect.runner != .none or focus_effect.reset_text) input_effect = focus_effect;
@@ -306,7 +356,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
     var level = owner.config.level;
     var preset: usize = @backingInt(owner.config.preset);
     var source: usize = @backingInt(owner.config.source);
-    var assistance: usize = @backingInt(owner.config.assistance);
+    var assistance: usize = help.choice(owner.config);
     var changed = false;
     {
         const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .rect = .{ .w = width, .h = 38 } });
@@ -321,7 +371,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .rect = .{ .y = 42, .w = width, .h = 38 } });
         defer row.deinit();
         changed = dvui.dropdown(@src(), &.{ "OS keyboard text", "Unflashed draft" }, .{ .choice = &source }, .{}, .{ .tag = "practice.input.source" }) or changed;
-        changed = dvui.dropdown(@src(), &.{ "Guided", "Layout only", "Hidden" }, .{ .choice = &assistance }, .{}, .{ .tag = "practice.assistance" }) or changed;
+        changed = dvui.dropdown(@src(), &help.choices, .{ .choice = &assistance }, .{}, .{ .tag = "practice.assistance" }) or changed;
         if (!owner.active and dvui.button(@src(), "Saved history", .{}, .{ .tag = "practice.history.open" })) {
             view.rundown.refresh = true;
             view.rundown.history_open = true;
@@ -362,6 +412,16 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
             view.rundown.refresh = true;
             if (owner.active and owner.session.state != .complete) pending = .pause;
         }
+        if (dvui.button(@src(), "Hint settings", .{}, .{ .tag = "practice.help.open" })) {
+            view.help_open = true;
+            view.help_config = owner.config;
+            if (owner.active and owner.session.state != .complete) pending = .pause;
+        }
+        if (dvui.button(@src(), "Review", .{}, .{ .tag = "practice.review.open" })) {
+            view.review_open = true;
+            view.rundown.refresh = true;
+            if (owner.active and owner.session.state != .complete) pending = .pause;
+        }
     }
     if (view.challenge_open and mode == 0) {
         const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .rect = .{ .y = 84, .w = width, .h = 38 } });
@@ -377,12 +437,12 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         config.level = level;
         config.source = @fromBackingInt(@intCast(source));
         config.preset = @fromBackingInt(@intCast(preset));
-        config.assistance = @fromBackingInt(@intCast(assistance));
+        help.apply(&config, assistance);
         config.challenge = if (mode == 0 and view.challenge_enabled and config.curriculum.version == 0) view.challenge_seed else null;
         config.target_count = 0;
         pending = .{ .choose = config };
     }
-    view.show_keyboard = owner.config.assistance != .hidden;
+    view.show_keyboard = owner.config.assistance != .hidden or (view.help.requested and !view.help.paused);
     if (view.rundown.history_open and view.rundown.reviewed == null and owner.completed == null and !owner.active) {
         if (input.history) |saved| if (saved.page_count > 0 and std.meta.eql(input.history_cohort, owner.configCohort())) {
             view.rundown.reviewed = saved.page[0];
@@ -416,13 +476,11 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
     if (focus_text.written().len > 0) presentation.caption(focus_text.written(), .{ .y = height - 24, .w = width, .h = 22 }, 14, theme.muted, "practice.focus");
     presentation.caption(try std.fmt.allocPrint(dvui.currentWindow().arena(), "{d:.0} WPM     {d:.1}% accuracy     {d:.1}s     {s}", .{ session.wpm(input.now_us), session.accuracy(), @as(f64, @floatFromInt(session.duration(input.now_us))) / 1_000_000, if (!owner.active) "Ready" else @tagName(session.state) }), .{ .x = 0, .y = controls_height + 2, .w = width, .h = 26 }, 18, theme.muted, "practice.metrics");
     const focus = desktop.practice_view.focus(session);
-    if (owner.active and session.state != .complete and owner.config.assistance == .guided and input.frame != null and (view.hint_generation != owner.generation or view.hint_position == null or view.hint_position.? != focus)) {
-        if (try desktop.practice.hint(input.frame.?.labels.practiceLabels(), input.frame.?.layer, input.frame.?.modifiers.toByte(), if (focus < session.reference_len) session.reference[focus] else 0, input.frame.?.active_layers)) |_| {
-            if (session.recorder) |recorder| recorder.record(.hint_shown, input.now_us, session.duration(input.now_us), focus, null, .ordinary);
-            view.hint_generation = owner.generation;
-            view.hint_position = focus;
-        }
-    }
+    view.help.tick(owner.generation, focus, input.now_us, !owner.active or session.state == .paused or session.state == .complete or !input.window_focused);
+    const baseline = if (focus < session.reference_len and input.history != null and std.meta.eql(owner.captured_cohort, input.history_cohort)) help.baseline(input.history.?.progress, session.reference[focus]) else null;
+    const show_hint = if (owner.config.assistance == .guided) view.help.visible(owner.config.hints, baseline) else view.help.requested and !view.help.paused;
+    if (owner.config.assistance == .guided and owner.config.hints.policy == .delayed and !view.help.paused and !show_hint) dvui.timer(window.data().id, @intCast(owner.config.hints.delay(baseline) -| view.help.waited_us));
+    view.show_keyboard = owner.config.assistance != .hidden or (view.help.requested and !view.help.paused);
     const work_y = controls_height + 34;
     const work_height = @max(0, height - 112 - work_y - 24);
     const hero_height = @min(125, work_height * 0.23);
@@ -433,13 +491,32 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
     if (view.show_keyboard) {
         view.drawn_keyboard = input.frame != null;
         const keyboard_bounds: dvui.Rect = .{ .x = 0, .y = footer_y + 124, .w = width, .h = @max(0, height - footer_y - 124) };
-        if (input.frame) |frame| try keyboard(owner, frame, theme, keyboard_bounds, focus, input.resources) else presentation.caption("Companion · no verified keyboard layout", keyboard_bounds, 18, theme.muted, "practice.keyboard.source");
-    }
+        if (input.frame) |frame| try keyboard(owner, frame, theme, keyboard_bounds, focus, input.resources, show_hint) else presentation.caption("Companion · no verified keyboard layout", keyboard_bounds, 18, theme.muted, "practice.keyboard.source");
+        if (owner.active and session.state != .complete) if (session.recorder) |recorder| {
+            recorder.clock = .frame;
+            const frame = input.frame;
+            const available = frame != null and frame.?.geometry.len > 0 and keyboard_bounds.h >= 80;
+            const proven = available and focus < session.reference_len and (desktop.practice_curriculum.hintFor(frame.?.labels.practiceLabels(), owner.config.curriculum, session.reference[focus]) != null or try desktop.practice.hint(frame.?.labels.practiceLabels(), frame.?.layer, frame.?.modifiers.toByte(), session.reference[focus], frame.?.active_layers) != null);
+            recorder.setCue(show_hint and proven, focus, input.now_us, session.duration(input.now_us));
+            if (available and view.help.requested and owner.config.assistance != .guided) recorder.help_revealed = true;
+        };
+    } else if (owner.active and session.state != .complete) if (session.recorder) |recorder| {
+        recorder.clock = .frame;
+        recorder.setCue(false, focus, input.now_us, session.duration(input.now_us));
+    };
     view.drawn_len = session.len;
     if (ui.buttonEnabled(theme, if (owner.active) "Fresh run" else "Start", "practice.start", .{ .x = 0, .y = footer_y, .w = 120, .h = 40 }, session.state != .complete) and pending == null) pending = .{ .start = true };
     if (ui.buttonEnabled(theme, "New exercise", "practice.new", .{ .x = 130, .y = footer_y, .w = 150, .h = 40 }, session.state != .complete) and pending == null) pending = .new_exercise;
     if (ui.button(theme, if (session.state == .paused) "Resume" else "Pause", "practice.pause", .{ .x = 290, .y = footer_y, .w = 120, .h = 40 }) and owner.active and pending == null) pending = if (session.state == .paused) .resume_run else .pause;
     if (ui.button(theme, "Stop", "practice.stop", .{ .x = 420, .y = footer_y, .w = 100, .h = 40 }) and pending == null) pending = .stop;
+    if (ui.buttonEnabled(theme, "Show hint", "practice.hint.request", .{ .x = 530, .y = footer_y, .w = 130, .h = 40 }, owner.active and !view.help.paused and focus < session.reference_len)) {
+        view.help.requested = true;
+        dvui.refresh(null, @src(), null);
+        if (session.recorder) |recorder| {
+            recorder.clock = .frame;
+            recorder.record(.hint_requested, input.now_us, session.duration(input.now_us), focus, null, .ordinary);
+        }
+    }
     const progress = if (session.reference_len == 0) @as(f32, 0) else @as(f32, @floatFromInt(session.matched())) / @as(f32, @floatFromInt(session.reference_len));
     {
         const bar = dvui.box(@src(), .{}, .{ .rect = .{ .x = 0, .y = footer_y + 52, .w = width, .h = 5 }, .padding = .{}, .background = true, .color_fill = .{ .color = theme.control }, .corners = .all(3) });

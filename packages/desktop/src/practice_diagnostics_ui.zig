@@ -95,7 +95,7 @@ pub fn draw(view: *View, selected: ?u21, owner: *desktop.practice_controller.Con
             };
         }
         if (ui.button(theme, "Practice this character", "practice.diagnostics.drill", .{ .y = 428, .w = 230, .h = 38 })) {
-            if (!record.scored or !std.meta.eql(record.cohort, owner.configCohort()) or owner.config.mode != .english) view.message = "Use a scored English run with the current exercise settings for this drill." else {
+            if (!record.scored or !owner.matchesSettings(record.cohort) or owner.config.mode != .english) view.message = "Use a scored English run with the current exercise settings for this drill." else {
                 var config = owner.config;
                 config.challenge = null;
                 config.targets[0] = stat.cp;
@@ -160,7 +160,7 @@ pub fn draw(view: *View, selected: ?u21, owner: *desktop.practice_controller.Con
             }
             var typed: [4]u8 = undefined;
             presentation.caption(try std.fmt.allocPrint(arena, "#{d}: {s} · typed {s} · raw clock {d}µs · elapsed {d:.3}s", .{ view.event, context.written(), if (event.typed) |cp| glyph(cp, &typed) else "—", event.observed_us, @as(f64, @floatFromInt(event.elapsed_us)) / 1_000_000 }), .{ .y = 758, .w = width, .h = 60 }, 16, theme.text, null);
-            presentation.caption(try std.fmt.allocPrint(arena, "Input {t} · batch ID {d} · assistance {d} · correct {any} · interval {s}", .{ event.input, event.batch, event.assistance, event.correct, if (event.interval_us) |interval| try std.fmt.allocPrint(arena, "{d:.3}ms", .{@as(f64, @floatFromInt(interval)) / 1000}) else "excluded" }), .{ .y = 825, .w = width, .h = 38 }, 15, theme.muted, null);
+            presentation.caption(try std.fmt.allocPrint(arena, "Input {t} · batch {d} · cue {s} · correct {any} · interval {s}", .{ event.input, event.batch, if (!payload.cue_tracking) "unknown (older run)" else if (event.cue_visible) "shown" else "not shown", event.correct, if (event.interval_us) |interval| try std.fmt.allocPrint(arena, "{d:.3}ms", .{@as(f64, @floatFromInt(interval)) / 1000}) else "excluded" }), .{ .y = 825, .w = width, .h = 38 }, 15, theme.muted, null);
         }
     } else {
         presentation.caption("Physical layer/modifier performance is unavailable from text events alone.", .{ .y = 136, .w = width, .h = 45 }, 20, theme.text, null);

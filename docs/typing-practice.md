@@ -64,6 +64,39 @@ from the prepared real processor, with the existing cancellation and snapshot
 guards. Detected layout/input-source changes invalidate a run's comparability and require
 a fresh exercise. Loss of verified live state shows an unavailable keyboard.
 
+## Deliberate hints and recall review
+
+Choose **Delayed hints** or **Hints on request** to reduce guidance gradually.
+**Hint settings** controls the delay and optional adaptation to matching clean
+character timing. Delays exclude pauses and restart for each target. **Show hint**
+is available even in Hidden practice. Contextual instructions show compatible
+HOLD/TAP/release sequences only when help appears.
+
+![Native delayed hint](screenshots/typing-practice/help-wide.png)
+
+New runs record cue visibility and cued/uncued character opportunities. Visibility
+means help was rendered, not that you noticed it. Requested help during hidden
+practice stays separate from fully hidden recall evidence. Older runs have
+unknown cue evidence; paste, repeat and batch input do not become clean timing.
+
+**Review** offers optional hidden recall lessons with familiar surrounding text.
+A qualifying character check needs five clean uncued occurrences, positive
+duration and at least 97% uncued first-pass success in a completed hidden run
+without revealed help. Suggested intervals grow from 1 to 3, 7 and 14 days.
+These are initial policy choices, not proof that you forgot or mastered a key.
+You can practice early, show help or ignore the recommendation.
+
+![Native recall review](screenshots/typing-practice/review-wide.png)
+
+Review keeps layouts, input sources, text families and verified/draft evidence
+separate. Small windows scroll the review page; unavailable targets explain why
+a matching lesson is needed. [Implementation and review](implementation/practice-help.md)
+describe the evidence rules and database migration.
+
+![Small-window help](screenshots/typing-practice/help-small.png)
+
+![Small-window recall review](screenshots/typing-practice/review-small.png)
+
 ## Guided difficulty
 
 Open **Guided difficulty** to choose a lesson without changing exercise length

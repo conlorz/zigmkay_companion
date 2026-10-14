@@ -9,7 +9,7 @@ pub const Runtime = struct {
     path: ?[]u8 = null,
     worker: ?*history.Worker = null,
     sequence: u64 = 0,
-    queue: [16]results.Record = @splat(.{}),
+    queue: []results.Record = &.{},
     queued: usize = 0,
     timings: [16]?timing.Owned = @splat(null),
     writing: bool = false,
@@ -19,7 +19,10 @@ pub const Runtime = struct {
     requested_cohort: results.Cohort = .{},
     error_value: ?anyerror = null,
     pub fn init(gpa: std.mem.Allocator, io: std.Io, data_path: ?[]const u8) !Runtime {
-        return .{ .gpa = gpa, .io = io, .path = if (data_path) |path| try std.fs.path.join(gpa, &.{ path, "typing-practice" }) else null };
+        const queue = try gpa.alloc(results.Record, 16);
+        errdefer gpa.free(queue);
+        @memset(queue, .{});
+        return .{ .gpa = gpa, .io = io, .queue = queue, .path = if (data_path) |path| try std.fs.path.join(gpa, &.{ path, "typing-practice" }) else null };
     }
     pub fn deinit(self: *Runtime) void {
         if (self.worker) |worker| {
@@ -59,6 +62,7 @@ pub const Runtime = struct {
         }
         self.discardQueue();
         self.data.deinit();
+        self.gpa.free(self.queue);
     }
     pub fn enqueue(self: *Runtime, record: results.Record) !void {
         return self.enqueueWithTiming(record, null);

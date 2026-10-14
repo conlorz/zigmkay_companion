@@ -3,6 +3,7 @@ const std = @import("std");
 const practice = @import("practice.zig");
 const generator = @import("practice_generator.zig");
 const curriculum = @import("practice_curriculum.zig");
+const help = @import("practice_help.zig");
 pub const Assistance = enum { guided, layout_only, hidden };
 pub const RunMode = enum { normal, challenge, drill };
 pub const Scope = enum { this_run, last_ten, all_history };
@@ -12,6 +13,10 @@ pub const Stat = struct {
     opportunities: u64 = 0,
     misses: u64 = 0,
     retries: u64 = 0,
+    cued: u64 = 0,
+    uncued: u64 = 0,
+    uncued_misses: u64 = 0,
+    uncued_clean: u64 = 0,
     routes: [4]Route = @splat(.{}),
     route_count: u8 = 0,
     routes_truncated: bool = false,
@@ -40,6 +45,7 @@ pub const Cohort = struct {
     generation_version: u16 = generator.version,
     lesson: u8 = 0,
     curriculum: curriculum.Context = .{},
+    hints: help.Config = .{},
 };
 pub const Record = struct {
     version: u16 = 1,
@@ -55,6 +61,7 @@ pub const Record = struct {
     status: enum { completed, stopped } = .completed,
     timing_available: bool = false,
     timing_truncated: bool = false,
+    cue_evidence: bool = false,
     active_us: u64 = 0,
     matched: u64 = 0,
     attempts: u64 = 0,
@@ -70,6 +77,8 @@ pub const Record = struct {
     target_count: u8 = 0,
     drill_policy: u16 = 1,
     pub fn validate(self: *const Record) !void {
+        self.cohort.hints.validate() catch |err| return if (err == error.UnsupportedHintPolicy) error.UnsupportedPracticeHistory else error.InvalidPracticeHistory;
+        if (self.cue_evidence and !self.timing_available) return error.InvalidPracticeHistory;
         self.cohort.curriculum.validate() catch |err| return if (err == error.UnsupportedCurriculum) error.UnsupportedPracticeHistory else error.InvalidPracticeHistory;
         if (self.cohort.curriculum.version != 0 and (self.cohort.mode == .challenge or (self.cohort.family == .zig and self.cohort.curriculum.stage != .real_text) or (self.cohort.curriculum.stage != .real_text and self.cohort.preset != .words))) return error.InvalidPracticeHistory;
         if ((self.status == .stopped and self.scored) or (self.timing_truncated and !self.timing_available)) return error.InvalidPracticeHistory;
@@ -83,6 +92,7 @@ pub const Record = struct {
         if (!std.unicode.utf8ValidateSlice(std.mem.sliceTo(&self.profile, 0)) or !std.unicode.utf8ValidateSlice(std.mem.sliceTo(&self.input_source, 0))) return error.InvalidPracticeHistory;
         var opportunities: u64 = 0;
         for (self.stats[0..self.stat_count], 0..) |stat, index| {
+            if (stat.cued > stat.opportunities or stat.uncued > stat.opportunities or stat.uncued_misses > stat.uncued or stat.uncued_clean > stat.uncued or (self.cue_evidence and stat.cued + stat.uncued != stat.opportunities) or (!self.cue_evidence and (stat.cued != 0 or stat.uncued != 0 or stat.uncued_misses != 0 or stat.uncued_clean != 0))) return error.InvalidPracticeHistory;
             if (stat.cp > 0x10ffff or (stat.cp >= 0xd800 and stat.cp <= 0xdfff) or stat.misses > stat.opportunities or stat.route_count > 4) return error.InvalidPracticeHistory;
             for (self.stats[0..index]) |previous| if (previous.cp == stat.cp) return error.InvalidPracticeHistory;
             for (stat.routes[0..stat.route_count]) |route| if (route.layer >= self.layer_count or route.key >= self.key_count or std.mem.indexOfScalar(u8, &practice.route_modifiers, route.modifiers) == null) return error.InvalidPracticeHistory;
@@ -108,6 +118,7 @@ fn captureMode(session: *const practice.Session, cohort: Cohort, labels: ?practi
     const count = if (stopped) session.observed else session.reference_len;
     var result: Record = .{ .cohort = cohort, .scored = !stopped and session.scored, .status = if (stopped) .stopped else .completed, .timing_available = session.recorder != null, .timing_truncated = if (session.recorder) |recorder| recorder.dropped != 0 else false, .active_us = active_us, .matched = count, .attempts = session.attempts, .correct_attempts = session.correct_attempts, .corrections = session.corrected, .outside_errors = session.outside_errors };
     result.substitution_count = session.substitution_count;
+    result.cue_evidence = if (session.recorder) |recorder| recorder.cue_tracking else false;
     result.substitutions_truncated = session.substitutions_truncated;
     for (session.substitutions[0..session.substitution_count], 0..) |substitution, index| result.substitutions[index] = .{ .expected = substitution.expected, .typed = substitution.typed, .count = substitution.count };
     for (session.reference[0..count], 0..) |cp, position| {
@@ -121,6 +132,13 @@ fn captureMode(session: *const practice.Session, cohort: Cohort, labels: ?practi
         result.stats[index].opportunities += 1;
         result.stats[index].misses += @intFromBool(session.missed[position]);
         result.stats[index].retries += session.position_errors[position];
+        if (result.cue_evidence) {
+            if (session.recorder.?.cue_positions[position]) result.stats[index].cued += 1 else {
+                result.stats[index].uncued += 1;
+                result.stats[index].uncued_misses += @intFromBool(session.missed[position]);
+                result.stats[index].uncued_clean += @intFromBool(session.recorder.?.clean_positions[position]);
+            }
+        }
     }
     if (labels) |routes| {
         try routes.validate();
@@ -144,11 +162,17 @@ fn captureMode(session: *const practice.Session, cohort: Cohort, labels: ?practi
             };
         }
     }
+    if (cohort.assistance != .guided and result.cue_evidence and session.recorder.?.help_revealed) result.cohort.hints.revealed = true;
+    if (cohort.assistance != .guided) for (result.stats[0..result.stat_count]) |stat| if (stat.cued > 0) {
+        result.cohort.hints.revealed = true;
+        break;
+    };
     try result.validate();
     return result;
 }
 pub const Aggregate = struct {
     runs: u64 = 0,
+    cue_known_runs: u64 = 0,
     active_us: u64 = 0,
     matched: u64 = 0,
     attempts: u64 = 0,
@@ -164,6 +188,7 @@ pub const Aggregate = struct {
         try record.validate();
         if (!record.scored) return;
         self.runs = try std.math.add(u64, self.runs, 1);
+        self.cue_known_runs += @intFromBool(record.cue_evidence);
         self.active_us = try std.math.add(u64, self.active_us, record.active_us);
         self.matched = try std.math.add(u64, self.matched, record.matched);
         self.attempts = try std.math.add(u64, self.attempts, record.attempts);
@@ -195,12 +220,17 @@ pub const Aggregate = struct {
                 dest.opportunities = try std.math.add(u64, dest.opportunities, stat.opportunities);
                 dest.misses = try std.math.add(u64, dest.misses, stat.misses);
                 dest.retries = try std.math.add(u64, dest.retries, stat.retries);
+                dest.cued = try std.math.add(u64, dest.cued, stat.cued);
+                dest.uncued = try std.math.add(u64, dest.uncued, stat.uncued);
+                dest.uncued_misses = try std.math.add(u64, dest.uncued_misses, stat.uncued_misses);
+                dest.uncued_clean = try std.math.add(u64, dest.uncued_clean, stat.uncued_clean);
             }
         }
     }
     pub fn remove(self: *Aggregate, record: *const Record) void {
         if (!record.scored) return;
         self.runs -= 1;
+        self.cue_known_runs -= @intFromBool(record.cue_evidence);
         self.active_us -= record.active_us;
         self.matched -= record.matched;
         self.attempts -= record.attempts;
@@ -213,6 +243,10 @@ pub const Aggregate = struct {
             dest.opportunities -= stat.opportunities;
             dest.misses -= stat.misses;
             dest.retries -= stat.retries;
+            dest.cued -= stat.cued;
+            dest.uncued -= stat.uncued;
+            dest.uncued_misses -= stat.uncued_misses;
+            dest.uncued_clean -= stat.uncued_clean;
         };
     }
     pub fn wpm(self: *const Aggregate) f64 {
@@ -279,6 +313,35 @@ pub fn dateLabel(timestamp: i64, buffer: []u8) ![]const u8 {
 test "history timestamps have readable UTC labels" {
     var buffer: [32]u8 = undefined;
     try std.testing.expectEqualStrings("1970-01-01 00:00:00 UTC", try dateLabel(0, &buffer));
+}
+test "cue episodes preserve clean timing and hidden revealed runs remain separate" {
+    const t = std.testing;
+    var recorder = @import("practice_timing.zig").Recorder.init(t.allocator);
+    defer recorder.deinit();
+    recorder.cue_tracking = true;
+    var session: practice.Session = .{ .recorder = &recorder };
+    try session.load("aaaaaa", .os);
+    recorder.setCue(true, 0, 100, 0);
+    try session.insert("a", 100, false);
+    recorder.setCue(false, 1, 200, 100);
+    try session.insert("a", 200, false);
+    recorder.record(.hint_requested, 210, 110, 2, null, .ordinary);
+    recorder.setCue(true, 2, 250, 150);
+    try session.insert("a", 300, false);
+    recorder.setCue(false, 3, 350, 250);
+    try session.insert("aaa", 400, false);
+    const record = try capture(&session, .{ .assistance = .hidden }, null);
+    try t.expect(record.cue_evidence and record.cohort.hints.revealed);
+    try t.expectEqual(@as(u64, 2), record.stats[0].cued);
+    try t.expectEqual(@as(u64, 4), record.stats[0].uncued);
+    try t.expectEqual(@as(u64, 1), record.stats[0].uncued_clean);
+    var clean: usize = 0;
+    for (recorder.events.items) |event| if (event.eligibility == .clean) {
+        clean += 1;
+        try t.expectEqual(@as(u64, 100), event.interval_us.?);
+    };
+    try t.expectEqual(@as(usize, 2), clean);
+    try recorder.payload().validate();
 }
 
 test "corrupt substitution codepoints and duplicate pairs are rejected before rendering" {

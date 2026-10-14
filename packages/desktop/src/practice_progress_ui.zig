@@ -62,7 +62,7 @@ pub fn draw(view: *View, history: ?*const desktop.practice_history.Query, cohort
     presentation.caption(status, .{ .y = if (view.tab == 0) 795 else 400, .w = width - 100, .h = 38 }, 15, theme.muted, null);
     if (failure != null and ui.button(theme, "Retry", "practice.progress.retry", .{ .x = width - 95, .y = if (view.tab == 0) 795 else 400, .w = 90, .h = 32 })) view.retry = true;
     if (ui.button(theme, "Back to practice", "practice.progress.back", .{ .w = 180, .h = 38 })) return true;
-    const assistance = ([_][]const u8{ "Guided", "Layout only", "Hidden" })[@backingInt(cohort.assistance)];
+    const assistance = if (cohort.hints.revealed) "Requested help during recall/layout practice" else if (cohort.assistance == .guided) desktop.practice_help.choices[@backingInt(cohort.hints.policy)] else ([_][]const u8{ "Guided", "Layout only", "Hidden" })[@backingInt(cohort.assistance)];
     const context = if (cohort.curriculum.version != 0) try std.fmt.allocPrint(arena, "Progress · {s} · {d} letters · {s}", .{ desktop.practice_curriculum.names[@backingInt(cohort.curriculum.stage)], cohort.curriculum.alphabet, assistance }) else try std.fmt.allocPrint(arena, "Progress · {t} · {s} · {t} · UTC dates", .{ cohort.preset, assistance, cohort.mode });
     presentation.caption(context, .{ .x = 190, .w = width - 190, .h = 38 }, 20, theme.text, null);
     _ = dvui.dropdown(@src(), &.{ "Trends", "Activity" }, .{ .choice = &view.tab }, .{}, .{ .rect = .{ .y = 44, .w = 160, .h = 32 } });

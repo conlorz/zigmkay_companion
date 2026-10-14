@@ -282,7 +282,8 @@ pub fn main(init: std.process.Init) !void {
     const progress_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-progress-frames");
     const diagnostics_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-diagnostics-frames");
     const curriculum_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-curriculum-frames");
-    const native_rundown = data_preview or progress_preview or diagnostics_preview or curriculum_preview or (args.len == 3 and std.mem.eql(u8, args[1], "--native-rundown-frames"));
+    const help_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-help-frames");
+    const native_rundown = data_preview or progress_preview or diagnostics_preview or curriculum_preview or help_preview or (args.len == 3 and std.mem.eql(u8, args[1], "--native-rundown-frames"));
     var draft_fixture = false;
     var build_fixture = false;
     var companion_fixture = false;
@@ -343,6 +344,14 @@ pub fn main(init: std.process.Init) !void {
     var model = try desktop.model.Model.init(gpa, project.profiles.board, template.snapshot);
     defer model.deinit();
     if (rundown_fixture) try @import("practice_fixture.zig").install(&model);
+    if (help_preview) {
+        const previous_layer = model.layer;
+        model.layer = 0;
+        model.select(16, false);
+        try model.apply(.{ .tap_hold = .{ .tap = .{ .key_press = .{ .tap_keycode = 13 } }, .hold = .{ .hold_modifiers = .{ .right_shift = true } }, .tapping_term = .{ .ms = 180 } } });
+        model.layer = previous_layer;
+        model.saved_id = try model.id();
+    }
     var owner = try desktop.editor_dispatch.State.init(&model);
     defer owner.deinit();
     var flash = flash_session.Session.init(gpa, .{ .snapshot = try model.id(), .build_key = @splat(0) });
@@ -913,7 +922,7 @@ pub fn main(init: std.process.Init) !void {
             if (practice.session.len > 1) return error.DraftRepeatRoutingFailed;
         }
         events.now_us = now_us;
-        draft_runtime.router.owns_practice_input = practicing and !practice_view.data_open and !practice_view.progress_open and !practice_view.diagnostics_open and !practice_view.curriculum_open;
+        draft_runtime.router.owns_practice_input = practicing and !practice_view.data_open and !practice_view.progress_open and !practice_view.diagnostics_open and !practice_view.curriculum_open and !practice_view.help_open and !practice_view.review_open;
         draft_runtime.router.focused = frame_limit != null or Backend.c.SDL_GetWindowFlags(native.window) & Backend.c.SDL_WINDOW_INPUT_FOCUS != 0;
         if (captions.revision != revision or !std.mem.eql(u8, &captions.snapshot, &(try model.id()))) {
             const replacement = if (source) |*active| try Captions.init(gpa, &model, active, active.id(), revision) else try Captions.init(gpa, &model, &fixture, "Offline launch fixture", revision);
@@ -1253,6 +1262,45 @@ pub fn main(init: std.process.Init) !void {
                     const n = try std.unicode.utf8Encode(cp, &bytes);
                     try practice.session.insert(bytes[0..n], now_us + index * 150_000, false);
                 }
+            } else if (help_preview and scene == 11) {
+                practice.config = .{ .level = 0, .preset = .mixed_case, .hints = .{ .policy = .delayed, .adaptive = false } };
+                _ = try practice.start(true, null, now_us);
+                try practice.session.load("A calm tree appears beside a quiet river.", .os);
+                practice_view.help = .{ .generation = practice.generation, .position = 0, .last = now_us, .paused = false };
+                if (!Backend.c.SDL_SetWindowSize(native.window, 1440, 1050)) return error.PracticeFixtureResize;
+            } else if (help_preview and scene == 12) {
+                practice_view.help.waited_us = 2_000_000;
+            } else if (help_preview and scene == 13) {
+                if (!Backend.c.SDL_SetWindowSize(native.window, 820, 700)) return error.PracticeFixtureResize;
+            } else if (help_preview and scene == 14) {
+                practice_view.help_open = true;
+                practice_view.help_config = practice.config;
+                if (!Backend.c.SDL_SetWindowSize(native.window, 1440, 1050)) return error.PracticeFixtureResize;
+            } else if (help_preview and scene == 15) {
+                practice_view.help_open = false;
+                practice_view.review_open = true;
+                practice_history.data.deinit();
+                practice_history.data = .{ .progress_allocator = gpa };
+                practice_history.cohort = practice.configCohort();
+                practice_history.data.retention = try gpa.create(desktop.practice_retention.Summary);
+                const now: i64 = @intCast(std.Io.Clock.real.now(init.io).toNanoseconds());
+                practice_history.data.retention.?.* = .{ .now = now, .eligible_runs = 12, .unknown_runs = 4, .count = 3 };
+                for ([_]u21{ 'e', 'r', 'A' }, 0..) |cp, index| practice_history.data.retention.?.entries[index] = .{ .cp = cp, .opportunities = 80, .cued = 40, .uncued = 40, .last_exposure = now - 8 * desktop.practice_retention.day_ns, .last_recall = if (index == 2) null else now - 8 * desktop.practice_retention.day_ns, .recalls = if (index == 2) 0 else 2, .context = practice.configCohort() };
+            } else if (help_preview and scene == 16) {
+                if (!Backend.c.SDL_SetWindowSize(native.window, 820, 700)) return error.PracticeFixtureResize;
+            } else if (help_preview and scene == 17) {
+                practice_view.review_open = false;
+                practice.config = .{ .level = 0, .preset = .mixed_case, .assistance = .hidden };
+                _ = try practice.start(true, null, now_us);
+                try practice.session.load("A quiet river runs beside the tree.", .os);
+                practice_view.help = .{ .generation = practice.generation, .position = 0, .last = now_us, .paused = false, .requested = true };
+                if (!Backend.c.SDL_SetWindowSize(native.window, 1440, 1050)) return error.PracticeFixtureResize;
+            } else if (help_preview and scene == 18) {
+                for (practice.session.reference[0..practice.session.reference_len], 0..) |cp, index| {
+                    var bytes: [4]u8 = undefined;
+                    const n = try std.unicode.utf8Encode(cp, &bytes);
+                    try practice.session.insert(bytes[0..n], now_us + index * 160_000, false);
+                }
             }
         }
         if ((practice.session.state == .complete or practice.stopped_result_pending) and practice.completed == null) {
@@ -1276,7 +1324,7 @@ pub fn main(init: std.process.Init) !void {
         };
         practice.save_blocked = practice.completed != null and !practice.completed_enqueued and practice_history.queued == practice_history.queue.len;
         if (practice.save_blocked) practice_history.error_value = error.PracticeSaveQueueFull;
-        const history_cohort = if (practice_view.curriculum_open) practice.cohortFor(practice_view.curriculum.config) else if (practice_view.rundown.reviewed) |record| record.cohort else if (practice.completed) |record| record.cohort else practice.configCohort();
+        const history_cohort = if (practice_view.curriculum_open) practice.cohortFor(practice_view.curriculum.config) else if (practice_view.review_open) practice.configCohort() else if (practice_view.rundown.reviewed) |record| record.cohort else if (practice.completed) |record| record.cohort else practice.configCohort();
         const requested_history = practice_view.rundown.refresh or practice_view.rundown.retry or practice_view.rundown.clear;
         if (practice_history.worker == null and (practice_history.error_value == null or practice_view.rundown.retry or practice_view.rundown.clear) and (practice_history.queued > 0 or requested_history or (practicing and !rundown_fixture and (!practice_history_loaded or !std.meta.eql(history_cohort, practice_history.cohort))))) {
             practice_history.request(history_cohort, practice_view.rundown.before, practice_view.rundown.clear, practice_view.rundown.retry, practice_view.progress.inspect orelse (if (practice_view.rundown.reviewed) |record| record.id else if (practice.completed) |record| record.id else null)) catch |err| {
@@ -1422,8 +1470,8 @@ pub fn main(init: std.process.Init) !void {
         tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = life.companion_visible });
         if (rundown_fixture) {
             if (!practice_view.drawn_panel) return error.PracticePanelNotDrawn;
-            if (dvui.tagGet(if (practice_view.curriculum_open) "practice.curriculum" else if (practice_view.diagnostics_open) "practice.diagnostics" else if (practice_view.progress_open) "practice.progress" else if (practice_view.data_open) "practice.data.title" else if (practice.completed != null) "practice.rundown" else "practice.word") == null) return error.PracticeRundownNotDrawn;
-            if (practice.config.assistance == .hidden and practice_view.drawn_keyboard) return error.HiddenPracticeKeyboardVisible;
+            if (dvui.tagGet(if (practice_view.review_open) "practice.review" else if (practice_view.help_open) "practice.help.title" else if (practice_view.curriculum_open) "practice.curriculum" else if (practice_view.diagnostics_open) "practice.diagnostics" else if (practice_view.progress_open) "practice.progress" else if (practice_view.data_open) "practice.data.title" else if (practice.completed != null) "practice.rundown" else "practice.word") == null) return error.PracticeRundownNotDrawn;
+            if (practice.config.assistance == .hidden and !practice_view.help.requested and practice_view.drawn_keyboard) return error.HiddenPracticeKeyboardVisible;
         }
         if (rundown_fixture) {
             window.endRendering(.{ .manage_backend = false });

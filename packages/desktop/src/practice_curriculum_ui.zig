@@ -102,8 +102,8 @@ pub fn draw(view: *View, owner: *control.Controller, history: ?*const desktop.pr
     const content_w = width - x;
     presentation.paragraph(descriptions[@backingInt(view.config.curriculum.stage)], .{ .x = x, .y = 95, .w = content_w, .h = 80 }, 18, theme.text);
     _ = dvui.dropdown(@src(), if (view.config.mode == .english) &.{ "Short", "Normal", "Long" } else &desktop.practice.lesson_names, .{ .choice = &view.config.level }, .{}, .{ .rect = .{ .x = x, .y = 190, .w = 180, .h = 38 } });
-    var assistance: usize = @backingInt(view.config.assistance);
-    if (dvui.dropdown(@src(), &.{ "Guided", "Layout only", "Hidden" }, .{ .choice = &assistance }, .{}, .{ .rect = .{ .x = x + 190, .y = 190, .w = 180, .h = 38 } })) view.config.assistance = @fromBackingInt(@as(u2, @intCast(assistance)));
+    var assistance: usize = desktop.practice_help.choice(view.config);
+    if (dvui.dropdown(@src(), &desktop.practice_help.choices, .{ .choice = &assistance }, .{}, .{ .rect = .{ .x = x + 190, .y = 190, .w = 180, .h = 38 } })) desktop.practice_help.apply(&view.config, assistance);
     var alphabet: [26]u8 = undefined;
     const available = curriculum.letters(labels, &alphabet);
     if (ui.buttonEnabled(theme, "One fewer letter", "practice.curriculum.less", .{ .x = x, .y = 240, .w = 180, .h = 38 }, view.config.curriculum.stage != .real_text and view.config.curriculum.alphabet > 6)) view.config.curriculum.alphabet -= 1;
@@ -208,6 +208,8 @@ pub fn draw(view: *View, owner: *control.Controller, history: ?*const desktop.pr
         view.config.level = if (record.cohort.family == .zig) record.cohort.lesson else record.cohort.length;
         view.config.preset = record.cohort.preset;
         view.config.assistance = record.cohort.assistance;
+        view.config.hints = record.cohort.hints;
+        view.config.hints.revealed = false;
         view.message = "Restored the last completed normal lesson for this layout and input source.";
     };
     if (ui.button(theme, "Free exercises", "practice.curriculum.free", .{ .x = x + 260, .y = 687, .w = 180, .h = 38 })) {

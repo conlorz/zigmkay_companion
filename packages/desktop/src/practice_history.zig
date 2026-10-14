@@ -6,12 +6,13 @@ const database = @import("practice_database.zig");
 const timing = @import("practice_timing.zig");
 const progress = @import("practice_progress.zig");
 const analysis = @import("practice_analysis.zig");
+const retention = @import("practice_retention.zig");
 pub const Record = results.Record;
 pub const max_record_bytes = 512 * 1024;
 pub const Query = struct {
     all: results.Aggregate = .{},
     recent: results.Aggregate = .{},
-    page: [10]Record = @splat(.{}),
+    page: []Record = &.{},
     page_count: usize = 0,
     rejected: usize = 0,
     total: usize = 0,
@@ -26,17 +27,22 @@ pub const Query = struct {
     latest_curriculum: ?Record = null,
     timing: ?timing.Owned = null,
     analysis: ?*analysis.Summary = null,
+    retention: ?*retention.Summary = null,
     database_runs: usize = 0,
     database_events: usize = 0,
     exported: bool = false,
     imported: ?usize = null,
     pub fn deinit(self: *Query) void {
+        if (self.page.len != 0) self.progress_allocator.free(self.page);
+        self.page = &.{};
         if (self.progress) |value| self.progress_allocator.destroy(value);
         if (self.timing) |*value| value.deinit();
         if (self.analysis) |value| self.progress_allocator.destroy(value);
+        if (self.retention) |value| self.progress_allocator.destroy(value);
         self.progress = null;
         self.timing = null;
         self.analysis = null;
+        self.retention = null;
     }
 };
 pub fn newer(a: Record, b: Record) bool {
@@ -82,7 +88,10 @@ pub fn query(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, cohort: 
     return queryTracked(gpa, io, directory, cohort, before, null);
 }
 fn queryTracked(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, cohort: results.Cohort, before: ?Record, current_id: ?[16]u8) !Query {
-    var output: Query = .{ .requested_id = current_id };
+    var output: Query = .{ .requested_id = current_id, .progress_allocator = gpa };
+    errdefer output.deinit();
+    output.page = try gpa.alloc(Record, 10);
+    @memset(output.page, .{});
     var newest: [10]Record = @splat(.{});
     var newest_count: usize = 0;
     var iterator = directory.iterate();
@@ -110,7 +119,7 @@ fn queryTracked(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, cohor
         try output.all.add(&record);
         if (record.scored) insert(&newest, &newest_count, record);
         if (before) |boundary| if (!newer(boundary, record)) continue;
-        insert(&output.page, &output.page_count, record);
+        insert(output.page, &output.page_count, record);
     }
     for (newest[0..newest_count], 0..) |*record, index| {
         try output.recent.add(record);
@@ -120,7 +129,7 @@ fn queryTracked(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, cohor
     if (newest_count == 10) output.oldest_recent = newest[9];
     return output;
 }
-fn insert(page: *[10]Record, count: *usize, record: Record) void {
+fn insert(page: []Record, count: *usize, record: Record) void {
     var index: usize = 0;
     while (index < count.* and !newer(record, page[index])) : (index += 1) {}
     if (index >= 10) return;
@@ -214,9 +223,13 @@ pub const Request = struct {
         if (self.record) |*record| try db.save(record, self.timing);
         var output: Query = .{ .requested_id = self.current_id, .rejected = rejected };
         output.progress_allocator = gpa;
+        errdefer output.deinit();
+        output.page = try gpa.alloc(Record, 10);
+        @memset(output.page, .{});
         output.progress = try gpa.create(progress.Summary);
         output.progress.?.* = .{};
-        errdefer output.deinit();
+        output.retention = try gpa.create(retention.Summary);
+        output.retention.?.* = .{ .now = @intCast(std.Io.Clock.real.now(io).toNanoseconds()) };
         output.progress.?.today = @divFloor(@as(i64, @intCast(std.Io.Clock.real.now(io).toNanoseconds())), progress.day_ns);
         switch (self.transfer) {
             .none => {},
@@ -250,7 +263,7 @@ pub const Request = struct {
             try output.all.add(&record);
             if (record.scored) insert(&newest, &newest_count, record);
             if (self.before) |boundary| if (!newer(boundary, record)) continue;
-            insert(&output.page, &output.page_count, record);
+            insert(output.page, &output.page_count, record);
         }
         for (newest[0..newest_count], 0..) |*record, index| {
             try output.recent.add(record);
@@ -273,9 +286,9 @@ pub const Request = struct {
         while (try curriculum_rows.step()) {
             const candidate = parse(gpa, try curriculum_rows.blob(1)) catch continue;
             if (!std.mem.eql(u8, &candidate.id, try curriculum_rows.blob(0)) or !std.meta.eql(database.practiceKey(candidate.cohort), database.practiceKey(self.cohort))) continue;
-            if (candidate.cohort.curriculum.version == 1 and candidate.scored and candidate.status == .completed and candidate.cohort.mode == .normal) {
+            if (candidate.cohort.verified == self.cohort.verified) output.retention.?.add(&candidate);
+            if (output.latest_curriculum == null and candidate.cohort.curriculum.version == 1 and candidate.scored and candidate.status == .completed and candidate.cohort.mode == .normal) {
                 output.latest_curriculum = candidate;
-                break;
             }
         }
         if (output.requested_record) |record| if (record.timing_available) {
@@ -298,14 +311,16 @@ test "immutable publication restart pages cohorts weighted history and corrupt p
         try save(t.allocator, t.io, temp.dir, &record);
         try save(t.allocator, t.io, temp.dir, &record);
     }
-    const first = try query(t.allocator, t.io, temp.dir, .{}, null);
+    var first = try query(t.allocator, t.io, temp.dir, .{}, null);
+    defer first.deinit();
     try t.expectEqual(@as(u64, 12), first.all.runs);
     try t.expectEqual(@as(u64, 10), first.recent.runs);
     try t.expectEqual(@as(usize, 10), first.recent_count);
     try t.expectEqual(@as(u8, 11), first.recent_ids[0][0]);
     try t.expectEqual(@as(u8, 2), first.recent_ids[9][0]);
     try t.expectEqual(@as(i64, 11), first.page[0].timestamp);
-    const second = try query(t.allocator, t.io, temp.dir, .{}, first.page[9]);
+    var second = try query(t.allocator, t.io, temp.dir, .{}, first.page[9]);
+    defer second.deinit();
     try t.expectEqual(@as(usize, 2), second.page_count);
     // Paging old runs must retain the newest baseline membership, rather than
     // treating every requested historical ID as part of the recent ten.
@@ -313,20 +328,24 @@ test "immutable publication restart pages cohorts weighted history and corrupt p
     record.cohort.assistance = .hidden;
     record.id[0] = 40;
     try save(t.allocator, t.io, temp.dir, &record);
-    const again = try query(t.allocator, t.io, temp.dir, .{}, null);
+    var again = try query(t.allocator, t.io, temp.dir, .{}, null);
+    defer again.deinit();
     try t.expectEqual(@as(u64, 12), again.all.runs);
     record.cohort.assistance = .guided;
     try t.expectError(error.PracticeRunCollision, save(t.allocator, t.io, temp.dir, &record));
     var corrupt_name: [36]u8 = undefined;
     try temp.dir.writeFile(t.io, .{ .sub_path = filename(@splat(99), &corrupt_name), .data = ".{ .version = 999 }" });
-    const partial = try query(t.allocator, t.io, temp.dir, .{}, null);
+    var partial = try query(t.allocator, t.io, temp.dir, .{}, null);
+    defer partial.deinit();
     try t.expectEqual(@as(usize, 1), partial.rejected);
     if (clear(t.allocator, t.io, temp.dir)) |_| return error.ExpectedHistoryPreservation else |_| {}
-    const retained = try query(t.allocator, t.io, temp.dir, .{}, null);
+    var retained = try query(t.allocator, t.io, temp.dir, .{}, null);
+    defer retained.deinit();
     try t.expectEqual(@as(u64, 12), retained.all.runs);
     try temp.dir.deleteFile(t.io, &corrupt_name);
     try clear(t.allocator, t.io, temp.dir);
-    const empty = try query(t.allocator, t.io, temp.dir, .{}, null);
+    var empty = try query(t.allocator, t.io, temp.dir, .{}, null);
+    defer empty.deinit();
     try t.expectEqual(@as(usize, 0), empty.total);
 }
 
@@ -350,7 +369,8 @@ test "native Unicode directories atomic interruption and independent writers pre
     var interrupted = try directory.createFileAtomic(t.io, "00000000000000000000000000000000.zon", .{});
     defer interrupted.deinit(t.io);
     try interrupted.file.writeStreamingAll(t.io, "unfinished result");
-    const restored = try query(t.allocator, t.io, directory, .{}, null);
+    var restored = try query(t.allocator, t.io, directory, .{}, null);
+    defer restored.deinit();
     try t.expectEqual(@as(usize, 2), restored.total);
     try t.expectEqual(@as(usize, 0), restored.rejected);
     try directory.writeFile(t.io, .{ .sub_path = "project.zon", .data = "unrelated project is preserved" });

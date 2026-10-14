@@ -6,6 +6,7 @@ const practice = @import("practice.zig");
 const generator = @import("practice_generator.zig");
 const results = @import("practice_results.zig");
 const curriculum = @import("practice_curriculum.zig");
+const help = @import("practice_help.zig");
 pub const Digest = [32]u8;
 pub const Mode = enum { english, zig };
 pub const Config = struct {
@@ -18,8 +19,11 @@ pub const Config = struct {
     targets: [5]u21 = @splat(0),
     target_count: u8 = 0,
     curriculum: curriculum.Context = .{},
+    hints: help.Config = .{},
     pub fn validate(self: Config) !void {
         try self.curriculum.validate();
+        try self.hints.validate();
+        if (self.hints.revealed) return error.InvalidHintPolicy;
         if (self.curriculum.version != 0 and self.challenge != null) return error.CurriculumCannotUseChallenge;
         if (self.curriculum.version != 0 and self.mode == .zig and self.curriculum.stage != .real_text) return error.CurriculumCodeNeedsRealText;
         if (self.mode == .zig and self.challenge != null) return error.ChallengeOnlyEnglish;
@@ -78,6 +82,7 @@ pub const Controller = struct {
         cohort.assistance = config.assistance;
         cohort.mode = if (config.target_count > 0) .drill else if (config.challenge != null) .challenge else .normal;
         cohort.curriculum = config.curriculum.effective();
+        cohort.hints = config.hints.effective();
         return cohort;
     }
     pub fn operation(self: *const Controller) Operation {
@@ -147,7 +152,10 @@ pub const Controller = struct {
             }
         }
         try self.session.load(reference, self.config.source);
-        if (self.session.recorder) |recorder| recorder.begin(now, @intCast(@backingInt(self.config.assistance)));
+        if (self.session.recorder) |recorder| {
+            recorder.cue_tracking = true;
+            recorder.begin(now, @intCast(@backingInt(self.config.assistance)));
+        }
         self.completed = null;
         self.stopped_result_pending = false;
         self.completed_enqueued = false;
@@ -186,6 +194,11 @@ pub const Controller = struct {
     pub fn preview(self: *const Controller, buffer: []u8, config: Config) ![]const u8 {
         try config.validate();
         return self.referenceForConfig(buffer, config, self.seed +% 0x9e3779b97f4a7c15);
+    }
+    pub fn matchesSettings(self: *const Controller, original: results.Cohort) bool {
+        var cohort = original;
+        cohort.hints.revealed = false;
+        return std.meta.eql(cohort, self.configCohort());
     }
     pub fn prepared(self: *Controller, op: Operation, success: bool) bool {
         if (!self.accepts(op) or self.runner_state != .preparing) return false;

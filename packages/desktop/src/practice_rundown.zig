@@ -124,7 +124,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     _ = dvui.dropdown(@src(), &.{ "Weakness", "Character", "Exposure" }, .{ .choice = &view.sort }, .{}, .{ .rect = .{ .x = 485, .y = 82, .w = 150, .h = 38 }, .tag = "practice.characters.sort" });
     var focus: [5]u21 = undefined;
     const recommended = aggregate.targets(&focus);
-    const coaching = if (!record.scored and view.scope == 0) "Unscored run: explore the counts, then start a scored exercise." else if (recommended.len == 0) "Keep practicing. A targeted recommendation needs 5 opportunities and 2 misses." else "Practice weak spots next: repeat the characters with supported occurrence misses.";
+    const coaching = if (!record.scored and view.scope == 0) "Unscored run: explore the counts, then start a scored exercise." else if (record.cohort.hints.revealed) "Requested help was shown. This run stays separate from fully hidden recall evidence." else if (recommended.len == 0) "Keep practicing. A targeted recommendation needs 5 opportunities and 2 misses." else "Practice weak spots next: repeat the characters with supported occurrence misses.";
     presentation.caption(coaching, .{ .y = 122, .w = width, .h = 30 }, 15, theme.text, "practice.coaching");
     const keyboard_y: f32 = 154;
     const keyboard_h = @max(70, @min(258, bounds.h - 457));
@@ -214,6 +214,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         for (aggregate.stats[0..aggregate.stat_count]) |stat| if (stat.cp == cp) {
             var bytes: [4]u8 = undefined;
             try detail.writer.print("«{s}» · {d}/{d} missed · {d:.1}% · {d} retry errors{s}", .{ glyph(cp, &bytes), stat.misses, stat.opportunities, stat.rate(), stat.retries, if (stat.opportunities < 5) " · limited evidence" else "" });
+            if (view.more_details and aggregate.cue_known_runs > 0) try detail.writer.print(" · {d} cued / {d} uncued ({d}/{d} runs tracked)", .{ stat.cued, stat.uncued, aggregate.cue_known_runs, aggregate.runs });
             if (stat.route_count == 0) try detail.writer.writeAll(" · no proven route");
             if (view.more_details) for (stat.routes[0..stat.route_count]) |route| try detail.writer.print(" · L{d} key {d} {s}", .{ route.layer, route.key, switch (route.modifiers) {
                 2 => "Shift",
