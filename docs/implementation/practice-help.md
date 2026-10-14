@@ -4,8 +4,10 @@ Hint policy v1 supports full guidance, delayed hints and hints on request alongs
 layout-only and hidden practice. Delay includes ready-time hesitation, excludes
 pauses, resets for each focused position and can adapt to matching clean character
 medians. A DVUI timer wakes idle frames when the delay expires. Explicit requests
-remain available during hidden recall. Context panels appear only when help is
-shown; HOLD/TAP/release instructions use proven routes. Opposite-hand home-row
+remain available during hidden recall. Hints use keyboard highlighting with a
+constant keyboard rectangle, a cyan Hold / amber Tap legend and small footer
+connection details. Instruction paragraphs were removed following manual feedback.
+Opposite-hand home-row
 Shift is preferred only when supported by metadata.
 
 New runs retain actual rendered cue episodes, requests, per-attempt visibility,
@@ -39,8 +41,8 @@ exposed journal-mode contention during concurrent first opens; bounded retries
 cover SQLite's immediate BUSY return without changing transaction semantics.
 Native wide/small help,
 settings, review and requested-help rundown were manually compared with the F
-mockup using explicit offline cache fixtures. The contextual explanation sits
-above the keyboard rather than beside it to retain readable keys at small sizes.
+mockup using explicit offline cache fixtures. Subsequent manual feedback removed
+the contextual explanation so revealing a hint cannot resize or move the keys.
 Screenshots are linked from the tutor guide; no screenshot assertion test was
 added. Keyboard ergonomics and cross-platform native GUI behavior remain manual
 acceptance.

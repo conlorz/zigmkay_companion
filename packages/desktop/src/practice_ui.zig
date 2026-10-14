@@ -157,46 +157,19 @@ fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bou
         .simulated => "Draft companion · simulated key presses",
         .draft => if (guided) "Draft guide · next-route preview" else "Static draft reference · no key telemetry",
     };
-    presentation.caption(try std.fmt.allocPrint(arena, "{s} · {s} · layer {d}{s}{s}{s}", .{ title, frame.profile, layer, if (mods.toByte() & 0x22 != 0) " · Shift" else "", if (mods.toByte() & 0x44 != 0) " · Alt / Option" else "", if (owner.cohort.verified) "" else " · unverified layout reference" }), .{ .x = 8, .y = 0, .w = bounds.w - 16, .h = 28 }, @min(18, bounds.h * 0.09), theme.text, "practice.keyboard.source");
-    if (next) |hint| {
-        const has_holds = std.mem.indexOfScalar(bool, hold, true) != null;
-        var shift_note: []const u8 = "";
-        if (hint.modifiers & 0x22 != 0) {
-            if (frame.modifiers.toByte() & 0x22 != 0) shift_note = " · Shift already held" else {
-                shift_note = " · Shift provider unavailable";
-                for (hold, 0..) |held, key| if (held) {
-                    const provider = labels.lookup(hold_source_layer, key, frame.modifiers);
-                    const shifts = if (provider.hold_mods) |value| value.toByte() & 0x22 != 0 else if (provider.hid_code) |code| code == 225 or code == 229 else false;
-                    if (!shifts) continue;
-                    shift_note = " · fallback Shift provider";
-                    if (frame.metadata) |keys| {
-                        if (keys[hint.key].hand == .neutral) shift_note = " · handedness unavailable" else if (keys[key].hand != keys[hint.key].hand and keys[key].hand != .neutral and keys[key].home_row) shift_note = " · opposite-hand home-row Shift";
-                    }
-                };
-            }
-        }
-        const instruction = try std.fmt.allocPrint(arena, "{s} · layer {d}{s}", .{ if (has_holds) "Hold HOLD keys, tap TAP, then release the holds" else "Tap the TAP key, then release any required holds", hint.layer, shift_note });
-        presentation.caption(instruction, .{ .x = 8, .y = 28, .w = bounds.w - 16, .h = 23 }, 14, ui.color(if (theme.bg.r > 100) 0x8B6318 else 0xFFD179), null);
-        if (owner.config.hints.policy != .full or owner.config.assistance != .guided) {
-            var covered: u8 = frame.modifiers.toByte();
-            var layer_provider = hint.layer == hold_source_layer;
-            for (hold, 0..) |held, key| if (held) {
-                const entry = labels.practiceLabels().get(hold_source_layer, key, frame.modifiers.toByte(), desktop.practice.layerMask(hold_source_layer));
-                covered |= entry.hold_modifiers orelse if (entry.hid_code) |code| (if (code >= 224 and code <= 231) @as(u8, 1) << @intCast(code - 224) else 0) else 0;
-                if (entry.hold_layer == hint.layer) layer_provider = true;
-            };
-            if (covered & 0x22 != 0) covered |= 2;
-            const supported = hint.modifiers & ~covered == 0 and layer_provider;
-            const cue = dvui.box(@src(), .{}, .{ .rect = .{ .x = 8, .y = 56, .w = bounds.w - 16, .h = 56 }, .padding = .all(6), .background = true, .color_fill = .{ .color = theme.panel }, .tag = "practice.hint" });
-            presentation.paragraph(if (!supported) "The output is known, but its required hold provider is unavailable. Use another proven route." else if (has_holds) "Release unneeded modifier/layer holds first. Hold the keys marked HOLD, tap the key marked TAP, then release the holds." else "Release unneeded modifier/layer holds first. Tap the key marked TAP; release required holds when finished.", .{ .w = bounds.w - 40, .h = 44 }, 14, theme.text);
-            cue.deinit();
-        }
-    } else if (guided and owner.active and owner.session.state != .complete) presentation.caption("Use your layout's composition or custom action for this character", .{ .x = 8, .y = 28, .w = bounds.w - 16, .h = 23 }, 14, theme.muted, null);
+    dvui.labelNoFmt(@src(), try std.fmt.allocPrint(arena, "{s} · {s} · layer {d}{s}", .{ title, frame.profile, layer, if (owner.cohort.verified) "" else " · unverified" }), .{ .align_x = 0 }, .{ .rect = .{ .x = 8, .y = bounds.h - 22, .w = @max(0, bounds.w - 200), .h = 20 }, .font = dvui.Font.theme(.body).withSize(11), .color_text = .{ .color = theme.muted }, .padding = .{}, .tag = "practice.keyboard.source" });
+    for ([_][]const u8{ "Hold", "Tap" }, 0..) |label, index| {
+        const x = bounds.w - 182 + @as(f32, @floatFromInt(index)) * 92;
+        const color = ui.color(if (index == 0) 0x50D2FF else 0xFFC953);
+        const swatch = dvui.box(@src(), .{}, .{ .rect = .{ .x = x, .y = bounds.h - 19, .w = 10, .h = 10 }, .background = true, .color_fill = .{ .color = color }, .padding = .{}, .id_extra = index });
+        swatch.deinit();
+        dvui.labelNoFmt(@src(), label, .{}, .{ .rect = .{ .x = x + 16, .y = bounds.h - 24, .w = 65, .h = 22 }, .font = dvui.Font.theme(.body).withSize(13), .color_text = .{ .color = theme.muted }, .padding = .{}, .id_extra = index });
+    }
     const neutral_pressed = try arena.alloc(bool, labels.key_count);
     @memset(neutral_pressed, false);
     const output = try arena.alloc(desktop.physical_view.DrawKey, frame.geometry.len);
-    const top: f32 = if (next != null and (owner.config.hints.policy != .full or owner.config.assistance != .guided)) 120 else 52;
-    const plan = try desktop.physical_view.plan(output, frame.geometry, labels, layer, mods, .{ .x = 18, .y = top, .w = @max(0, bounds.w - 36), .h = @max(0, bounds.h - top - 10) }, .{ .pressed = if (guided) frame.pressed else neutral_pressed, .targets = tap, .holds = hold, .hold_source_layer = hold_source_layer, .active_layers = active, .stale = frame.stale });
+    const top: f32 = 0;
+    const plan = try desktop.physical_view.plan(output, frame.geometry, labels, layer, mods, .{ .x = 18, .y = top, .w = @max(0, bounds.w - 36), .h = @max(0, bounds.h - top - 34) }, .{ .pressed = if (guided) frame.pressed else neutral_pressed, .targets = tap, .holds = hold, .hold_source_layer = hold_source_layer, .active_layers = active, .stale = frame.stale });
     try geometry.draw(layer, plan, resources);
 }
 pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dvui.Rect, input: Input) !DrawResult {

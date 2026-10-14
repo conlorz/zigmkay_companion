@@ -69,8 +69,9 @@ a fresh exercise. Loss of verified live state shows an unavailable keyboard.
 Choose **Delayed hints** or **Hints on request** to reduce guidance gradually.
 **Hint settings** controls the delay and optional adaptation to matching clean
 character timing. Delays exclude pauses and restart for each target. **Show hint**
-is available even in Hidden practice. Contextual instructions show compatible
-HOLD/TAP/release sequences only when help appears.
+is available even in Hidden practice. The keyboard stays the same size and position
+when hints appear. Cyan marks keys to hold; amber marks the key to tap, with a
+compact color legend. Connection details sit quietly at the bottom left.
 
 ![Native delayed hint](screenshots/typing-practice/help-wide.png)
 
