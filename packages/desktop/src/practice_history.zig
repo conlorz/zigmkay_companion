@@ -16,6 +16,8 @@ pub const Query = struct {
     requested_id: ?[16]u8 = null,
     contains_requested: bool = false,
     oldest_recent: ?Record = null,
+    recent_ids: [10][16]u8 = @splat(@splat(0)),
+    recent_count: usize = 0,
     database_runs: usize = 0,
     database_events: usize = 0,
     exported: bool = false,
@@ -95,7 +97,11 @@ fn queryTracked(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, cohor
         if (before) |boundary| if (!newer(boundary, record)) continue;
         insert(&output.page, &output.page_count, record);
     }
-    for (newest[0..newest_count]) |*record| try output.recent.add(record);
+    for (newest[0..newest_count], 0..) |*record, index| {
+        try output.recent.add(record);
+        output.recent_ids[index] = record.id;
+    }
+    output.recent_count = newest_count;
     if (newest_count == 10) output.oldest_recent = newest[9];
     return output;
 }
@@ -224,7 +230,11 @@ pub const Request = struct {
             if (self.before) |boundary| if (!newer(boundary, record)) continue;
             insert(&output.page, &output.page_count, record);
         }
-        for (newest[0..newest_count]) |*record| try output.recent.add(record);
+        for (newest[0..newest_count], 0..) |*record, index| {
+            try output.recent.add(record);
+            output.recent_ids[index] = record.id;
+        }
+        output.recent_count = newest_count;
         if (newest_count == 10) output.oldest_recent = newest[9];
         output.database_events = try db.eventCount();
         return output;
@@ -246,9 +256,15 @@ test "immutable publication restart pages cohorts weighted history and corrupt p
     const first = try query(t.allocator, t.io, temp.dir, .{}, null);
     try t.expectEqual(@as(u64, 12), first.all.runs);
     try t.expectEqual(@as(u64, 10), first.recent.runs);
+    try t.expectEqual(@as(usize, 10), first.recent_count);
+    try t.expectEqual(@as(u8, 11), first.recent_ids[0][0]);
+    try t.expectEqual(@as(u8, 2), first.recent_ids[9][0]);
     try t.expectEqual(@as(i64, 11), first.page[0].timestamp);
     const second = try query(t.allocator, t.io, temp.dir, .{}, first.page[9]);
     try t.expectEqual(@as(usize, 2), second.page_count);
+    // Paging old runs must retain the newest baseline membership, rather than
+    // treating every requested historical ID as part of the recent ten.
+    try t.expectEqual(first.recent_ids, second.recent_ids);
     record.cohort.assistance = .hidden;
     record.id[0] = 40;
     try save(t.allocator, t.io, temp.dir, &record);

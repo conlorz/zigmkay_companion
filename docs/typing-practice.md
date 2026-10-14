@@ -72,6 +72,29 @@ counts come from the captured layout; Shift, left Alt/Option, right Alt/AltGr
 and their Shift combinations stay explicit. Unsupported routes remain neutral.
 Reviewing results never changes the live keyboard's active layer.
 
+The compact summary separates **attempt accuracy** from **first-pass success**:
+the latter counts reference occurrences that never received a wrong attempt.
+A matching recent baseline excludes the displayed run itself; absent elapsed
+time or comparable history shows an explicit no-baseline message. The next-step
+sentence recommends weak-character practice only with sufficient evidence.
+
+![Compact native rundown](screenshots/typing-practice/rundown-compact-wide.png)
+
+Switch **Miss rate / Exposure** to distinguish errors from practice volume.
+Character rows show first-pass success, opportunity count and the most common
+observed substitution. Sort by weakness, character or exposure. Select a row
+to link its proven keyboard route and show exact confusion counts. **Practice
+weak spots** uses a selected repeated confusion pair when its expected character
+has at least five opportunities and two missed occurrences and the pair appeared
+at least twice. Unsupported text targets produce a corpus/preset explanation.
+Otherwise it uses the existing broad weak-character recommendation.
+
+**More details** reveals frozen routes, generation context and Clear history.
+Small windows stack the character cells beneath the keyboard. Sample counts and
+asterisks describe limited evidence; they are not statistical confidence claims.
+
+![Compact small-window rundown](screenshots/typing-practice/rundown-compact-small.png)
+
 ![Light layer heatmap with exact counts](screenshots/typing-practice/rundown-light.png)
 
 *This run, with expected-character misses projected onto proven fixture routes.
@@ -95,8 +118,8 @@ unscored and excluded from scored bests and default history analysis.
 
 The legend distinguishes unpracticed, 0%, 1–10%, 11–25%, and greater than 25%.
 An asterisk marks fewer than five opportunities. Select a key or a character
-in the cross-layer strip for counts, miss rate, retries, observed substitutions
-and proven routes. Selecting a character opens its first route's view. **More →**
+in the character list for counts, miss rate, retries and observed substitutions;
+More details adds proven routes. Selecting a character opens its first route's view. **More →**
 pages the character strip. Up to four distinct physical routes and 256 observed
 substitution pairs are retained per run; truncation is identified. When a route
 or matching geometry is unavailable, the character list still works.

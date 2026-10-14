@@ -20,6 +20,9 @@ pub const View = struct {
     before: ?results.Record = null,
     message: []const u8 = "",
     character_page: usize = 0,
+    heatmap_mode: usize = 0,
+    sort: usize = 0,
+    more_details: bool = false,
 };
 pub const Action = union(enum) { none, new_exercise, drill: desktop.practice_controller.Config };
 fn glyph(cp: u21, buffer: *[4]u8) []const u8 {
@@ -54,6 +57,8 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     defer panel.deinit();
     const arena = dvui.currentWindow().arena();
     const width = bounds.w;
+    const wide = width >= 1400;
+    const keyboard_width = if (wide) width * 0.54 else width;
     const light = theme.bg.r > 100;
     var current: results.Aggregate = .{};
     // This run remains visible even when unscored; aggregate defaults exclude it.
@@ -64,16 +69,46 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     if (history_matches and history != null and view.scope != 0) {
         historical = if (view.scope == 1) history.?.recent else history.?.all;
         const queried = history.?.requested_id;
-        const contains = queried != null and std.mem.eql(u8, &queried.?, &record.id) and history.?.contains_requested;
+        var contains = queried != null and std.mem.eql(u8, &queried.?, &record.id) and history.?.contains_requested;
+        if (view.scope == 1) {
+            contains = false;
+            for (history.?.recent_ids[0..history.?.recent_count]) |id| if (std.mem.eql(u8, &id, &record.id)) {
+                contains = true;
+            };
+        }
         if (!contains and record.scored and view.reviewed == null and !view.cleared) {
             if (view.scope == 1 and historical.runs == 10) if (history.?.oldest_recent) |oldest| historical.remove(&oldest);
             try historical.add(record);
         }
     }
     const aggregate = if (view.scope == 0) &current else &historical;
-    presentation.caption(try std.fmt.allocPrint(arena, "{s} · {d:.0} WPM · {d:.1}% accuracy · {d:.1}s · {d} corrections · {s}", .{ if (record.status == .stopped) "Stopped exercise" else if (view.reviewed != null) "Saved run" else "Exercise complete", record.wpm(), record.accuracy(), @as(f64, @floatFromInt(record.active_us)) / 1_000_000, record.corrections, if (record.scored) "scored" else "unscored" }), .{ .w = width, .h = 32 }, 20, theme.text, "practice.rundown.metrics");
+    var missed: u64 = 0;
+    for (record.stats[0..record.stat_count]) |stat| missed += stat.misses;
+    const success = if (record.matched == 0) @as(f64, 100) else 100 * @as(f64, @floatFromInt(record.matched - missed)) / @as(f64, @floatFromInt(record.matched));
+    const metrics = [_][]const u8{
+        try std.fmt.allocPrint(arena, "{d:.0} WPM", .{record.wpm()}),
+        try std.fmt.allocPrint(arena, "{d:.1}% attempt accuracy", .{record.accuracy()}),
+        try std.fmt.allocPrint(arena, "{d:.1}% first-pass success", .{success}),
+    };
+    for (metrics, 0..) |metric, index| {
+        const card = dvui.box(@src(), .{}, .{ .rect = .{ .x = @as(f32, @floatFromInt(index)) * width / 3, .w = width / 3 - 8, .h = 36 }, .background = true, .color_fill = .{ .color = theme.panel }, .corners = .all(8), .padding = .{}, .id_extra = index, .tag = if (index == 0) "practice.rundown.metrics" else null });
+        presentation.caption(metric, .{ .w = width / 3 - 8, .h = 36 }, 18, theme.text, null);
+        card.deinit();
+    }
     _ = dvui.dropdown(@src(), &.{ "This run", "Last 10 runs", "All history" }, .{ .choice = &view.scope }, .{}, .{ .rect = .{ .y = 40, .w = 160, .h = 38 }, .tag = "practice.scope" });
-    presentation.caption(try std.fmt.allocPrint(arena, "{d} included · {s} / {s} · {t} / {t} / {t} · {s}", .{ aggregate.runs, std.mem.sliceTo(&record.profile, 0), std.mem.sliceTo(&record.input_source, 0), record.cohort.preset, record.cohort.assistance, record.cohort.mode, if (record.cohort.verified) "verified mapping" else "unverified OS layout / draft reference" }), .{ .x = 170, .y = 40, .w = width - 170, .h = 38 }, 14, theme.muted, null);
+    var baseline: results.Aggregate = .{};
+    if (history_matches and history != null and record.scored) {
+        baseline = history.?.recent;
+        for (history.?.recent_ids[0..history.?.recent_count]) |id| if (std.mem.eql(u8, &id, &record.id)) {
+            baseline.remove(record);
+            break;
+        };
+    }
+    const comparison = if (baseline.runs > 0 and baseline.active_us > 0 and record.active_us > 0)
+        try std.fmt.allocPrint(arena, "{d:.1} WPM delta against {d} recent matching runs · {t} / {t}", .{ record.wpm() - baseline.wpm(), baseline.runs, record.cohort.preset, record.cohort.assistance })
+    else
+        "No comparable speed baseline yet · counts stay available";
+    presentation.caption(comparison, .{ .x = 170, .y = 40, .w = width - 170, .h = 38 }, 14, theme.muted, "practice.comparison");
     const variants = desktop.practice.route_modifiers;
     var layer_count: usize = record.layer_count;
     for (record.stats[0..record.stat_count]) |stat| for (stat.routes[0..stat.route_count]) |route| {
@@ -84,12 +119,17 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     view.layer = @min(view.layer, layer_count - 1);
     _ = dvui.dropdown(@src(), names, .{ .choice = &view.layer }, .{}, .{ .rect = .{ .y = 82, .w = 120, .h = 38 }, .tag = "practice.result.layer" });
     _ = dvui.dropdown(@src(), &.{ "Unshifted", "Shift", "Option / left Alt", "Shift + left Alt", "AltGr / right Alt", "Shift + AltGr" }, .{ .choice = &view.variant }, .{}, .{ .rect = .{ .x = 130, .y = 82, .w = 195, .h = 38 }, .tag = "practice.result.modifiers" });
-    presentation.caption("Missed / opportunities · fewer than 5 = limited evidence", .{ .x = 335, .y = 82, .w = width - 335, .h = 38 }, 14, theme.muted, null);
-    const keyboard_y: f32 = 122;
-    const keyboard_h = @max(70, @min(290, bounds.h - 425));
+    _ = dvui.dropdown(@src(), &.{ "Miss rate", "Exposure" }, .{ .choice = &view.heatmap_mode }, .{}, .{ .rect = .{ .x = 335, .y = 82, .w = 140, .h = 38 }, .tag = "practice.heatmap.mode" });
+    _ = dvui.dropdown(@src(), &.{ "Weakness", "Character", "Exposure" }, .{ .choice = &view.sort }, .{}, .{ .rect = .{ .x = 485, .y = 82, .w = 150, .h = 38 }, .tag = "practice.characters.sort" });
+    var focus: [5]u21 = undefined;
+    const recommended = aggregate.targets(&focus);
+    const coaching = if (!record.scored and view.scope == 0) "Unscored run: explore the counts, then start a scored exercise." else if (recommended.len == 0) "Keep practicing. A targeted recommendation needs 5 opportunities and 2 misses." else "Practice weak spots next: repeat the characters with supported occurrence misses.";
+    presentation.caption(coaching, .{ .y = 122, .w = width, .h = 30 }, 15, theme.text, "practice.coaching");
+    const keyboard_y: f32 = 154;
+    const keyboard_h = @max(70, @min(258, bounds.h - 457));
     var drew_geometry = false;
     if (frame) |physical| if (physical.geometry.len > 0 and std.mem.eql(u8, &record.cohort.mapping, &owner.cohort.mapping) and std.mem.eql(u8, &record.cohort.behavior, &owner.cohort.behavior)) {
-        const fitted = desktop.physical_view.fit(physical.geometry, .{ .x = 14, .y = keyboard_y, .w = width - 28, .h = keyboard_h });
+        const fitted = desktop.physical_view.fit(physical.geometry, .{ .x = 14, .y = keyboard_y, .w = keyboard_width - 28, .h = keyboard_h });
         for (physical.geometry) |key| {
             const placed = fitted.place(key);
             var found: ?results.Stat = null;
@@ -109,14 +149,16 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
             }
             // Labels are for display only. Statistics always use frozen routes.
             const label = if (glyphs.written().len > 0) glyphs.written() else if (view.layer < physical.labels.layer_count) physical.labels.lookup(view.layer, key.key_index, @bitCast(variants[view.variant])).label orelse physical.labels.lookup(view.layer, key.key_index, @bitCast(variants[view.variant])).caption orelse "·" else "·";
-            var options = ui.options(theme, ui.rect(placed.rect), @max(10, @min(18, placed.rect.w / 3)));
+            var options = ui.options(theme, ui.rect(placed.rect), @max(9, @min(15, placed.rect.h / 3.5)));
             options.rect.?.x += 3;
             options.rect.?.y += 3;
             options.rect.?.w -= 6;
             options.rect.?.h -= 6;
-            options.color_fill = .{ .color = color(found, light) };
+            const heat_stat: ?results.Stat = if (view.heatmap_mode == 0) found else if (found) |stat| .{ .opportunities = 100, .misses = if (stat.opportunities < 5) 40 else if (stat.opportunities < 20) 20 else if (stat.opportunities < 50) 5 else 0 } else null;
+            options.color_fill = .{ .color = color(heat_stat, light) };
             options.color_text = .{ .color = theme.text };
             options.background = true;
+            options.padding = .all(2);
             options.id_extra = placed.id;
             options.rotation = placed.rotation;
             options.tag = try std.fmt.allocPrint(arena, "practice.heatmap.{d}", .{key.key_index});
@@ -129,32 +171,41 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     };
     if (!drew_geometry) presentation.caption("Physical routes unavailable for this layout snapshot. Use the character list below.", .{ .y = keyboard_y, .w = width, .h = keyboard_h }, 17, theme.muted, null);
     const legend_y = keyboard_y + keyboard_h + 6;
-    const legend = [_][]const u8{ "Unpracticed", "0%", "1–10%", "11–25%", ">25%" };
+    const legend = if (view.heatmap_mode == 0) [_][]const u8{ "Unpracticed", "0% misses", "1–10%", "11–25%", ">25%" } else [_][]const u8{ "Unpracticed", "50+ samples", "20–49", "5–19", "1–4 samples" };
     for (legend, 0..) |label, index| {
-        const x = @as(f32, @floatFromInt(index)) * width / 5;
+        const x = @as(f32, @floatFromInt(index)) * keyboard_width / 5;
         const swatch = if (index == 0) null else results.Stat{ .opportunities = 100, .misses = ([_]u64{ 0, 0, 5, 20, 40 })[index] };
-        dvui.labelNoFmt(@src(), label, .{ .align_x = 0.5 }, .{ .rect = .{ .x = x, .y = legend_y, .w = width / 5 - 5, .h = 26 }, .background = true, .color_fill = .{ .color = color(swatch, light) }, .color_text = .{ .color = theme.text }, .id_extra = index });
+        dvui.labelNoFmt(@src(), label, .{ .align_x = 0.5 }, .{ .rect = .{ .x = x, .y = legend_y, .w = keyboard_width / 5 - 5, .h = 26 }, .background = true, .color_fill = .{ .color = color(swatch, light) }, .color_text = .{ .color = theme.text }, .id_extra = index });
     }
     const strip_y = legend_y + 34;
-    const columns: usize = @intFromFloat(@max(1, @floor((width - 120) / 66)));
-    const page_size = columns * 2;
+    const columns: usize = @intFromFloat(@max(1, @floor((width - 120) / 155)));
+    const page_size = if (wide) @as(usize, 6) else columns * 2;
     const pages = @max(1, (aggregate.stat_count + page_size - 1) / page_size);
     view.character_page = @min(view.character_page, pages - 1);
     const first = view.character_page * page_size;
     const last = @min(aggregate.stat_count, first + page_size);
     var sorted = aggregate.stats;
-    std.mem.sort(results.Stat, sorted[0..aggregate.stat_count], {}, struct {
-        fn less(_: void, a: results.Stat, b: results.Stat) bool {
+    std.mem.sort(results.Stat, sorted[0..aggregate.stat_count], view.sort, struct {
+        fn less(order: usize, a: results.Stat, b: results.Stat) bool {
+            if (order == 1) return a.cp < b.cp;
+            if (order == 2) return if (a.opportunities == b.opportunities) a.cp < b.cp else a.opportunities > b.opportunities;
             return if (a.rank() == b.rank()) a.cp < b.cp else a.rank() > b.rank();
         }
     }.less);
     for (sorted[first..last], 0..) |stat, index| {
         var bytes: [4]u8 = undefined;
-        const label = try std.fmt.allocPrint(arena, "{s} {d}/{d}", .{ glyph(stat.cp, &bytes), stat.misses, stat.opportunities });
+        var confusion: ?results.Substitution = null;
+        for (aggregate.substitutions[0..aggregate.substitution_count]) |sub| if (sub.expected == stat.cp and sub.count > 0 and (confusion == null or sub.count > confusion.?.count)) {
+            confusion = sub;
+        };
+        var typed_bytes: [4]u8 = undefined;
+        const pair = if (confusion) |sub| try std.fmt.allocPrint(arena, " → {s} ×{d}", .{ glyph(sub.typed, &typed_bytes), sub.count }) else "";
+        const label = try std.fmt.allocPrint(arena, "{s} · {d:.0}% · n={d}{s}{s}", .{ glyph(stat.cp, &bytes), 100 - stat.rate(), stat.opportunities, if (stat.opportunities < 5) "*" else "", if (wide) pair else "" });
         var key_theme = theme;
         key_theme.control = color(stat, light);
-        if (ui.button(key_theme, label, try std.fmt.allocPrint(arena, "practice.character.{d}", .{stat.cp}), .{ .x = @as(f32, @floatFromInt(index % columns)) * 66, .y = strip_y + @as(f32, @floatFromInt(index / columns)) * 34, .w = 62, .h = 30 })) select(view, stat);
+        if (ui.button(key_theme, label, try std.fmt.allocPrint(arena, "practice.character.{d}", .{stat.cp}), .{ .x = if (wide) keyboard_width + 20 else @as(f32, @floatFromInt(index % columns)) * 155, .y = if (wide) keyboard_y + 34 + @as(f32, @floatFromInt(index)) * 34 else strip_y + @as(f32, @floatFromInt(index / columns)) * 34, .w = if (wide) width - keyboard_width - 20 else 151, .h = 30 })) select(view, stat);
     }
+    if (wide) presentation.caption("Character · first-pass · exposure · common error", .{ .x = keyboard_width + 20, .y = keyboard_y, .w = width - keyboard_width - 20, .h = 30 }, 15, theme.muted, null);
     if (ui.button(theme, "More →", "practice.characters.more", .{ .x = width - 112, .y = strip_y, .w = 110, .h = 32 })) view.character_page = (view.character_page + 1) % pages;
     const detail_y = strip_y + 74;
     var detail: std.Io.Writer.Allocating = .init(arena);
@@ -163,7 +214,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
             var bytes: [4]u8 = undefined;
             try detail.writer.print("«{s}» · {d}/{d} missed · {d:.1}% · {d} retry errors{s}", .{ glyph(cp, &bytes), stat.misses, stat.opportunities, stat.rate(), stat.retries, if (stat.opportunities < 5) " · limited evidence" else "" });
             if (stat.route_count == 0) try detail.writer.writeAll(" · no proven route");
-            for (stat.routes[0..stat.route_count]) |route| try detail.writer.print(" · L{d} key {d} {s}", .{ route.layer, route.key, switch (route.modifiers) {
+            if (view.more_details) for (stat.routes[0..stat.route_count]) |route| try detail.writer.print(" · L{d} key {d} {s}", .{ route.layer, route.key, switch (route.modifiers) {
                 2 => "Shift",
                 4 => "left Alt",
                 6 => "Shift+left Alt",
@@ -178,7 +229,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
                 try detail.writer.print(" · typed «{s}» {d}×", .{ desktop.practice_view.glyph(sub.typed, true, &typed), sub.count });
             };
         };
-    } else try detail.writer.writeAll("Select a character or key for exact counts and routes. Case and symbols stay separate.");
+    } else try detail.writer.writeAll("Character cells: first-pass success · n=opportunities · * limited evidence. Select for confusion counts.");
     if (aggregate.substitutions_truncated) try detail.writer.writeAll(" · substitution detail limited to 256 observed pairs");
     presentation.caption(detail.written(), .{ .y = detail_y, .w = width, .h = 58 }, 15, theme.text, "practice.result.details");
     const actions_y = detail_y + 64;
@@ -190,6 +241,20 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         if (record.scored or view.scope != 0) {
             const targets = aggregate.targets(&config.targets);
             config.target_count = @intCast(targets.len);
+            // A selected confusion overrides the broad drill only with repeated
+            // substitution evidence and sufficient expected-character exposure.
+            if (view.selected) |cp| for (aggregate.stats[0..aggregate.stat_count]) |stat| {
+                if (stat.cp != cp or !stat.supportedWeakness()) continue;
+                var best: ?results.Substitution = null;
+                for (aggregate.substitutions[0..aggregate.substitution_count]) |sub| {
+                    if (sub.expected == cp and sub.count >= 2 and sub.typed != cp and (best == null or sub.count > best.?.count)) best = sub;
+                }
+                if (best) |pair| {
+                    config.targets[0] = cp;
+                    config.targets[1] = pair.typed;
+                    config.target_count = 2;
+                }
+            };
         }
         if (config.target_count == 0) view.message = "Not enough evidence yet (5 opportunities and 2 misses). Start a fresh exercise." else if (config.mode != .english) view.message = "Personalized drills currently use the English corpus." else {
             var buffer: [8192]u8 = undefined;
@@ -206,7 +271,8 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         view.refresh = true;
         view.before = null;
     }
-    if (ui.button(theme, "Clear history", "practice.history.clear", .{ .x = 520, .y = actions_y, .w = 140, .h = 38 })) view.confirm_clear = true;
+    if (ui.button(theme, "More details", "practice.result.more", .{ .x = 520, .y = actions_y, .w = 140, .h = 38 })) view.more_details = !view.more_details;
+    if (view.more_details and ui.button(theme, "Clear history", "practice.history.clear", .{ .x = width - 140, .y = actions_y + 78, .w = 140, .h = 30 })) view.confirm_clear = true;
     var focus_note: std.Io.Writer.Allocating = .init(arena);
     if (record.cohort.family == .english) try focus_note.writer.print("Seed {d} · generation / corpus / coverage v1 · {d} outside-reference errors", .{ record.seed, record.outside_errors }) else try focus_note.writer.print("Zig lesson {s} · original text corpus v1 · {d} outside-reference errors", .{ desktop.practice.lesson_ids[record.cohort.lesson], record.outside_errors });
     if (record.target_count > 0) {
@@ -216,7 +282,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
             try focus_note.writer.print("{s} ", .{glyph(cp, &bytes)});
         }
     }
-    if (!view.confirm_clear and !view.history_open) presentation.caption(focus_note.written(), .{ .y = actions_y + 78, .w = width, .h = 30 }, 14, theme.muted, "practice.result.seed");
+    if (view.more_details and !view.confirm_clear and !view.history_open) presentation.caption(focus_note.written(), .{ .y = actions_y + 78, .w = width - 150, .h = 30 }, 14, theme.muted, "practice.result.seed");
     const save_status = if (failure) |err| try std.fmt.allocPrint(arena, "History save/read failed: {s}. In-memory results remain available.", .{@errorName(err)}) else if (saving) "Saving / loading history…" else if (history != null and history.?.rejected > 0) "Some history files could not be read; scopes are incomplete. Original files are preserved." else view.message;
     presentation.caption(save_status, .{ .y = actions_y + 43, .w = width - 110, .h = 30 }, 14, theme.muted, "practice.history.status");
     if (failure != null and ui.button(theme, "Retry", "practice.history.retry", .{ .x = width - 105, .y = actions_y + 43, .w = 100, .h = 30 })) view.retry = true;
