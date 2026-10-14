@@ -217,8 +217,10 @@ pub fn compilerTreeDigest(gpa: std.mem.Allocator, io: std.Io, directory: []const
     const files = try sources.collect(gpa, io, dir, .{ .excluded = struct {
         fn excluded(_: []const u8, name: []const u8, kind: std.Io.File.Kind) bool {
             if (kind != .directory) return false;
-            for ([_][]const u8{ ".git", ".zig-cache", "zig-out", "zig-pkg" }) |ignored| if (std.mem.eql(u8, name, ignored)) return true;
-            return false;
+            return std.mem.eql(u8, name, ".git") or
+                std.mem.eql(u8, name, ".zig-cache") or
+                std.mem.eql(u8, name, "zig-out") or
+                std.mem.eql(u8, name, "zig-pkg");
         }
     }.excluded, .max_files = 100_000 });
     defer sources.free(gpa, files);
@@ -304,6 +306,27 @@ pub fn capture(gpa: std.mem.Allocator, io: std.Io, selected: Selection) !Capture
     var owned_lock = selected.lock;
     inline for (.{ "firmware_repository", "firmware_revision", "zig_version", "board", "target", "optimize" }) |name| @field(owned_lock, name) = try arena.allocator().dupe(u8, @field(selected.lock, name));
     return .{ .arena = arena, .receipt = receipt, .inputs = .{ .project_digest = selected.project_digest, .source_digest = selected.exported_source_digest, .build_inputs_digest = receipt.digest(), .profile_id = selected.profile_id, .identity_digest = selected.identity_digest, .lock = owned_lock } };
+}
+
+test "compiler tree excludes build directories and includes hidden files" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "zig", .data = "compiler" });
+    const base = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(base);
+    const original = try compilerTreeDigest(gpa, io, base);
+    inline for (.{ ".git", ".zig-cache", "zig-out", "zig-pkg" }) |name| {
+        try tmp.dir.createDir(io, name, .default_dir);
+        try tmp.dir.writeFile(io, .{ .sub_path = name ++ "/ignored", .data = "ignored" });
+    }
+    try std.testing.expectEqual(original, try compilerTreeDigest(gpa, io, base));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".hidden", .data = "included" });
+    const with_hidden = try compilerTreeDigest(gpa, io, base);
+    try std.testing.expect(!same(original, with_hidden));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".hidden", .data = "changed" });
+    try std.testing.expect(!same(with_hidden, try compilerTreeDigest(gpa, io, base)));
 }
 
 test "capture distinguishes archive from installed trees and detects changed inputs" {

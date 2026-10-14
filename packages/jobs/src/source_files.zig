@@ -1,6 +1,5 @@
 //! Deterministic traversal only; callers own exclusions and digest formats.
 const std = @import("std");
-const builtin = @import("builtin");
 pub const Entry = struct { path: []const u8, kind: std.Io.File.Kind };
 pub const Policy = struct {
     excluded: *const fn (path: []const u8, basename: []const u8, kind: std.Io.File.Kind) bool,
@@ -33,7 +32,6 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
         gpa.free(empty);
         return err;
     };
-    var entries_seen: usize = 0;
     while (stack.items.len != 0) {
         const frame = &stack.items[stack.items.len - 1];
         const entry = try frame.iterator.next(io);
@@ -43,19 +41,15 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
             gpa.free(done.prefix);
             continue;
         };
-        // Test-only protection against an iterator repeatedly returning entries.
-        // Production source trees are never subject to this diagnostic bound.
-        if (builtin.is_test) {
-            if (entries_seen == 20_000) return error.SourceTraversalStalled;
-            entries_seen += 1;
-        }
+        if (item.name.len > std.Io.Dir.max_name_bytes) return error.InvalidSourceName;
         const path = try std.fs.path.join(gpa, &.{ frame.prefix, item.name });
-        if (policy.excluded(path, item.name, item.kind)) {
+        const name = std.fs.path.basename(path);
+        if (policy.excluded(path, name, item.kind)) {
             gpa.free(path);
             continue;
         }
         if (item.kind == .directory) {
-            const child = frame.dir.openDir(io, item.name, .{ .iterate = true }) catch |err| {
+            const child = frame.dir.openDir(io, name, .{ .iterate = true }) catch |err| {
                 gpa.free(path);
                 return err;
             };
@@ -92,6 +86,34 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
 pub fn free(gpa: std.mem.Allocator, files: []Entry) void {
     for (files) |file| gpa.free(file.path);
     gpa.free(files);
+}
+
+fn checkMultipleFiles() !void {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "nested/deeper");
+    try tmp.dir.writeFile(io, .{ .sub_path = "first.zig", .data = "a" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "second.zig", .data = "b" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "nested/deeper/third.zig", .data = "c" });
+    const Accept = struct {
+        fn excluded(_: []const u8, _: []const u8, _: std.Io.File.Kind) bool {
+            return false;
+        }
+    };
+    for (0..2) |_| {
+        const files = try collect(gpa, io, tmp.dir, .{ .excluded = Accept.excluded });
+        defer free(gpa, files);
+        try std.testing.expectEqual(@as(usize, 3), files.len);
+        try std.testing.expectEqualStrings("first.zig", files[0].path);
+        try std.testing.expectEqualStrings("nested/deeper/third.zig", files[1].path);
+        try std.testing.expectEqualStrings("second.zig", files[2].path);
+    }
+}
+
+test "multiple files on one directory handle" {
+    try checkMultipleFiles();
 }
 
 test "nested traversal terminates and preserves relative paths" {
