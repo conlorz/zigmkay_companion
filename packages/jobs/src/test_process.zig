@@ -297,8 +297,10 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
     try executable.file.setPermissions(t.io, .executable_file);
     try executable.link(t.io);
     try distribution.writeFile(t.io, .{ .sub_path = "bundle.tar", .data = "fixture bundle" });
-    try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{} }" });
-    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    var source = try tmp.dir.createDirPathOpen(t.io, "source", .{ .open_options = .{ .iterate = true } });
+    defer source.close(t.io);
+    try source.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{} }" });
+    const root = try source.realPathFileAlloc(t.io, ".", t.allocator);
     defer t.allocator.free(root);
     const compiler_root = try distribution.realPathFileAlloc(t.io, ".", t.allocator);
     defer t.allocator.free(compiler_root);
@@ -387,9 +389,12 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
         } else if (comptime std.mem.eql(u8, mode, "missing")) {
             try t.expectError(error.FileNotFound, job.finish(result, job.captured.inputs));
         } else {
+            std.debug.print("managed build (invalid): finishing invalid artifact\n", .{});
             try t.expectError(error.InvalidUf2Magic, job.finish(result, job.captured.inputs));
+            std.debug.print("managed build (invalid): invalid artifact rejected\n", .{});
         }
     }
+    std.debug.print("managed build: mode jobs complete; checking stale inputs\n", .{});
     try environment.put("ZIGMKAY_BUILD_FIXTURE", "success");
     std.debug.print("managed build (stale inputs): initializing job\n", .{});
     var completed_export = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, request);
@@ -413,4 +418,5 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
     try exported.writeFile(t.io, .{ .sub_path = "keymap.zig", .data = "changed export" });
     try t.expectError(error.ExportedSourceChanged, changed_export.start(changed_export.captured.inputs));
     try t.expect(!changed_export.process.started);
+    std.debug.print("managed build: assertions complete; releasing resources\n", .{});
 }
