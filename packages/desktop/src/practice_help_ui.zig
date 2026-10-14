@@ -10,7 +10,7 @@ pub const Action = union(enum) { none, back, start: control.Config };
 pub fn settings(config: *control.Config, theme: ui.Theme, viewport: dvui.Rect) !bool {
     const area = dvui.scrollArea(@src(), .{}, .{ .rect = viewport });
     defer area.deinit();
-    const bounds: dvui.Rect = .{ .w = viewport.w - 20, .h = 650 };
+    const bounds: dvui.Rect = .{ .w = viewport.w - 20, .h = 740 };
     const body = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = bounds.w, .h = bounds.h }, .padding = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
     defer body.deinit();
     presentation.caption("Hint settings", .{ .w = bounds.w, .h = 44 }, 26, theme.text, "practice.help.title");
@@ -21,9 +21,9 @@ pub fn settings(config: *control.Config, theme: ui.Theme, viewport: dvui.Rect) !
     var delay = std.mem.indexOfScalar(u16, &delays, config.hints.delay_ms) orelse 3;
     if (dvui.dropdown(@src(), &.{ "250 ms", "500 ms", "1 second", "1.5 seconds", "2 seconds", "3 seconds", "5 seconds", "10 seconds" }, .{ .choice = &delay }, .{}, .{ .rect = .{ .x = 235, .y = 160, .w = 180, .h = 40 } })) config.hints.delay_ms = delays[delay];
     _ = dvui.checkbox(@src(), &config.hints.adaptive, "Adapt delayed hints to my measured pace", .{ .rect = .{ .y = 222, .w = bounds.w, .h = 38 } });
-    presentation.paragraph("Delayed hints count active hesitation, including time before the first key, and exclude explicit pauses. With enough matching timing evidence, the delay uses three times your character median, bounded between half and twice your chosen delay and 250 ms to 10 seconds.", .{ .y = 282, .w = bounds.w, .h = 120 }, 17, theme.muted);
-    presentation.paragraph("Changing these settings pauses the current exercise. Start a fresh run after applying a different policy. Requested help during hidden recall is saved separately from fully hidden evidence.", .{ .y = 424, .w = bounds.w, .h = 80 }, 17, theme.text);
-    return ui.button(theme, "Apply and return", "practice.help.apply", .{ .y = 540, .w = 200, .h = 42 });
+    presentation.paragraph("Delayed hints wait while you hesitate, including before the first key, and stop counting during pauses. Adaptation uses your character timing when available, within half to twice the chosen delay.", .{ .y = 282, .w = bounds.w, .h = 160 }, 17, theme.muted);
+    presentation.paragraph("Start a fresh run after applying a different policy. Help revealed during hidden recall is saved separately from fully hidden evidence.", .{ .y = 470, .w = bounds.w, .h = 130 }, 17, theme.text);
+    return ui.button(theme, "Apply and return", "practice.help.apply", .{ .y = 630, .w = 200, .h = 42 });
 }
 pub fn reviews(view: *Review, owner: *control.Controller, history: ?*const desktop.practice_history.Query, failure: ?anyerror, saving: bool, theme: ui.Theme, bounds: dvui.Rect) !Action {
     const area = dvui.scrollArea(@src(), .{}, .{ .rect = bounds, .tag = "practice.review" });
