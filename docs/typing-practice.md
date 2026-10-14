@@ -5,6 +5,12 @@ lesson, your input source and assistance, then press **Start**. Pause/Resume
 keeps the current exercise. **Fresh run** and **New exercise** generate fresh
 English text; they do not replay a normal exercise.
 
+**Progress**, **Lessons** and **Review** open focused panels. **More…** contains
+Practice data, Hint settings, Challenge seed and Saved history. Panels share
+left-aligned headings and cards; smaller windows stack cards and scroll.
+See the [native layout comparison](implementation/practice-layout-review.md)
+for mockups, before/after screenshots and the clipping audit.
+
 ## Text and challenges
 
 English preset and length are independent:
@@ -29,7 +35,7 @@ physical routes identify both hands, normal Mixed case includes at least one
 capital per hand in Short and two per hand in Normal/Long. If that mapping is
 unavailable, the tutor reports textual coverage only.
 
-**Challenge seed…** opens an optional control. Enable **Challenge v1** and
+**More… → Challenge seed** opens an optional control. Enable **Challenge v1** and
 enter an unsigned 64-bit seed. Friends must match seed, English preset, length,
 and generator/corpus/coverage versions (all initially 1). Challenges deliberately
 reproduce the same text, independently of time, platform, keyboard layout and
@@ -67,7 +73,7 @@ a fresh exercise. Loss of verified live state shows an unavailable keyboard.
 ## Deliberate hints and recall review
 
 Choose **Delayed hints** or **Hints on request** to reduce guidance gradually.
-**Hint settings** controls the delay and optional adaptation to matching clean
+**More… → Hint settings** controls the delay and optional adaptation to matching clean
 character timing. Delays exclude pauses and restart for each target. **Show hint**
 is available even in Hidden practice. The keyboard stays the same size and position
 when hints appear. Cyan marks keys to hold; amber marks the key to tap, with a
@@ -100,7 +106,7 @@ describe the evidence rules and database migration.
 
 ## Guided difficulty
 
-Open **Guided difficulty** to choose a lesson without changing exercise length
+Open **Lessons** to choose a guided lesson without changing exercise length
 or assistance. The six stages are Find keys, Build fluency, Add Shift, Change
 layers, Combine modifiers, and Real text. Start the selected lesson explicitly;
 **Free exercises** returns to the existing unrestricted generator.
@@ -149,7 +155,7 @@ windows scroll to keep stage choices and controls accessible.
 
 Open **Progress** for history charts without expanding the immediate rundown.
 **Trends** separates speed and attempt accuracy on aligned time axes. Blue marks
-are raw measurements; optional yellow smoothing uses an exponential weight of
+are raw measurements; optional green speed/blue accuracy smoothing uses an exponential weight of
 0.35 for the new point and never joins gaps longer than 24 hours. Zero-duration
 runs do not produce plotted measurements. Single runs still produce a point.
 The view uses the newest 60 scored completed runs in the exact comparison cohort;
@@ -157,10 +163,15 @@ Today and Last 7 days filter that bounded window. The displayed UTC date range
 and sample count stay explicit. Assistance, challenge/drill mode, length, source
 and layout remain separate cohorts rather than silently mixed trends.
 
+Recent average is the mean WPM of displayed runs with positive duration.
+Accuracy uses a focused range with visible axis limits, so small changes remain
+readable without mixing its scale with speed.
+
 ![Native progress trends](screenshots/typing-practice/progress-wide.png)
 
-The matrix shows the newest 12 displayed runs and up to six characters ranked
-by all-history weakness. Switch between missed occurrences/sample counts,
+The matrix shows up to the newest 12 displayed runs, fitting fewer columns in a
+narrow card, and up to six characters ranked by all-history weakness.
+Switch between first-pass success percentages,
 exposure, and median clean interval in milliseconds. Timing excludes correction,
 batch, paste, repeat, first-input and boundary intervals. An asterisk marks fewer
 than five valid intervals or a truncated recording; a dash means no timing
@@ -249,6 +260,7 @@ Otherwise it uses the existing broad weak-character recommendation.
 **More details** reveals frozen routes, generation context and Clear history.
 Small windows stack the character cells beneath the keyboard. Sample counts and
 asterisks describe limited evidence; they are not statistical confidence claims.
+SPC, RET and TAB are compact labels for Space, Enter and Tab.
 
 ![Compact small-window rundown](screenshots/typing-practice/rundown-compact-small.png)
 
@@ -371,7 +383,7 @@ analysis; the tutor does not add timing charts to the rundown yet.
 
 ### Export and import
 
-Open **Practice data** in the tutor. Enter an absolute database filename and
+Open **More… → Practice data** in the tutor. Enter an absolute database filename and
 choose **Export database** to create a standalone snapshot, including committed
 data still in SQLite's write-ahead log. The export destination must not already
 exist. Export/import wait until pending saves finish.

@@ -133,7 +133,7 @@ fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bou
     const panel = dvui.box(@src(), .{}, .{ .rect = bounds, .background = true, .color_fill = .{ .color = theme.bg }, .corners = .all(12), .padding = .{}, .tag = "practice.keyboard" });
     defer panel.deinit();
     if (frame.geometry.len == 0) {
-        presentation.caption("Keyboard view unavailable", .{ .x = 8, .y = 0, .w = bounds.w - 16, .h = 48 }, 18, theme.muted, null);
+        presentation.label("Keyboard view unavailable", .{ .x = 8, .y = bounds.h - 22, .w = bounds.w - 16, .h = 20 }, 11, theme.muted, null);
         return;
     }
     const labels = frame.labels;
@@ -154,8 +154,8 @@ fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bou
     };
     const title = switch (frame.source) {
         .live => if (frame.stale) "Live companion · stale / reconnecting" else "Live companion",
-        .simulated => "Draft companion · simulated key presses",
-        .draft => if (guided) "Draft guide · next-route preview" else "Static draft reference · no key telemetry",
+        .simulated => "Draft simulation",
+        .draft => if (guided) "Draft guide" else "Draft reference",
     };
     dvui.labelNoFmt(@src(), try std.fmt.allocPrint(arena, "{s} · {s} · layer {d}{s}", .{ title, frame.profile, layer, if (owner.cohort.verified) "" else " · unverified" }), .{ .align_x = 0 }, .{ .rect = .{ .x = 8, .y = bounds.h - 22, .w = @max(0, bounds.w - 200), .h = 20 }, .font = dvui.Font.theme(.body).withSize(11), .color_text = .{ .color = theme.muted }, .padding = .{}, .tag = "practice.keyboard.source" });
     for ([_][]const u8{ "Hold", "Tap" }, 0..) |label, index| {
@@ -197,28 +197,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
     view.help.tick(owner.generation, desktop.practice_view.focus(&owner.session), input.now_us, !owner.active or owner.session.state == .paused or owner.session.state == .complete or auxiliary or !input.window_focused);
     if (auxiliary and owner.active and owner.session.state != .complete) if (owner.session.recorder) |recorder| recorder.setCue(false, owner.session.len, input.now_us, owner.session.duration(input.now_us));
     if (view.data_open) {
-        presentation.caption("Practice data", .{ .w = width, .h = 42 }, 28, theme.text, "practice.data.title");
-        presentation.caption("Timing datapoints are saved locally during practice. Older runs keep their original counts.", .{ .y = 52, .w = width, .h = 48 }, 17, theme.muted, null);
-        presentation.caption(try std.fmt.allocPrint(dvui.currentWindow().arena(), "{d} saved runs · {d} timing events · {d} pending saves", .{ if (input.history) |data| data.database_runs else 0, if (input.history) |data| data.database_events else 0, input.history_pending }), .{ .y = 110, .w = width, .h = 34 }, 20, theme.text, "practice.data.counts");
-        presentation.caption("History folder", .{ .y = 158, .w = width, .h = 28 }, 17, theme.muted, null);
-        presentation.caption(input.history_path, .{ .y = 189, .w = width, .h = 50 }, 14, theme.text, null);
-        presentation.caption("Database file to export or import (absolute path)", .{ .y = 254, .w = width, .h = 28 }, 17, theme.text, null);
-        const entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &view.data_path } }, .{ .rect = .{ .y = 288, .w = width, .h = 44 }, .tag = "practice.data.path" });
-        entry.deinit();
-        const available = !input.history_saving and input.history_pending == 0;
-        if (ui.buttonEnabled(theme, "Export database", "practice.data.export", .{ .y = 350, .w = 180, .h = 42 }, available)) view.transfer = .export_database;
-        if (ui.buttonEnabled(theme, "Import database", "practice.data.import", .{ .x = 195, .y = 350, .w = 180, .h = 42 }, available)) view.transfer = .import_database;
-        presentation.caption("Export creates a standalone snapshot. Import merges runs without duplicating or replacing them.", .{ .y = 410, .w = width, .h = 48 }, 16, theme.muted, null);
-        const message = if (input.history_failure) |err| switch (err) {
-            error.PathAlreadyExists => "Export destination already exists. Choose another filename.",
-            error.PracticeRunCollision => "Import conflict: the same run ID has different data. No runs were imported.",
-            error.UnsupportedPracticeDatabase => "This file is not a supported practice database.",
-            error.PracticeDatabaseBusy => "Database busy. Wait for other writes and retry.",
-            else => @errorName(err),
-        } else if (input.history_saving) "Working on practice data…" else if (input.history) |data| (if (data.exported) "Database exported successfully." else if (data.imported != null) "Database imported successfully. Existing matching runs were kept." else "") else "";
-        presentation.caption(message, .{ .y = 479, .w = width, .h = 54 }, 17, theme.text, "practice.data.status");
-        if (input.history_failure != null and ui.button(theme, "Retry pending saves", "practice.data.retry", .{ .y = 545, .w = 215, .h = 42 })) view.rundown.retry = true;
-        if (ui.button(theme, "Back to practice", "practice.data.back", .{ .y = @min(height - 62, 620), .w = 180, .h = 42 })) view.data_open = false;
+        try dataPanel(view, theme, .{ .w = width, .h = height }, input);
         return .{ .input_effect = focus_effect };
     }
     if (view.progress_open) {
@@ -345,18 +324,20 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         defer row.deinit();
         changed = dvui.dropdown(@src(), &.{ "OS keyboard text", "Unflashed draft" }, .{ .choice = &source }, .{}, .{ .tag = "practice.input.source" }) or changed;
         changed = dvui.dropdown(@src(), &help.choices, .{ .choice = &assistance }, .{}, .{ .tag = "practice.assistance" }) or changed;
-        if (!owner.active and dvui.button(@src(), "Saved history", .{}, .{ .tag = "practice.history.open" })) {
+        var tools_choice: usize = 0;
+        _ = dvui.dropdown(@src(), &.{ "More…", "Practice data", "Hint settings", "Challenge seed", "Saved history" }, .{ .choice = &tools_choice }, .{}, .{ .tag = "practice.tools", .min_size_content = .{ .w = 90 } });
+        if ((!owner.active or owner.session.state == .complete) and tools_choice == 4) {
             view.rundown.refresh = true;
             view.rundown.history_open = true;
-            if (input.history) |saved| if (saved.page_count > 0) {
+            if (owner.completed == null) if (input.history) |saved| if (saved.page_count > 0) {
                 view.rundown.reviewed = saved.page[0];
             };
         }
-        if (mode == 0 and owner.config.curriculum.version == 0 and dvui.button(@src(), "Challenge seed…", .{}, .{ .tag = "practice.challenge.toggle" })) {
+        if (mode == 0 and owner.config.curriculum.version == 0 and tools_choice == 3) {
             view.challenge_open = !view.challenge_open;
             if (view.challenge_open and owner.active and owner.session.state != .complete) pending = .pause;
         }
-        if (dvui.button(@src(), "Practice data", .{}, .{ .tag = "practice.data.open" })) {
+        if (tools_choice == 1) {
             view.data_open = true;
             view.rundown.refresh = true;
             if (owner.active and owner.session.state != .complete) pending = .pause;
@@ -370,7 +351,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
             view.rundown.refresh = true;
             if (owner.active and owner.session.state != .complete) pending = .pause;
         }
-        if (dvui.button(@src(), "Guided difficulty", .{}, .{ .tag = "practice.curriculum.open" })) {
+        if (dvui.button(@src(), "Lessons", .{}, .{ .tag = "practice.curriculum.open" })) {
             view.curriculum_open = true;
             view.curriculum.config = owner.config;
             view.curriculum.config.challenge = null;
@@ -385,7 +366,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
             view.rundown.refresh = true;
             if (owner.active and owner.session.state != .complete) pending = .pause;
         }
-        if (dvui.button(@src(), "Hint settings", .{}, .{ .tag = "practice.help.open" })) {
+        if (tools_choice == 2) {
             view.help_open = true;
             view.help_config = owner.config;
             if (owner.active and owner.session.state != .complete) pending = .pause;
@@ -464,7 +445,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
     if (view.show_keyboard) {
         view.drawn_keyboard = input.frame != null;
         const keyboard_bounds: dvui.Rect = .{ .x = 0, .y = footer_y + 124, .w = width, .h = @max(0, height - footer_y - 124) };
-        if (input.frame) |frame| try keyboard(owner, frame, theme, keyboard_bounds, focus, input.resources, show_hint) else presentation.caption("Companion · no verified keyboard layout", keyboard_bounds, 18, theme.muted, "practice.keyboard.source");
+        if (input.frame) |frame| try keyboard(owner, frame, theme, keyboard_bounds, focus, input.resources, show_hint) else presentation.label("Companion · no verified keyboard layout", .{ .x = 8, .y = keyboard_bounds.y + keyboard_bounds.h - 22, .w = width - 16, .h = 20 }, 11, theme.muted, "practice.keyboard.source");
         if (owner.active and session.state != .complete) if (session.recorder) |recorder| {
             recorder.clock = .frame;
             const frame = input.frame;
@@ -540,4 +521,51 @@ pub fn apply(owner: *control.Controller, view: *View, rendered: control.Action, 
         else => {},
     }
     return effect;
+}
+fn dataPanel(view: *View, theme: ui.Theme, bounds: dvui.Rect, input: Input) !void {
+    const wide = bounds.w >= 1100;
+    const content_width = @max(640, bounds.w - 60);
+    const left_width = if (wide) (content_width - 20) * 0.43 else content_width;
+    const path_height = presentation.wrappedHeight(input.history_path, left_width - 48, 12);
+    const left_height = @max(370, 294 + path_height);
+    const page = presentation.Page.init(bounds, if (wide) left_height + 240 else left_height + 590, "practice.data.title", theme);
+    defer page.deinit();
+    const width = page.width;
+    const arena = dvui.currentWindow().arena();
+    presentation.header("Practice data", "Saved locally. Take your practice history to another computer or worktree.", width, theme);
+    if (ui.button(theme, "Back to practice", "practice.data.back", .{ .x = width - 165, .w = 165, .h = 38 })) view.data_open = false;
+    const left_w = if (wide) (width - 20) * 0.43 else width;
+    const right_x = if (wide) left_w + 20 else 0;
+    const right_y: f32 = if (wide) 96 else left_height + 120;
+    const right_w = if (wide) width - right_x else width;
+    presentation.surface(.{ .y = 96, .w = left_w, .h = left_height }, theme.panel);
+    presentation.label("Local practice history", .{ .x = 24, .y = 114, .w = left_w - 48, .h = 30 }, 20, theme.text, null);
+    presentation.label(try std.fmt.allocPrint(arena, "{d} saved runs", .{if (input.history) |data| data.database_runs else 0}), .{ .x = 24, .y = 168, .w = left_w - 48, .h = 40 }, 28, theme.text, "practice.data.counts");
+    presentation.label(try std.fmt.allocPrint(arena, "{d} timing events · {d} pending saves", .{ if (input.history) |data| data.database_events else 0, input.history_pending }), .{ .x = 24, .y = 218, .w = left_w - 48, .h = 24 }, 14, theme.muted, null);
+    _ = presentation.flowText("Only exercise input is recorded. Older runs keep their counts; timing remains unavailable.", 24, 258, left_w - 48, 14, theme.muted);
+    presentation.label("History folder", .{ .x = 24, .y = 334, .w = left_w - 48, .h = 22 }, 13, theme.muted, null);
+    _ = presentation.flowText(input.history_path, 24, 366, left_w - 48, 12, theme.text);
+    presentation.surface(.{ .x = right_x, .y = right_y, .w = right_w, .h = 370 }, theme.panel);
+    presentation.label("Export or import", .{ .x = right_x + 24, .y = right_y + 18, .w = right_w - 48, .h = 30 }, 20, theme.text, null);
+    _ = presentation.flowText("Export creates a standalone database. Import merges matching runs and keeps the originals.", right_x + 24, right_y + 66, right_w - 48, 15, theme.muted);
+    presentation.label("Database file · absolute path", .{ .x = right_x + 24, .y = right_y + 142, .w = right_w - 48, .h = 24 }, 14, theme.text, null);
+    const entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &view.data_path } }, .{ .rect = .{ .x = right_x + 24, .y = right_y + 178, .w = right_w - 48, .h = 42 }, .tag = "practice.data.path" });
+    entry.deinit();
+    const available = !input.history_saving and input.history_pending == 0;
+    var primary = theme;
+    primary.control = ui.color(0x287AF2);
+    primary.text = dvui.Color.white;
+    if (ui.buttonEnabled(primary, "Export database", "practice.data.export", .{ .x = right_x + 24, .y = right_y + 238, .w = 180, .h = 40 }, available)) view.transfer = .export_database;
+    if (ui.buttonEnabled(theme, "Import database", "practice.data.import", .{ .x = right_x + 216, .y = right_y + 238, .w = 180, .h = 40 }, available)) view.transfer = .import_database;
+    _ = presentation.flowText("Choose a new filename for export. Repeated imports do not duplicate matching runs.", right_x + 24, right_y + 298, right_w - 48, 13, theme.muted);
+    const message = if (input.history_failure) |err| switch (err) {
+        error.PathAlreadyExists => "That destination exists. Choose a new export filename.",
+        error.PracticeRunCollision => "Conflicting run data. The import was rolled back.",
+        error.UnsupportedPracticeDatabase => "This file is not a supported practice database.",
+        error.PracticeDatabaseBusy => "Database busy. Wait for other writes and retry.",
+        else => "Practice data could not be saved or read. Your in-memory results remain available.",
+    } else if (input.history_saving) "Working on practice data…" else if (input.history) |data| (if (data.exported) "Database exported." else if (data.imported != null) "Database imported. Matching runs were kept." else "") else "";
+    const status_y: f32 = if (wide) left_height + 128 else right_y + 398;
+    _ = presentation.flowText(message, 0, status_y, width - 235, 14, theme.muted);
+    if (input.history_failure != null and ui.button(theme, "Retry pending saves", "practice.data.retry", .{ .x = width - 220, .y = status_y, .w = 220, .h = 38 })) view.rundown.retry = true;
 }

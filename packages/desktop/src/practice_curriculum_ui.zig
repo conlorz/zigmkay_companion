@@ -71,22 +71,30 @@ pub fn next(context: curriculum.Context, labels: desktop.practice.Labels) curric
     return output;
 }
 pub fn draw(view: *View, owner: *control.Controller, history: ?*const desktop.practice_history.Query, history_cohort: desktop.practice_results.Cohort, theme: ui.Theme, bounds: dvui.Rect) !Action {
-    const area = dvui.scrollArea(@src(), .{}, .{ .rect = bounds, .tag = "practice.curriculum" });
-    defer area.deinit();
-    const body = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = bounds.w - 20, .h = 860 }, .padding = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
-    defer body.deinit();
-    const width = bounds.w - 20;
+    const wide = bounds.w >= 1100;
+    const page = presentation.Page.init(bounds, if (wide) 880 else 1230, "practice.curriculum", theme);
+    defer page.deinit();
+    const width = page.width;
     const arena = dvui.currentWindow().arena();
-    if (ui.button(theme, "Back to practice", "practice.curriculum.back", .{ .w = 180, .h = 38 })) return .back;
-    presentation.caption("Guided difficulty · choose your next step", .{ .x = 190, .w = width - 190, .h = 38 }, 24, theme.text, null);
+    presentation.header("Learn your layout", "Choose a stage. Difficulty, help and length stay independent.", width, theme);
+    if (ui.button(theme, "Back to practice", "practice.curriculum.back", .{ .x = width - 165, .w = 165, .h = 38 })) return .back;
     const labels = owner.curriculum_labels orelse {
-        presentation.caption("A known layout is needed to create reachable lessons.", .{ .y = 90, .w = width, .h = 60 }, 20, theme.muted, null);
+        _ = presentation.flowText("A known layout is needed to create reachable lessons.", 0, 120, width, 18, theme.muted);
         return .none;
     };
+    const path_w: f32 = if (wide) 260 else width;
+    presentation.surface(.{ .y = 96, .w = path_w, .h = if (wide) 680 else 230 }, theme.panel);
+    presentation.label("Learning path", .{ .x = 20, .y = 110, .w = path_w - 40, .h = 30 }, 18, theme.text, null);
     for (curriculum.names, 0..) |name, index| {
         var stage_theme = theme;
-        if (@backingInt(view.config.curriculum.stage) == index) stage_theme.control = ui.color(0x264F80);
-        if (ui.button(stage_theme, name, try std.fmt.allocPrint(arena, "practice.curriculum.stage.{d}", .{index}), .{ .y = 95 + @as(f32, @floatFromInt(index)) * 52, .w = 220, .h = 46 })) {
+        if (@backingInt(view.config.curriculum.stage) == index) stage_theme.control = ui.color(if (theme.bg.r > 100) 0xC5EBDC else 0x245C4D);
+        const stage_w: f32 = if (wide) path_w - 40 else (width - 52) / 2;
+        const x: f32 = if (wide) 20 else 20 + @as(f32, @floatFromInt(index % 2)) * (stage_w + 12);
+        const y: f32 = 158 + @as(f32, @floatFromInt(if (wide) index else index / 2)) * 50;
+        var options = ui.options(stage_theme, .{ .x = x, .y = y, .w = stage_w, .h = 40 }, 15);
+        options.tag = try std.fmt.allocPrint(arena, "practice.curriculum.stage.{d}", .{index});
+        options.id_extra = index;
+        if (dvui.button(@src(), try std.fmt.allocPrint(arena, "{d}. {s}", .{ index + 1, name }), .{}, options)) {
             view.config.curriculum.stage = @fromBackingInt(@as(u3, @intCast(index)));
             view.config.curriculum.family = 0;
             if (view.config.curriculum.stage != .real_text) {
@@ -95,35 +103,37 @@ pub fn draw(view: *View, owner: *control.Controller, history: ?*const desktop.pr
             }
             if (view.config.curriculum.stage == .modifiers) view.config.curriculum.layer = 0;
             if (view.config.curriculum.stage == .layers and view.config.curriculum.layer == 0) view.config.curriculum.layer = 1;
-            view.message = "Manual selection is always available.";
+            view.message = "Lesson selected. Start when ready.";
         }
     }
-    const x: f32 = 240;
+    const x: f32 = if (wide) 280 else 0;
+    const y: f32 = if (wide) 96 else 346;
     const content_w = width - x;
-    presentation.paragraph(descriptions[@backingInt(view.config.curriculum.stage)], .{ .x = x, .y = 95, .w = content_w, .h = 80 }, 18, theme.text);
-    _ = dvui.dropdown(@src(), if (view.config.mode == .english) &.{ "Short", "Normal", "Long" } else &desktop.practice.lesson_names, .{ .choice = &view.config.level }, .{}, .{ .rect = .{ .x = x, .y = 190, .w = 180, .h = 38 } });
-    var assistance: usize = desktop.practice_help.choice(view.config);
-    if (dvui.dropdown(@src(), &desktop.practice_help.choices, .{ .choice = &assistance }, .{}, .{ .rect = .{ .x = x + 190, .y = 190, .w = 180, .h = 38 } })) desktop.practice_help.apply(&view.config, assistance);
+    const inner_x = x + 24;
+    const inner_w = content_w - 48;
+    presentation.surface(.{ .x = x, .y = y, .w = content_w, .h = 490 }, theme.panel);
+    presentation.label(try std.fmt.allocPrint(arena, "Stage {d}: {s}", .{ @backingInt(view.config.curriculum.stage) + 1, curriculum.names[@backingInt(view.config.curriculum.stage)] }), .{ .x = inner_x, .y = y + 16, .w = inner_w, .h = 34 }, 22, theme.text, null);
+    _ = presentation.flowText(descriptions[@backingInt(view.config.curriculum.stage)], inner_x, y + 66, inner_w, 16, theme.muted);
     var alphabet: [26]u8 = undefined;
     const available = curriculum.letters(labels, &alphabet);
-    if (ui.buttonEnabled(theme, "One fewer letter", "practice.curriculum.less", .{ .x = x, .y = 240, .w = 180, .h = 38 }, view.config.curriculum.stage != .real_text and view.config.curriculum.alphabet > 6)) view.config.curriculum.alphabet -= 1;
-    if (ui.buttonEnabled(theme, "Add one letter", "practice.curriculum.more", .{ .x = x + 190, .y = 240, .w = 180, .h = 38 }, view.config.curriculum.stage != .real_text and view.config.curriculum.alphabet < available.len)) view.config.curriculum.alphabet += 1;
     const learned = available[0..@min(available.len, view.config.curriculum.alphabet)];
-    presentation.caption(if (view.config.curriculum.stage == .real_text) "Full corpus: every character must have a reachable route" else try std.fmt.allocPrint(arena, "Alphabet: {s} · {d}/{d} reachable base letters", .{ learned, view.config.curriculum.alphabet, available.len }), .{ .x = x, .y = 290, .w = content_w, .h = 34 }, 18, theme.text, null);
-    if (view.config.curriculum.stage == .shift) _ = dvui.checkbox(@src(), &view.config.curriculum.shifted_symbols, "Shifted punctuation (otherwise capitals)", .{ .rect = .{ .x = x, .y = 335, .w = content_w, .h = 38 } });
+    var alphabet_text: std.Io.Writer.Allocating = .init(arena);
+    for (learned, 0..) |cp, index| try alphabet_text.writer.print("{s}{c}", .{ if (index == 0) "" else " ", cp });
+    presentation.label(if (view.config.curriculum.stage == .real_text) "Full text · reachable routes" else "Your current alphabet", .{ .x = inner_x, .y = y + 140, .w = inner_w, .h = 24 }, 14, theme.muted, null);
+    presentation.label(if (view.config.curriculum.stage == .real_text) "Sentences and code" else alphabet_text.written(), .{ .x = inner_x, .y = y + 170, .w = inner_w, .h = 42 }, if (learned.len > 16) 20 else 28, theme.text, null);
+    if (ui.buttonEnabled(theme, "One fewer letter", "practice.curriculum.less", .{ .x = inner_x, .y = y + 228, .w = 175, .h = 36 }, view.config.curriculum.stage != .real_text and view.config.curriculum.alphabet > 6)) view.config.curriculum.alphabet -= 1;
+    if (ui.buttonEnabled(theme, "Add one letter", "practice.curriculum.more", .{ .x = inner_x + 187, .y = y + 228, .w = 170, .h = 36 }, view.config.curriculum.stage != .real_text and view.config.curriculum.alphabet < available.len)) view.config.curriculum.alphabet += 1;
+    if (view.config.curriculum.stage == .shift) _ = dvui.checkbox(@src(), &view.config.curriculum.shifted_symbols, "Shifted punctuation", .{ .rect = .{ .x = inner_x, .y = y + 280, .w = inner_w, .h = 34 } });
     if (view.config.curriculum.stage == .layers or view.config.curriculum.stage == .modifiers) {
         const layers = try arena.alloc([]const u8, labels.layer_count);
         for (layers, 0..) |*name, index| name.* = try std.fmt.allocPrint(arena, "Layer {d}", .{index});
         var layer: usize = @min(view.config.curriculum.layer, labels.layer_count - 1);
-        if (dvui.dropdown(@src(), layers, .{ .choice = &layer }, .{}, .{ .rect = .{ .x = x, .y = 335, .w = 150, .h = 38 } })) {
-            view.config.curriculum.layer = @intCast(layer);
-            view.config.curriculum.family = 0;
-        }
+        if (dvui.dropdown(@src(), layers, .{ .choice = &layer }, .{}, .{ .rect = .{ .x = inner_x, .y = y + 278, .w = 140, .h = 36 } })) view.config.curriculum.family = 0;
         view.config.curriculum.layer = @intCast(layer);
         if (view.config.curriculum.stage == .modifiers) {
             const modifiers = [_]u8{ 4, 64, 6, 66 };
             var variant = std.mem.indexOfScalar(u8, &modifiers, view.config.curriculum.modifiers) orelse 0;
-            if (dvui.dropdown(@src(), &.{ "Option / left Alt", "AltGr / right Alt", "Shift + Option", "Shift + AltGr" }, .{ .choice = &variant }, .{}, .{ .rect = .{ .x = x + 160, .y = 335, .w = 210, .h = 38 } })) {
+            if (dvui.dropdown(@src(), &.{ "Option / left Alt", "AltGr / right Alt", "Shift + Option", "Shift + AltGr" }, .{ .choice = &variant }, .{}, .{ .rect = .{ .x = inner_x + 152, .y = y + 278, .w = 205, .h = 36 } })) {
                 view.config.curriculum.modifiers = modifiers[variant];
                 view.config.curriculum.family = 0;
             }
@@ -131,10 +141,10 @@ pub fn draw(view: *View, owner: *control.Controller, history: ?*const desktop.pr
     }
     if (view.config.curriculum.stage == .real_text) {
         var mode: usize = @backingInt(view.config.mode);
-        if (dvui.dropdown(@src(), &.{ "English sentences", "Zig lessons" }, .{ .choice = &mode }, .{}, .{ .rect = .{ .x = x, .y = 335, .w = 200, .h = 38 } })) view.config.mode = @fromBackingInt(@as(u1, @intCast(mode)));
+        if (dvui.dropdown(@src(), &.{ "English sentences", "Zig lessons" }, .{ .choice = &mode }, .{}, .{ .rect = .{ .x = inner_x, .y = y + 278, .w = 200, .h = 36 } })) view.config.mode = @fromBackingInt(@as(u1, @intCast(mode)));
         if (view.config.mode == .english) {
             var preset: usize = @backingInt(view.config.preset);
-            if (dvui.dropdown(@src(), &.{ "Words", "Mixed case", "Punctuation" }, .{ .choice = &preset }, .{}, .{ .rect = .{ .x = x + 210, .y = 335, .w = 160, .h = 38 } })) view.config.preset = @fromBackingInt(@as(u2, @intCast(preset)));
+            if (dvui.dropdown(@src(), &.{ "Words", "Mixed case", "Punctuation" }, .{ .choice = &preset }, .{}, .{ .rect = .{ .x = inner_x + 212, .y = y + 278, .w = 160, .h = 36 } })) view.config.preset = @fromBackingInt(@as(u2, @intCast(preset)));
         }
     }
     var members_buffer: [256]u21 = undefined;
@@ -147,16 +157,15 @@ pub fn draw(view: *View, owner: *control.Controller, history: ?*const desktop.pr
                 names[index] = try arena.dupe(u8, desktop.practice_view.glyph(cp, true, &bytes));
             }
             var choice: usize = @min(view.config.curriculum.family, members.len - 1);
-            _ = dvui.dropdown(@src(), names, .{ .choice = &choice }, .{}, .{ .rect = .{ .x = x, .y = 385, .w = 150, .h = 38 }, .tag = "practice.curriculum.target" });
+            _ = dvui.dropdown(@src(), names, .{ .choice = &choice }, .{}, .{ .rect = .{ .x = inner_x, .y = y + 324, .w = 100, .h = 34 }, .tag = "practice.curriculum.target" });
             view.config.curriculum.family = @intCast(choice);
-            presentation.caption("One new output at a time; familiar words stay in the exercise.", .{ .x = x + 160, .y = 385, .w = content_w - 160, .h = 38 }, 15, theme.muted, null);
-        } else presentation.paragraph("No new output has a proven compatible provider for this family. Choose another family or stage.", .{ .x = x, .y = 385, .w = content_w, .h = 60 }, 16, theme.muted);
+            presentation.label("One new output at a time", .{ .x = inner_x + 112, .y = y + 324, .w = inner_w - 112, .h = 34 }, 14, theme.muted, null);
+        } else _ = presentation.flowText("No compatible output here. Choose another family or stage.", inner_x, y + 322, inner_w, 14, theme.muted);
     }
     var expected: [26]u21 = undefined;
     var expected_count: usize = 0;
     if (view.config.curriculum.stage == .find_keys or view.config.curriculum.stage == .fluency or view.config.curriculum.stage == .real_text) {
-        const values = if (view.config.curriculum.stage == .real_text) available else learned;
-        for (values) |cp| {
+        for (if (view.config.curriculum.stage == .real_text) available else learned) |cp| {
             expected[expected_count] = cp;
             expected_count += 1;
         }
@@ -166,28 +175,34 @@ pub fn draw(view: *View, owner: *control.Controller, history: ?*const desktop.pr
     }
     const matching = std.meta.eql(owner.cohortFor(view.config), history_cohort);
     const assessment = if (matching and history != null) curriculum.assess(view.config.curriculum, history.?.all, history.?.progress, expected[0..expected_count]) else curriculum.Assessment{ .missing = expected_count };
-    presentation.caption(if (view.config.curriculum.stage == .find_keys) try std.fmt.allocPrint(arena, "{d}/3 runs · {d} targets need evidence · no speed gate", .{ @min(3, assessment.runs), assessment.missing }) else try std.fmt.allocPrint(arena, "{d}/3 runs · {d} targets need evidence · {d}/3 clean timing runs", .{ @min(3, assessment.runs), assessment.missing, assessment.timing_runs }), .{ .x = x, .y = 470, .w = content_w, .h = 38 }, 17, theme.text, null);
-    presentation.paragraph(if (assessment.ready) "Suggested next step is available. Advancement is your choice; a poor run never changes your selected lesson." else "Suggested advancement needs 20 opportunities per target at ≥97% first-pass success across ≥3 runs. After Find keys, the newest three runs also need ≥97% attempt accuracy and ≥5 clean timing samples each.", .{ .x = x, .y = 515, .w = content_w, .h = 100 }, 16, theme.muted);
+    presentation.label(if (assessment.ready) "Ready for a suggested next step" else try std.fmt.allocPrint(arena, "{d}/3 runs · {d} targets need more practice", .{ @min(3, assessment.runs), assessment.missing }), .{ .x = inner_x, .y = y + 376, .w = inner_w, .h = 28 }, 17, theme.text, null);
+    _ = presentation.flowText(if (assessment.ready) "Advance when you feel ready. Your selected lesson never changes automatically." else if (view.config.curriculum.stage == .find_keys) "Aim for 20 opportunities per target at 97% first-pass success across three runs. No speed gate." else "Build three accurate runs and clean timing evidence before advancing.", inner_x, y + 412, inner_w, 14, theme.muted);
     const run_fraction = @as(f32, @floatFromInt(@min(3, assessment.runs))) / 3;
     const target_fraction = if (expected_count == 0) @as(f32, 0) else @as(f32, @floatFromInt(expected_count - assessment.missing)) / @as(f32, @floatFromInt(expected_count));
     const timing_fraction = if (view.config.curriculum.stage == .find_keys) @as(f32, 1) else @as(f32, @floatFromInt(assessment.timing_runs)) / 3;
-    const progress = (run_fraction + target_fraction + timing_fraction) / 3;
-    const bar = dvui.box(@src(), .{}, .{ .rect = .{ .x = x, .y = 612, .w = content_w, .h = 6 }, .padding = .{}, .background = true, .color_fill = .{ .color = theme.control }, .tag = "practice.curriculum.progress" });
-    const fill = dvui.box(@src(), .{}, .{ .rect = .{ .w = content_w * progress, .h = 6 }, .padding = .{}, .background = true, .color_fill = .{ .color = ui.color(0x69BFA3) } });
-    fill.deinit();
-    bar.deinit();
-    if (ui.button(theme, "Start this lesson", "practice.curriculum.start", .{ .x = x, .y = 630, .w = 190, .h = 42 })) {
+    presentation.surface(.{ .x = inner_x, .y = y + 464, .w = inner_w, .h = 6 }, theme.control);
+    presentation.surface(.{ .x = inner_x, .y = y + 464, .w = inner_w * (run_fraction + target_fraction + timing_fraction) / 3, .h = 6 }, ui.color(0x69BFA3));
+    const options_y = y + 510;
+    presentation.surface(.{ .x = x, .y = options_y, .w = content_w, .h = 180 }, theme.panel);
+    presentation.label("Next exercise", .{ .x = inner_x, .y = options_y + 14, .w = inner_w, .h = 30 }, 20, theme.text, null);
+    var assistance: usize = desktop.practice_help.choice(view.config);
+    if (dvui.dropdown(@src(), &desktop.practice_help.choices, .{ .choice = &assistance }, .{}, .{ .rect = .{ .x = inner_x, .y = options_y + 62, .w = 210, .h = 38 } })) desktop.practice_help.apply(&view.config, assistance);
+    _ = dvui.dropdown(@src(), if (view.config.mode == .english) &.{ "Short", "Normal", "Long" } else &desktop.practice.lesson_names, .{ .choice = &view.config.level }, .{}, .{ .rect = .{ .x = inner_x + 222, .y = options_y + 62, .w = 170, .h = 38 } });
+    var primary = theme;
+    primary.control = ui.color(0x287AF2);
+    primary.text = dvui.Color.white;
+    if (ui.button(primary, "Start lesson", "practice.curriculum.start", .{ .x = inner_x, .y = options_y + 120, .w = 165, .h = 40 })) {
         view.config.challenge = null;
         view.config.target_count = 0;
         var buffer: [8192]u8 = undefined;
         const text = owner.preview(&buffer, view.config) catch |err| {
             view.message = switch (err) {
                 error.CurriculumAlphabetUnavailable => "Choose fewer base letters for this layout.",
-                error.CurriculumFamilyUnavailable => "No supported output in this family. Choose another layer, modifier or stage.",
-                error.CurriculumCorpusUnavailable => "This alphabet has too few readable corpus words. Add one letter.",
-                error.CurriculumSpaceUnavailable => "Space needs a proven base-layer route before this lesson can start.",
-                error.CurriculumRouteUnavailable => "A lesson character lacks a proven reachable route. Try a simpler preset or another stage.",
-                error.CurriculumLayoutUnavailable => "Select a known keyboard layout before starting a guided lesson.",
+                error.CurriculumFamilyUnavailable => "Choose another layer, modifier or stage; no supported output here.",
+                error.CurriculumCorpusUnavailable => "Add a letter to provide more readable words.",
+                error.CurriculumSpaceUnavailable => "Space needs a base-layer route before starting.",
+                error.CurriculumRouteUnavailable => "Try a simpler preset; a character has no reachable route.",
+                error.CurriculumLayoutUnavailable => "Select a known layout before starting.",
                 else => @errorName(err),
             };
             return .none;
@@ -198,11 +213,13 @@ pub fn draw(view: *View, owner: *control.Controller, history: ?*const desktop.pr
         };
         return .{ .start = view.config };
     }
-    if (ui.buttonEnabled(theme, if (view.config.curriculum.stage == .real_text) "Repeat real text" else "Suggested next step", "practice.curriculum.next", .{ .x = x + 200, .y = 630, .w = 205, .h = 42 }, assessment.ready)) {
+    if (ui.buttonEnabled(theme, if (view.config.curriculum.stage == .real_text) "Repeat real text" else "Suggested next step", "practice.curriculum.next", .{ .x = inner_x + 177, .y = options_y + 120, .w = 205, .h = 40 }, assessment.ready)) {
         view.config.curriculum = next(view.config.curriculum, labels);
         view.message = "Next lesson selected. Start when ready.";
     }
-    if (history) |data| if (data.latest_curriculum) |record| if (ui.button(theme, "Resume saved curriculum", "practice.curriculum.restore", .{ .x = x, .y = 687, .w = 250, .h = 38 })) {
+    const saved_x: f32 = if (wide) 20 else 0;
+    const saved_y: f32 = if (wide) 610 else options_y + 210;
+    if (history) |data| if (data.latest_curriculum) |record| if (ui.button(theme, "Resume saved lesson", "practice.curriculum.restore", .{ .x = saved_x, .y = saved_y, .w = 220, .h = 38 })) {
         view.config.curriculum = record.cohort.curriculum;
         view.config.mode = @fromBackingInt(@backingInt(record.cohort.family));
         view.config.level = if (record.cohort.family == .zig) record.cohort.lesson else record.cohort.length;
@@ -210,14 +227,13 @@ pub fn draw(view: *View, owner: *control.Controller, history: ?*const desktop.pr
         view.config.assistance = record.cohort.assistance;
         view.config.hints = record.cohort.hints;
         view.config.hints.revealed = false;
-        view.message = "Restored the last completed normal lesson for this layout and input source.";
+        view.message = "Saved lesson restored for this layout and input source.";
     };
-    if (ui.button(theme, "Free exercises", "practice.curriculum.free", .{ .x = x + 260, .y = 687, .w = 180, .h = 38 })) {
+    if (ui.button(theme, "Free exercises", "practice.curriculum.free", .{ .x = if (wide) 20 else 236, .y = if (wide) saved_y + 52 else saved_y, .w = 200, .h = 38 })) {
         var config = owner.config;
         config.curriculum = .{};
         return .{ .free = config };
     }
-    presentation.paragraph("Mastery thresholds are an initial tutor policy for manual validation. Guided progress is assisted practice; hidden assistance has its own evidence. Length and assistance remain independent choices.", .{ .y = 745, .w = width, .h = 60 }, 15, theme.muted);
-    presentation.caption(view.message, .{ .y = 815, .w = width, .h = 38 }, 16, theme.text, null);
+    _ = presentation.flowText(view.message, 0, if (wide) 820 else 1130, width, 15, theme.text);
     return .none;
 }

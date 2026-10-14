@@ -278,12 +278,15 @@ pub fn main(init: std.process.Init) !void {
     const light = args.len == 2 and (std.mem.eql(u8, args[1], "--light") or preview_tutor or preview_companion);
     var practice_fixture = false;
     var rundown_fixture = false;
-    const data_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-data-frames");
-    const progress_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-progress-frames");
-    const diagnostics_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-diagnostics-frames");
-    const curriculum_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-curriculum-frames");
-    const help_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-help-frames");
-    const native_rundown = data_preview or progress_preview or diagnostics_preview or curriculum_preview or help_preview or (args.len == 3 and std.mem.eql(u8, args[1], "--native-rundown-frames"));
+    const layout_preview = args.len == 3 and std.mem.startsWith(u8, args[1], "--native-layout-");
+    const preview_name = if (layout_preview) args[1]["--native-layout-".len..] else if (args.len == 3 and std.mem.startsWith(u8, args[1], "--native-")) args[1]["--native-".len..] else "";
+    const data_preview = std.mem.eql(u8, preview_name, "data-frames");
+    const progress_preview = std.mem.eql(u8, preview_name, "progress-frames");
+    const diagnostics_preview = std.mem.eql(u8, preview_name, "diagnostics-frames");
+    const curriculum_preview = std.mem.eql(u8, preview_name, "curriculum-frames");
+    const help_preview = std.mem.eql(u8, preview_name, "help-frames");
+    const rundown_preview = std.mem.eql(u8, preview_name, "rundown-frames");
+    const native_rundown = data_preview or progress_preview or diagnostics_preview or curriculum_preview or help_preview or rundown_preview;
     var draft_fixture = false;
     var build_fixture = false;
     var companion_fixture = false;
@@ -313,7 +316,7 @@ pub fn main(init: std.process.Init) !void {
             if (!rundown_fixture and !practice_fixture and !draft_fixture and !build_fixture and !companion_fixture and !native_tray_fixture and !source_refresh_fixture and !std.mem.eql(u8, args[1], "--offline-frames")) return error.Usage;
             frame_limit = try std.fmt.parseInt(usize, args[2], 10);
             const minimum_frames: usize = if (rundown_fixture) 20 else if (companion_fixture) 9 else if (practice_fixture or native_tray_fixture or source_refresh_fixture) 3 else if (build_fixture) 2 else 1;
-            const maximum_frames: usize = if (build_fixture) 30_000 else if (draft_fixture) 1000 else 100;
+            const maximum_frames: usize = if (build_fixture) 30_000 else if (draft_fixture) 1000 else if (layout_preview) 200 else 100;
             if (frame_limit.? < minimum_frames or frame_limit.? > maximum_frames) return error.InvalidFrameLimit;
             if (build_fixture) {
                 if (!std.fs.path.isAbsolute(args[3])) return error.AbsoluteBuildConfigRequired;
@@ -469,7 +472,10 @@ pub fn main(init: std.process.Init) !void {
     if (data_preview) {
         const root = try std.Io.Dir.cwd().realPathFileAlloc(init.io, ".", gpa);
         defer gpa.free(root);
-        practice_history.path = try std.fs.path.join(gpa, &.{ root, ".zig-cache", "native-data-verification" });
+        if (practice_history.path) |previous| gpa.free(previous);
+        const capture_folder = try std.fmt.allocPrint(gpa, "data-{d}", .{std.Io.Clock.awake.now(init.io).toNanoseconds()});
+        defer gpa.free(capture_folder);
+        practice_history.path = try std.fs.path.join(gpa, &.{ root, ".zig-cache", "native-data-verification", capture_folder });
     }
     var practice_history_loaded = false;
 
@@ -954,7 +960,7 @@ pub fn main(init: std.process.Init) !void {
         // native minimum window instead of shrinking the editor's fixed canvas.
         window.content_scale = (if (practicing) @max(@as(f32, 0.8), fitted_scale) else fitted_scale) * life.editor_scale;
         window.snap_to_pixels = window.content_scale == 1;
-        if (rundown_fixture) view.toolbar.light = count < 7;
+        if (rundown_fixture) view.toolbar.light = count < (if (layout_preview) @as(usize, 19) else 7);
         window.themeSet(if (view.toolbar.light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark);
         try window.begin(if (frame_limit == null) window.beginWait(interrupted) else native.nanoTime());
         var ended = false;
@@ -1071,8 +1077,9 @@ pub fn main(init: std.process.Init) !void {
             .modifiers = if (use_practice_live) live_frame.modifiers else @bitCast(draft_runtime.modifiers),
             .pressed = practice_pressed,
         };
-        if (rundown_fixture and count % 2 == 1) {
-            const scene = (count + 1) / 2;
+        const scene_frames: usize = if (layout_preview) 6 else 2;
+        if (rundown_fixture and count % scene_frames == 1) {
+            const scene = (count + scene_frames - 1) / scene_frames;
             if (scene == 1 or scene == 2 or scene == 5 or scene == 8 or scene == 9 or scene == 10) practice_view.rundown = .{};
             if (scene == 1) {
                 practice.config = .{ .preset = .mixed_case, .level = 0 };
@@ -1307,6 +1314,52 @@ pub fn main(init: std.process.Init) !void {
                 practice_view.help_config.hints.policy = .delayed;
                 practice_view.help_config.assistance = .guided;
                 if (!Backend.c.SDL_SetWindowSize(native.window, 900, 600)) return error.PracticeFixtureResize;
+            } else if (layout_preview and help_preview and scene == 20) {
+                practice_view.help_open = false;
+                practice.config.assistance = .guided;
+                practice.config.hints.policy = .on_request;
+                _ = try practice.start(true, null, now_us);
+                if (!Backend.c.SDL_SetWindowSize(native.window, 900, 700)) return error.PracticeFixtureResize;
+            } else if (layout_preview and help_preview and scene == 21) {
+                practice_view.review_open = true;
+                practice_view.review.details = true;
+            } else if (layout_preview and rundown_preview and scene == 11) {
+                practice_view.rundown = .{ .history_open = true };
+                practice.config = .{ .preset = .words, .level = 0 };
+                _ = try practice.start(true, null, now_us);
+                for (practice.session.reference[0..practice.session.reference_len], 0..) |cp, index| {
+                    var bytes: [4]u8 = undefined;
+                    const n = try std.unicode.utf8Encode(cp, &bytes);
+                    try practice.session.insert(bytes[0..n], now_us + index * 150_000, false);
+                }
+                var current = try desktop.practice_results.capture(&practice.session, practice.captured_cohort, practice_labels.practiceLabels());
+                try std.Io.randomSecure(init.io, &current.id);
+                current.timestamp = @intCast(std.Io.Clock.real.now(init.io).toNanoseconds());
+                practice.completed = current;
+                practice.completed_enqueued = true;
+                practice_history.cohort = current.cohort;
+                practice_history.data.deinit();
+                practice_history.data = .{ .progress_allocator = gpa, .page_count = 5 };
+                practice_history.data.page = try gpa.alloc(desktop.practice_results.Record, 10);
+                @memset(practice_history.data.page, .{});
+                for (0..5) |index| {
+                    var saved = current;
+                    saved.id[0] ^= @intCast(index + 1);
+                    saved.timestamp -= @as(i64, @intCast(index + 1)) * desktop.practice_progress.day_ns;
+                    practice_history.data.page[index] = saved;
+                    try practice_history.data.all.add(&saved);
+                    try practice_history.data.recent.add(&saved);
+                    practice_history.data.recent_ids[index] = saved.id;
+                }
+                practice_history.data.recent_count = 5;
+                if (!Backend.c.SDL_SetWindowSize(native.window, 1440, 1050)) return error.PracticeFixtureResize;
+            } else if (layout_preview and rundown_preview and scene == 12) {
+                practice_view.rundown.history_open = false;
+                practice_view.rundown.more_details = true;
+                practice_view.rundown.selected = 'e';
+                if (!Backend.c.SDL_SetWindowSize(native.window, 900, 700)) return error.PracticeFixtureResize;
+            } else if (layout_preview and rundown_preview and scene == 13) {
+                practice_view.rundown.confirm_clear = true;
             }
         }
         if ((practice.session.state == .complete or practice.stopped_result_pending) and practice.completed == null) {
@@ -1344,6 +1397,17 @@ pub fn main(init: std.process.Init) !void {
         var leave_practice = false;
         var practice_action: ?desktop.practice_controller.Action = null;
         var practice_input_effect: desktop.practice_controller.Effect = .{};
+        if (layout_preview and help_preview and count == 19 * scene_frames + 4) if (dvui.tagGet("practice.tools")) |menu| {
+            _ = try window.addEventMouseMotion(.{ .pt = .{ .x = menu.rect.x + menu.rect.w / 2, .y = menu.rect.y + menu.rect.h / 2 } });
+            _ = try window.addEventMouseButton(.left, .press);
+            _ = try window.addEventMouseButton(.left, .release);
+        };
+        // Manual layout gallery: capture the top, then exercise real scrolling
+        // to inspect footer controls and long explanations after resizing.
+        if (layout_preview and count % scene_frames == 4 and (practice_view.data_open or practice_view.progress_open or practice_view.diagnostics_open or practice_view.curriculum_open or practice_view.help_open or practice_view.review_open or practice.completed != null)) {
+            _ = try window.addEventMouseMotion(.{ .pt = .{ .x = available.w * 0.75, .y = available.h * 0.65 } });
+            _ = try window.addEventMouseWheel(-2000, .vertical, .mouse);
+        }
         var rendered = if (practicing) tutor_frame: {
             const theme = ui.Theme.get(view.toolbar.light);
             const canvas = dvui.box(@src(), .{}, .{ .expand = .both, .padding = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
@@ -1481,11 +1545,13 @@ pub fn main(init: std.process.Init) !void {
         }
         if (rundown_fixture) {
             window.endRendering(.{ .manage_backend = false });
-            try std.Io.Dir.cwd().createDirPath(init.io, ".zig-cache/typing-practice-gallery");
-            const surface = Backend.c.SDL_RenderReadPixels(native.renderer, null) orelse return error.PracticeScreenshotRead;
-            defer Backend.c.SDL_DestroySurface(surface);
-            const file = try std.fmt.allocPrintSentinel(window.arena(), ".zig-cache/typing-practice-gallery/{d}.bmp", .{count}, 0);
-            if (!Backend.c.SDL_SaveBMP(surface, file)) return error.PracticeScreenshotSave;
+            if (!layout_preview or count % scene_frames == 0 or count % scene_frames == 3) {
+                try std.Io.Dir.cwd().createDirPath(init.io, ".zig-cache/typing-practice-gallery");
+                const surface = Backend.c.SDL_RenderReadPixels(native.renderer, null) orelse return error.PracticeScreenshotRead;
+                defer Backend.c.SDL_DestroySurface(surface);
+                const file = try std.fmt.allocPrintSentinel(window.arena(), ".zig-cache/typing-practice-gallery/{d}.bmp", .{count}, 0);
+                if (!Backend.c.SDL_SaveBMP(surface, file)) return error.PracticeScreenshotSave;
+            }
         }
         const delay = try window.end(.{ .manage_backend = frame_limit == null });
         ended = true;

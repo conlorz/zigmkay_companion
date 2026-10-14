@@ -2,9 +2,9 @@
 
 Date: 2026-10-14. Packages A–F are implemented in PR #2. Temporary tracking plans have been removed. The mockups use illustrative data and are not native DVUI screenshots. See [package A implementation evidence](../implementation/practice-data.md), [package B review](../implementation/practice-rundown.md), [package C review](../implementation/practice-progress.md), [package D review](../implementation/practice-diagnostics.md), [package E review](../implementation/practice-curriculum.md), [package F review](../implementation/practice-help.md) and the tutor documentation for current behavior.
 
-## Current storage and the database gap
+## Storage baseline before Package A
 
-There is no database engine in PR #2. Completed exercises are saved as version-1 ZON files, one immutable random-ID filename per run, under:
+At the original research checkpoint, there was no database engine. Completed exercises were saved as version-1 ZON files, one immutable random-ID filename per run, under:
 
 - macOS: `~/Library/Application Support/zigmkay/data/typing-practice/`
 - Windows: `%LOCALAPPDATA%/zigmkay/data/typing-practice/`
@@ -12,9 +12,9 @@ There is no database engine in PR #2. Completed exercises are saved as version-1
 
 The implementation serializes bounded records, synchronizes the temporary file, and publishes it atomically with exclusive linking. Repeated writes of the same ID/content are idempotent. Different application instances publish different files. A background worker performs writes and queries. Queries scan files, filter exact cohorts, rebuild weighted aggregates and return ten-run pages. Corrupt and unknown-version records are retained and reported. The current maximum serialized record size is 512 KiB.
 
-See [history implementation](../../packages/desktop/src/practice_history.zig), [background persistence](../../packages/desktop/src/practice_history_runtime.zig), and [record schema](../../packages/desktop/src/practice_results.zig). The previously discussed user-directory DB is not implemented. The file approach supplies durable history, but increasingly rich chronological queries and event volumes warrant an indexed store.
+See [history implementation](../../packages/desktop/src/practice_history.zig), [background persistence](../../packages/desktop/src/practice_history_runtime.zig), and [record schema](../../packages/desktop/src/practice_results.zig). Package A subsequently delivered the user-directory SQLite database and event capture. This baseline explains the original storage decision.
 
-Current records retain timestamps, active duration, attempts, correct attempts, corrections, per-character opportunities/misses/retries, substitutions, possible routes and comparison context. They do not retain individual timing samples. Whole-run duration cannot reconstruct them.
+The original count-only records retain timestamps, active duration, attempts, correct attempts, corrections, per-character opportunities/misses/retries, substitutions, possible routes and comparison context. They cannot reconstruct individual timing samples. New records also retain Package A's event payloads.
 
 ## Package A: occurrence timing and durable data
 
@@ -124,6 +124,11 @@ Measure cue exposure. Maintain assisted and unaided histories separately. Mix ne
 Dependencies: A event capture and E curriculum policy. Acceptance: cues neither alter text correctness nor disappear permanently; delayed hints exclude explicit pauses; hint thresholds are adaptive/user configurable; review recommendations do not mislabel poor evidence as forgetting.
 
 ![Package F: contextual help](typing-practice/06-help.svg)
+
+The [native layout review](../implementation/practice-layout-review.md) compares
+all six studies with the implementation and records the subsequent cleanup.
+Manual feedback supersedes F's explanatory hint panel: hints now keep the
+keyboard fixed and use highlighting with a compact Hold/Tap legend.
 
 ## DVUI graph capability in our pinned dependency
 

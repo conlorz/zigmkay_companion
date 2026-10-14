@@ -54,12 +54,15 @@ pub fn select(view: *View, stat: results.Stat) void {
     }
 }
 pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record: *const results.Record, history: ?*const desktop.practice_history.Query, history_matches: bool, frame: anytype, theme: ui.Theme, bounds: dvui.Rect, saving: bool, failure: ?anyerror) !Action {
-    const panel = dvui.box(@src(), .{}, .{ .rect = bounds, .padding = .{}, .tag = "practice.rundown" });
-    defer panel.deinit();
+    const page = presentation.Page.init(bounds, if (bounds.w >= 1100) 1030 else 1480, "practice.rundown", theme);
+    defer page.deinit();
     const arena = dvui.currentWindow().arena();
-    const width = bounds.w;
-    const wide = width >= 1400;
-    const keyboard_width = if (wide) width * 0.54 else width;
+    const width = page.width;
+    const wide = bounds.w >= 1100;
+    const keyboard_width = if (wide) (width - 20) * 0.56 else width;
+    const table_x = if (wide) keyboard_width + 20 else 0;
+    const table_y: f32 = if (wide) 360 else 780;
+    const table_width = width - table_x;
     const light = theme.bg.r > 100;
     var current: results.Aggregate = .{};
     // This run remains visible even when unscored; aggregate defaults exclude it.
@@ -88,15 +91,16 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     const success = if (record.matched == 0) @as(f64, 100) else 100 * @as(f64, @floatFromInt(record.matched - missed)) / @as(f64, @floatFromInt(record.matched));
     const metrics = [_][]const u8{
         try std.fmt.allocPrint(arena, "{d:.0} WPM", .{record.wpm()}),
-        try std.fmt.allocPrint(arena, "{d:.1}% attempt accuracy", .{record.accuracy()}),
-        try std.fmt.allocPrint(arena, "{d:.1}% first-pass success", .{success}),
+        try std.fmt.allocPrint(arena, "{d:.1}%", .{record.accuracy()}),
+        try std.fmt.allocPrint(arena, "{d:.1}%", .{success}),
     };
+    presentation.header(if (record.status == .stopped) "Exercise stopped" else "Exercise complete", try std.fmt.allocPrint(arena, "{t} · {t} · {d} corrections · {d:.1}s active", .{ record.cohort.preset, record.cohort.assistance, record.corrections, @as(f64, @floatFromInt(record.active_us)) / 1_000_000 }), width, theme);
+    const new_requested = ui.buttonEnabled(theme, "New exercise", "practice.result.new.top", .{ .x = width - 165, .w = 165, .h = 38 }, !owner.save_blocked);
     for (metrics, 0..) |metric, index| {
-        const card = dvui.box(@src(), .{}, .{ .rect = .{ .x = @as(f32, @floatFromInt(index)) * width / 3, .w = width / 3 - 8, .h = 36 }, .background = true, .color_fill = .{ .color = theme.panel }, .corners = .all(8), .padding = .{}, .id_extra = index, .tag = if (index == 0) "practice.rundown.metrics" else null });
-        presentation.caption(metric, .{ .w = width / 3 - 8, .h = 36 }, 18, theme.text, null);
-        card.deinit();
+        const card_w = (width - 32) / 3;
+        presentation.metric(([_][]const u8{ "Typing speed", "Attempt accuracy", "First-pass success" })[index], metric, ([_][]const u8{ "This exercise", "Correct attempts / all attempts", "Correct first tries / opportunities" })[index], .{ .x = @as(f32, @floatFromInt(index)) * (card_w + 16), .y = 92, .w = card_w, .h = 116 }, theme);
     }
-    _ = dvui.dropdown(@src(), &.{ "This run", "Last 10 runs", "All history" }, .{ .choice = &view.scope }, .{}, .{ .rect = .{ .y = 40, .w = 160, .h = 38 }, .tag = "practice.scope" });
+    _ = dvui.dropdown(@src(), &.{ "This run", "Last 10 runs", "All history" }, .{ .choice = &view.scope }, .{}, .{ .rect = .{ .y = 228, .w = 160, .h = 36 }, .tag = "practice.scope" });
     var baseline: results.Aggregate = .{};
     if (history_matches and history != null and record.scored) {
         baseline = history.?.recent;
@@ -106,10 +110,10 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         };
     }
     const comparison = if (baseline.runs > 0 and baseline.active_us > 0 and record.active_us > 0)
-        try std.fmt.allocPrint(arena, "{d:.1} WPM delta against {d} recent matching runs · {t} / {t}", .{ record.wpm() - baseline.wpm(), baseline.runs, record.cohort.preset, record.cohort.assistance })
+        try std.fmt.allocPrint(arena, "{d:.1} WPM vs {d} recent matching runs", .{ record.wpm() - baseline.wpm(), baseline.runs })
     else
-        "No comparable speed baseline yet · counts stay available";
-    presentation.caption(comparison, .{ .x = 170, .y = 40, .w = width - 170, .h = 38 }, 14, theme.muted, "practice.comparison");
+        "No matching speed baseline yet";
+    _ = presentation.flowText(comparison, 180, 234, width - 180, 14, theme.muted);
     const variants = desktop.practice.route_modifiers;
     var layer_count: usize = record.layer_count;
     for (record.stats[0..record.stat_count]) |stat| for (stat.routes[0..stat.route_count]) |route| {
@@ -118,16 +122,21 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
     const names = try arena.alloc([]const u8, layer_count);
     for (names, 0..) |*name, layer| name.* = try std.fmt.allocPrint(arena, "Layer {d}", .{layer});
     view.layer = @min(view.layer, layer_count - 1);
-    _ = dvui.dropdown(@src(), names, .{ .choice = &view.layer }, .{}, .{ .rect = .{ .y = 82, .w = 120, .h = 38 }, .tag = "practice.result.layer" });
-    _ = dvui.dropdown(@src(), &.{ "Unshifted", "Shift", "Option / left Alt", "Shift + left Alt", "AltGr / right Alt", "Shift + AltGr" }, .{ .choice = &view.variant }, .{}, .{ .rect = .{ .x = 130, .y = 82, .w = 195, .h = 38 }, .tag = "practice.result.modifiers" });
-    _ = dvui.dropdown(@src(), &.{ "Miss rate", "Exposure" }, .{ .choice = &view.heatmap_mode }, .{}, .{ .rect = .{ .x = 335, .y = 82, .w = 140, .h = 38 }, .tag = "practice.heatmap.mode" });
-    _ = dvui.dropdown(@src(), &.{ "Weakness", "Character", "Exposure" }, .{ .choice = &view.sort }, .{}, .{ .rect = .{ .x = 485, .y = 82, .w = 150, .h = 38 }, .tag = "practice.characters.sort" });
+    presentation.surface(.{ .y = 360, .w = keyboard_width, .h = 400 }, theme.panel);
+    presentation.surface(.{ .x = table_x, .y = table_y, .w = table_width, .h = 400 }, theme.panel);
+    presentation.label("Where errors happened", .{ .x = 20, .y = 374, .w = keyboard_width - 40, .h = 30 }, 20, theme.text, null);
+    _ = dvui.dropdown(@src(), names, .{ .choice = &view.layer }, .{}, .{ .rect = .{ .x = 20, .y = 418, .w = 105, .h = 34 }, .tag = "practice.result.layer" });
+    _ = dvui.dropdown(@src(), &.{ "Unshifted", "Shift", "Option / left Alt", "Shift + left Alt", "AltGr / right Alt", "Shift + AltGr" }, .{ .choice = &view.variant }, .{}, .{ .rect = .{ .x = 137, .y = 418, .w = 185, .h = 34 }, .tag = "practice.result.modifiers" });
+    _ = dvui.dropdown(@src(), &.{ "Miss rate", "Exposure" }, .{ .choice = &view.heatmap_mode }, .{}, .{ .rect = .{ .x = 334, .y = 418, .w = 135, .h = 34 }, .tag = "practice.heatmap.mode" });
+    presentation.label("Characters to review", .{ .x = table_x + 20, .y = table_y + 14, .w = table_width - 40, .h = 30 }, 20, theme.text, null);
+    _ = dvui.dropdown(@src(), &.{ "Weakness", "Character", "Exposure" }, .{ .choice = &view.sort }, .{}, .{ .rect = .{ .x = table_x + 20, .y = table_y + 58, .w = 160, .h = 34 }, .tag = "practice.characters.sort" });
     var focus: [5]u21 = undefined;
     const recommended = aggregate.targets(&focus);
-    const coaching = if (!record.scored and view.scope == 0) "Unscored run: explore the counts, then start a scored exercise." else if (record.cohort.hints.revealed) "Requested help was shown. This run stays separate from fully hidden recall evidence." else if (recommended.len == 0) "Keep practicing. A targeted recommendation needs 5 opportunities and 2 misses." else "Practice weak spots next: repeat the characters with supported occurrence misses.";
-    presentation.caption(coaching, .{ .y = 122, .w = width, .h = 30 }, 15, theme.text, "practice.coaching");
-    const keyboard_y: f32 = 154;
-    const keyboard_h = @max(70, @min(258, bounds.h - 457));
+    const coaching = if (!record.scored and view.scope == 0) "Unscored run. Start a scored exercise when ready." else if (record.cohort.hints.revealed) "Help was shown; this stays separate from hidden recall." else if (recommended.len == 0) "Keep practicing to build evidence for a targeted drill." else "A short drill can help with these repeated misses.";
+    presentation.surface(.{ .y = 284, .w = width, .h = 56 }, ui.color(if (light) 0xC5EBDC else 0x24463B));
+    _ = presentation.flowText(coaching, 20, 300, width - 260, 14, theme.text);
+    const keyboard_y: f32 = 470;
+    const keyboard_h: f32 = 224;
     var drew_geometry = false;
     if (frame) |physical| if (physical.geometry.len > 0 and std.mem.eql(u8, &record.cohort.mapping, &owner.cohort.mapping) and std.mem.eql(u8, &record.cohort.behavior, &owner.cohort.behavior)) {
         const fitted = desktop.physical_view.fit(physical.geometry, .{ .x = 14, .y = keyboard_y, .w = keyboard_width - 28, .h = keyboard_h });
@@ -135,7 +144,6 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
             const placed = fitted.place(key);
             var found: ?results.Stat = null;
             var glyphs: std.Io.Writer.Allocating = .init(arena);
-            var values: std.Io.Writer.Allocating = .init(arena);
             for (aggregate.stats[0..aggregate.stat_count]) |stat| {
                 var matches = false;
                 for (stat.routes[0..stat.route_count]) |route| if (route.key == key.key_index and route.layer == view.layer and route.modifiers == variants[view.variant]) {
@@ -144,13 +152,12 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
                 if (matches) {
                     var bytes: [4]u8 = undefined;
                     try glyphs.writer.print("{s} ", .{glyph(stat.cp, &bytes)});
-                    try values.writer.print("{d}/{d} ", .{ stat.misses, stat.opportunities });
                     if (found == null) found = stat;
                 }
             }
             // Labels are for display only. Statistics always use frozen routes.
-            const label = if (glyphs.written().len > 0) glyphs.written() else if (view.layer < physical.labels.layer_count) physical.labels.lookup(view.layer, key.key_index, @bitCast(variants[view.variant])).label orelse physical.labels.lookup(view.layer, key.key_index, @bitCast(variants[view.variant])).caption orelse "·" else "·";
-            var options = ui.options(theme, ui.rect(placed.rect), @max(9, @min(15, placed.rect.h / 3.5)));
+            const label = if (found != null and found.?.cp == ' ') "SPC" else if (found != null and found.?.cp == '\n') "RET" else if (found != null and found.?.cp == '\t') "TAB" else if (glyphs.written().len > 0) glyphs.written() else if (view.layer < physical.labels.layer_count) physical.labels.lookup(view.layer, key.key_index, @bitCast(variants[view.variant])).label orelse physical.labels.lookup(view.layer, key.key_index, @bitCast(variants[view.variant])).caption orelse "·" else "·";
+            var options = ui.options(theme, ui.rect(placed.rect), @max(8, @min(12, placed.rect.h / 4)));
             options.rect.?.x += 3;
             options.rect.?.y += 3;
             options.rect.?.w -= 6;
@@ -163,7 +170,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
             options.id_extra = placed.id;
             options.rotation = placed.rotation;
             options.tag = try std.fmt.allocPrint(arena, "practice.heatmap.{d}", .{key.key_index});
-            const text = try std.fmt.allocPrint(arena, "{s}\n{s}{s}", .{ label, values.written(), if (found != null and found.?.opportunities < 5) "*" else "" });
+            const text = if (found) |stat| try std.fmt.allocPrint(arena, "{s}\n{d}/{d}{s}", .{ label, stat.misses, stat.opportunities, if (stat.opportunities < 5) "*" else "" }) else label;
             if (dvui.button(@src(), text, .{}, options)) if (found) |stat| {
                 view.selected = stat.cp;
             };
@@ -178,9 +185,8 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         const swatch = if (index == 0) null else results.Stat{ .opportunities = 100, .misses = ([_]u64{ 0, 0, 5, 20, 40 })[index] };
         dvui.labelNoFmt(@src(), label, .{ .align_x = 0.5 }, .{ .rect = .{ .x = x, .y = legend_y, .w = keyboard_width / 5 - 5, .h = 26 }, .background = true, .color_fill = .{ .color = color(swatch, light) }, .color_text = .{ .color = theme.text }, .id_extra = index });
     }
-    const strip_y = legend_y + 34;
-    const columns: usize = @intFromFloat(@max(1, @floor((width - 120) / 155)));
-    const page_size = if (wide) @as(usize, 6) else columns * 2;
+
+    const page_size: usize = 6;
     const pages = @max(1, (aggregate.stat_count + page_size - 1) / page_size);
     view.character_page = @min(view.character_page, pages - 1);
     const first = view.character_page * page_size;
@@ -201,14 +207,13 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         };
         var typed_bytes: [4]u8 = undefined;
         const pair = if (confusion) |sub| try std.fmt.allocPrint(arena, " → {s} ×{d}", .{ glyph(sub.typed, &typed_bytes), sub.count }) else "";
-        const label = try std.fmt.allocPrint(arena, "{s} · {d:.0}% · n={d}{s}{s}", .{ glyph(stat.cp, &bytes), 100 - stat.rate(), stat.opportunities, if (stat.opportunities < 5) "*" else "", if (wide) pair else "" });
+        const label = try std.fmt.allocPrint(arena, "{s}    {d:.0}%    {d} samples{s}{s}", .{ glyph(stat.cp, &bytes), 100 - stat.rate(), stat.opportunities, if (stat.opportunities < 5) "*" else "", pair });
         var key_theme = theme;
-        key_theme.control = color(stat, light);
-        if (ui.button(key_theme, label, try std.fmt.allocPrint(arena, "practice.character.{d}", .{stat.cp}), .{ .x = if (wide) keyboard_width + 20 else @as(f32, @floatFromInt(index % columns)) * 155, .y = if (wide) keyboard_y + 34 + @as(f32, @floatFromInt(index)) * 34 else strip_y + @as(f32, @floatFromInt(index / columns)) * 34, .w = if (wide) width - keyboard_width - 20 else 151, .h = 30 })) select(view, stat);
+        key_theme.control = if (view.selected == stat.cp) color(stat, light) else theme.control;
+        if (presentation.rowButton(key_theme, label, try std.fmt.allocPrint(arena, "practice.character.{d}", .{stat.cp}), .{ .x = table_x + 20, .y = table_y + 104 + @as(f32, @floatFromInt(index)) * 40, .w = table_width - 40, .h = 34 }, 15)) select(view, stat);
     }
-    if (wide) presentation.caption("Character · first-pass · exposure · common error", .{ .x = keyboard_width + 20, .y = keyboard_y, .w = width - keyboard_width - 20, .h = 30 }, 15, theme.muted, null);
-    if (ui.button(theme, "More →", "practice.characters.more", .{ .x = width - 112, .y = strip_y, .w = 110, .h = 32 })) view.character_page = (view.character_page + 1) % pages;
-    const detail_y = strip_y + 74;
+    if (pages > 1 and ui.button(theme, "More →", "practice.characters.more", .{ .x = width - 130, .y = table_y + 352, .w = 110, .h = 32 })) view.character_page = (view.character_page + 1) % pages;
+    const detail_y = table_y + 420;
     var detail: std.Io.Writer.Allocating = .init(arena);
     if (view.selected) |cp| {
         for (aggregate.stats[0..aggregate.stat_count]) |stat| if (stat.cp == cp) {
@@ -233,10 +238,14 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         };
     } else try detail.writer.writeAll("Character cells: first-pass success · n=opportunities · * limited evidence. Select for confusion counts.");
     if (aggregate.substitutions_truncated) try detail.writer.writeAll(" · substitution detail limited to 256 observed pairs");
-    presentation.caption(detail.written(), .{ .y = detail_y, .w = width, .h = 58 }, 15, theme.text, "practice.result.details");
-    const actions_y = detail_y + 64;
-    var action: Action = .none;
-    if (ui.buttonEnabled(theme, "Practice weak spots", "practice.drill", .{ .y = actions_y, .w = 200, .h = 38 }, !owner.save_blocked)) {
+    const detail_height = presentation.flowText(detail.written(), 0, detail_y, width, 14, theme.muted);
+    const actions_y = detail_y + detail_height + 24;
+    page.ensureHeight(actions_y + 150);
+    var action: Action = if (new_requested) .new_exercise else .none;
+    var primary = theme;
+    primary.control = ui.color(0x287AF2);
+    primary.text = dvui.Color.white;
+    if ((record.scored or view.scope != 0) and recommended.len > 0 and ui.buttonEnabled(primary, "Practice weak spots", "practice.drill", .{ .x = width - 220, .y = 292, .w = 200, .h = 38 }, !owner.save_blocked)) {
         var config = owner.config;
         config.challenge = null;
         config.target_count = 0;
@@ -267,18 +276,18 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
             if (config.target_count > 0) action = .{ .drill = config };
         }
     }
-    if (ui.buttonEnabled(theme, "New exercise", "practice.result.new", .{ .x = 210, .y = actions_y, .w = 145, .h = 38 }, !owner.save_blocked)) action = .new_exercise;
-    if (ui.button(theme, "Saved history", "practice.history", .{ .x = 365, .y = actions_y, .w = 145, .h = 38 })) {
+    if (ui.buttonEnabled(theme, "New exercise", "practice.result.new", .{ .y = actions_y, .w = 145, .h = 38 }, !owner.save_blocked)) action = .new_exercise;
+    if (ui.button(theme, "Saved history", "practice.history", .{ .x = 155, .y = actions_y, .w = 145, .h = 38 })) {
         view.history_open = !view.history_open;
         view.refresh = true;
         view.before = null;
     }
-    if (ui.button(theme, "More details", "practice.result.more", .{ .x = 520, .y = actions_y, .w = 140, .h = 38 })) view.more_details = !view.more_details;
-    if (view.more_details and ui.button(theme, "Timing details", "practice.result.timing", .{ .x = 670, .y = actions_y, .w = 155, .h = 38 })) {
+    if (ui.button(theme, "More details", "practice.result.more", .{ .x = 310, .y = actions_y, .w = 140, .h = 38 })) view.more_details = !view.more_details;
+    if (view.more_details and ui.button(theme, "Timing details", "practice.result.timing", .{ .x = 460, .y = actions_y, .w = 155, .h = 38 })) {
         view.diagnostics = true;
         view.refresh = true;
     }
-    if (view.more_details and ui.button(theme, "Clear history", "practice.history.clear", .{ .x = width - 140, .y = actions_y + 78, .w = 140, .h = 30 })) view.confirm_clear = true;
+    if (view.more_details and !view.confirm_clear and ui.button(theme, "Clear history", "practice.history.clear", .{ .x = width - 140, .y = actions_y + 78, .w = 140, .h = 30 })) view.confirm_clear = true;
     var focus_note: std.Io.Writer.Allocating = .init(arena);
     if (record.cohort.family == .english) try focus_note.writer.print("Seed {d} · generation / corpus / coverage v1 · {d} outside-reference errors", .{ record.seed, record.outside_errors }) else try focus_note.writer.print("Zig lesson {s} · original text corpus v1 · {d} outside-reference errors", .{ desktop.practice.lesson_ids[record.cohort.lesson], record.outside_errors });
     if (record.target_count > 0) {
@@ -288,36 +297,45 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
             try focus_note.writer.print("{s} ", .{glyph(cp, &bytes)});
         }
     }
-    if (view.more_details and !view.confirm_clear and !view.history_open) presentation.caption(focus_note.written(), .{ .y = actions_y + 78, .w = width - 150, .h = 30 }, 14, theme.muted, "practice.result.seed");
+    if (view.more_details and !view.confirm_clear and !view.history_open) {
+        const note_height = presentation.flowText(focus_note.written(), 0, actions_y + 86, width - 180, 13, theme.muted);
+        page.ensureHeight(actions_y + 110 + note_height);
+    }
     const save_status = if (failure) |err| try std.fmt.allocPrint(arena, "History save/read failed: {s}. In-memory results remain available.", .{@errorName(err)}) else if (saving) "Saving / loading history…" else if (history != null and history.?.rejected > 0) "Some history files could not be read; scopes are incomplete. Original files are preserved." else view.message;
-    presentation.caption(save_status, .{ .y = actions_y + 43, .w = width - 110, .h = 30 }, 14, theme.muted, "practice.history.status");
+    _ = presentation.flowText(save_status, 0, actions_y + 48, width - 110, 13, theme.muted);
     if (failure != null and ui.button(theme, "Retry", "practice.history.retry", .{ .x = width - 105, .y = actions_y + 43, .w = 100, .h = 30 })) view.retry = true;
     if (view.confirm_clear) {
-        presentation.caption("Clear saved practice runs? Projects and preferences are preserved.", .{ .y = actions_y + 80, .w = width - 250, .h = 30 }, 14, theme.text, null);
-        if (ui.button(theme, "Clear runs", "practice.history.confirm", .{ .x = width - 240, .y = actions_y + 80, .w = 115, .h = 30 })) {
+        page.ensureHeight(actions_y + 282);
+        presentation.surface(.{ .y = actions_y + 92, .w = width, .h = 158 }, theme.panel);
+        presentation.label("Clear saved practice runs?", .{ .x = 20, .y = actions_y + 108, .w = width - 40, .h = 30 }, 18, theme.text, null);
+        _ = presentation.flowText("Projects and preferences are preserved.", 20, actions_y + 148, width - 40, 14, theme.muted);
+        if (ui.button(theme, "Clear runs", "practice.history.confirm", .{ .x = 20, .y = actions_y + 192, .w = 140, .h = 38 })) {
             view.clear = true;
             view.cleared = true;
             view.scope = 0;
             view.confirm_clear = false;
             view.reviewed = null;
         }
-        if (ui.button(theme, "Cancel", "practice.history.cancel", .{ .x = width - 115, .y = actions_y + 80, .w = 110, .h = 30 })) view.confirm_clear = false;
+        if (ui.button(theme, "Cancel", "practice.history.cancel", .{ .x = 174, .y = actions_y + 192, .w = 140, .h = 38 })) view.confirm_clear = false;
     } else if (view.history_open and history != null) {
-        const area = dvui.scrollArea(@src(), .{}, .{ .rect = .{ .y = actions_y + 80, .w = width, .h = @max(60, bounds.h - actions_y - 84) } });
-        defer area.deinit();
-        if (ui.button(theme, "Current run", "practice.history.current", .{ .w = 150, .h = 28 })) {
+        const history_y = actions_y + 100;
+        const history_h = 116 + @as(f32, @floatFromInt(history.?.page_count)) * 42;
+        page.ensureHeight(history_y + history_h + 32);
+        presentation.surface(.{ .y = history_y, .w = width, .h = history_h }, theme.panel);
+        presentation.label("Saved exercises", .{ .x = 20, .y = history_y + 16, .w = width - 40, .h = 30 }, 20, theme.text, null);
+        if (ui.button(theme, "Current run", "practice.history.current", .{ .x = 20, .y = history_y + 58, .w = 150, .h = 34 })) {
             view.reviewed = null;
             view.scope = 0;
         }
         for (history.?.page[0..history.?.page_count], 0..) |saved, index| {
             var date: [32]u8 = undefined;
             const label = try std.fmt.allocPrint(arena, "{s} · {d:.0} WPM · {d:.1}% · {s}", .{ try results.dateLabel(saved.timestamp, &date), saved.wpm(), saved.accuracy(), if (saved.scored) "scored" else "unscored" });
-            if (ui.button(theme, label, try std.fmt.allocPrint(arena, "practice.history.run.{d}", .{index}), .{ .y = @as(f32, @floatFromInt(index + 1)) * 32, .w = width - 150, .h = 28 })) {
+            if (presentation.rowButton(theme, label, try std.fmt.allocPrint(arena, "practice.history.run.{d}", .{index}), .{ .x = 20, .y = history_y + 108 + @as(f32, @floatFromInt(index)) * 42, .w = width - 40, .h = 34 }, 15)) {
                 view.reviewed = saved;
                 view.scope = 0;
             }
         }
-        if (history.?.page_count == 10 and ui.button(theme, "Older runs →", "practice.history.older", .{ .x = width - 145, .w = 140, .h = 30 })) {
+        if (history.?.page_count == 10 and ui.button(theme, "Older runs →", "practice.history.older", .{ .x = width - 165, .y = history_y + 58, .w = 145, .h = 34 })) {
             view.before = history.?.page[9];
             view.refresh = true;
         }
