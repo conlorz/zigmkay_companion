@@ -2,6 +2,17 @@
 const std = @import("std");
 pub const controller = @import("flash-controller");
 pub const Action = enum { prepare, build, freeze, select, confirm, cancel, reset };
+pub fn showErrorWindow(phase: ?controller.Phase, failure: ?anyerror) bool {
+    return failure != null or phase == .failed or phase == .reconnect_timeout;
+}
+test "normal flash progress and success never open a window" {
+    const t = std.testing;
+    for (std.enums.values(controller.Phase)) |phase| {
+        try t.expectEqual(phase == .failed or phase == .reconnect_timeout, showErrorWindow(phase, null));
+    }
+    try t.expect(!showErrorWindow(null, null));
+    try t.expect(showErrorWindow(null, error.BuildFailed));
+}
 /// Borrowed from an owned runtime completion; keep that completion alive while
 /// drawing. No parsing of diagnostic text is used to change transfer phases.
 pub const Diagnostics = struct {

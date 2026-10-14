@@ -38,6 +38,24 @@ pub fn drawPending(failure: ?anyerror, building: bool, close: *bool) void {
     if (dvui.button(@src(), "Hide", .{}, .{ .tag = "flash.pending.close" })) close.* = true;
 }
 
+pub fn drawSetupFailure(failure: anyerror, cache: []const u8, open: *bool) !bool {
+    const screen = dvui.windowRect();
+    const window = dvui.floatingWindow(@src(), .{ .modal = false }, .{
+        .rect = .{ .x = 16, .y = 80, .w = @max(1, @min(620, screen.w - 32)), .h = @max(1, @min(300, screen.h - 96)) },
+        .padding = .all(16),
+        .background = true,
+    });
+    defer window.deinit();
+    dvui.labelNoFmt(@src(), "Build and Flash setup could not finish", .{}, .{});
+    dvui.labelNoFmt(@src(), "No firmware was flashed. Check your connection and retry setup.", .{}, .{});
+    dvui.label(@src(), "Details: {s}", .{@errorName(failure)}, .{});
+    const report = try std.fmt.allocPrint(dvui.currentWindow().arena(), "Automatic editor preparation failed: {s}\nNo firmware was flashed.\nPreparation cache and tool-build logs: {s}/editor-environment\n", .{ @errorName(failure), cache });
+    if (dvui.button(@src(), "Copy diagnostics", .{}, .{ .tag = "setup.copy" })) dvui.clipboardTextSet(report);
+    const retry = dvui.button(@src(), "Retry setup", .{}, .{ .tag = "setup.retry" });
+    if (dvui.button(@src(), "Hide", .{}, .{ .tag = "setup.hide" })) open.* = false;
+    return retry;
+}
+
 pub fn draw(owner: *const policy.controller.Controller, input: Input) !?policy.controller.Intent {
     const state = policy.view(owner, input.session_token);
     const screen = dvui.windowRect();

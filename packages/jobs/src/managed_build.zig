@@ -95,7 +95,7 @@ pub const Job = struct {
         // without external sources receive an empty output-local package path.
         const a = command.arena.allocator();
         const package_path = if (owned.source_cache) |cache| try std.fs.path.join(a, &.{ cache, "p" }) else try std.fs.path.join(a, &.{ install_path, "unprepared-packages" });
-        try selected_environment.put("ZIG_LOCAL_PKG_DIR", package_path);
+        try selected_environment.put("ZIG_LOCAL_PKG_DIR", if (owned.dependency_access == .offline) package_path else try std.fs.path.relativeAlloc(a, command.cwd, &selected_environment, command.cwd, package_path));
         try selected_environment.put("ZIG_LIB_DIR", try std.fs.path.join(a, &.{ owned.selection.compiler_distribution_path, "lib" }));
         if (owned.dependency_access == .offline) {
             const args = try a.alloc([]const u8, command.argv.len + 2);

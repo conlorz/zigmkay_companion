@@ -3,6 +3,48 @@ const std = @import("std");
 const jobs = @import("root.zig");
 const zon = @import("owned-zon");
 pub const Input = union(enum) { offline_archive: []const u8, download: []const u8 };
+/// One owned preparation session admits the distribution once. Each compiler
+/// invocation still checks file identity/size/timestamps; normal standalone
+/// imports retain their fresh full verification. This avoids rehashing hundreds
+/// of megabytes twice for every dependency during editor startup.
+pub const CompilerSession = struct {
+    audit_packages: bool = true,
+    receipt: jobs.toolchain.Receipt,
+    stamp: std.Io.File.Stat,
+    pub fn init(gpa: std.mem.Allocator, io: std.Io, receipt: jobs.toolchain.Receipt) !CompilerSession {
+        const before = try std.Io.Dir.cwd().statFile(io, receipt.compiler, .{});
+        try receipt.verify(gpa, io);
+        const self: CompilerSession = .{ .receipt = receipt, .stamp = before };
+        try self.check(io);
+        return self;
+    }
+    pub fn check(self: *const CompilerSession, io: std.Io) !void {
+        const actual = try std.Io.Dir.cwd().statFile(io, self.receipt.compiler, .{});
+        if (actual.inode != self.stamp.inode or actual.size != self.stamp.size or !std.meta.eql(actual.mtime, self.stamp.mtime) or !std.meta.eql(actual.ctime, self.stamp.ctime)) return error.CompilerChangedDuringPreparation;
+    }
+    pub fn acquire(self: *const CompilerSession, gpa: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map, cache: std.Io.Dir, hash: []const u8, input: Input) !Owned {
+        return acquireImpl(gpa, io, environment, self.receipt, cache, hash, input, self);
+    }
+};
+
+test "compiler preparation session admits bytes once and rejects later replacement" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "zig", .data = "admitted compiler bytes" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    const compiler = try tmp.dir.realPathFileAlloc(io, "zig", gpa);
+    defer gpa.free(compiler);
+    var receipt: jobs.toolchain.Receipt = .{ .kind = .selected_installation, .compiler = compiler, .distribution = root, .compiler_digest = jobs.firmware.digest("admitted compiler bytes"), .tree_digest = try jobs.build_provenance.compilerTreeDigest(gpa, io, root) };
+    const session = try CompilerSession.init(gpa, io, receipt);
+    try session.check(io);
+    receipt.compiler_digest[0] ^= 1;
+    try std.testing.expectError(error.CompilerDigestMismatch, CompilerSession.init(gpa, io, receipt));
+    try tmp.dir.writeFile(io, .{ .sub_path = "zig", .data = "replaced" });
+    try std.testing.expectError(error.CompilerChangedDuringPreparation, session.check(io));
+}
 pub const Source = struct {
     package_hash: []const u8,
     source_path: []const u8,
@@ -40,10 +82,15 @@ pub const Owned = struct {
         self.* = undefined;
     }
 };
-const Record = struct { version: u16 = 1, package_hash: []const u8, tree_digest: jobs.firmware.Digest, archive_digest: jobs.firmware.Digest };
+const Record = struct { version: u16 = 1, package_hash: []const u8, tree_digest: jobs.firmware.Digest, archive_digest: jobs.firmware.Digest, content_audited: bool = true };
 /// Reuse a previously verified import without running a compiler or downloading.
 /// Paths are derived from the selected cache, so complete cache relocation works.
 pub fn load(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, package_hash: []const u8) !?Owned {
+    return loadWithAudit(gpa, io, cache, package_hash, true);
+}
+/// Normal editor preparation trusts Zig's pinned package identity. Full cache
+/// byte audits are an explicit caller policy, not required to reuse downloads.
+pub fn loadWithAudit(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, package_hash: []const u8, audit: bool) !?Owned {
     try jobs.build_provenance.validatePackageHash(package_hash);
     const name = try std.fmt.allocPrint(gpa, "source-records/{s}.zon", .{package_hash});
     defer gpa.free(name);
@@ -57,6 +104,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, package_hash:
     const record = try zon.parse(Record, gpa, text);
     defer zon.free(gpa, record);
     if (record.version != 1) return error.UnsupportedPackageSourceRecord;
+    if (audit and !record.content_audited) return error.PackageAuditNotCaptured;
     if (!std.mem.eql(u8, record.package_hash, package_hash)) return error.DependencyPackageHashMismatch;
     const base = try cache.realPathFileAlloc(io, ".", gpa);
     defer gpa.free(base);
@@ -64,7 +112,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, package_hash:
     errdefer arena.deinit();
     const a = arena.allocator();
     const source = Source{ .package_hash = try a.dupe(u8, package_hash), .source_path = try std.fs.path.join(a, &.{ base, "p", package_hash }), .tree_digest = record.tree_digest, .archive_path = try std.fs.path.join(a, &.{ base, "blobs", std.fmt.bytesToHex(record.archive_digest, .lower) ++ ".tar.gz" }), .archive_digest = record.archive_digest };
-    try source.verify(gpa, io, base);
+    if (audit) try source.verify(gpa, io, base);
     return .{ .arena = arena, .source = source };
 }
 fn saveRecord(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, source: Source) !void {
@@ -99,10 +147,14 @@ fn absolute(path: []const u8) !void {
 fn within(child: []const u8, parent: []const u8) bool {
     return std.mem.eql(u8, child, parent) or (std.mem.startsWith(u8, child, parent) and child.len > parent.len and std.fs.path.isSep(child[parent.len]));
 }
-fn fetch(gpa: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map, compiler: jobs.toolchain.Receipt, cwd: []const u8, input: []const u8, expected: ?[]const u8) ![]u8 {
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, compiler.compiler, gpa, .limited(512 * 1024 * 1024));
-    defer gpa.free(bytes);
-    if (!std.mem.eql(u8, &jobs.firmware.digest(bytes), &compiler.compiler_digest)) return error.CompilerDigestMismatch;
+fn fetch(gpa: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map, compiler: jobs.toolchain.Receipt, cwd: []const u8, input: []const u8, expected: ?[]const u8, session: ?*const CompilerSession) ![]u8 {
+    if (session) |admitted| {
+        try admitted.check(io);
+    } else {
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, compiler.compiler, gpa, .limited(512 * 1024 * 1024));
+        defer gpa.free(bytes);
+        if (!std.mem.eql(u8, &jobs.firmware.digest(bytes), &compiler.compiler_digest)) return error.CompilerDigestMismatch;
+    }
     var result = try jobs.run(gpa, io, .{ .argv = &.{ compiler.compiler, "fetch", input }, .cwd = cwd, .snapshot_id = compiler.compiler_digest, .timeout_ms = 120_000, .environ_map = environment });
     defer result.deinit(gpa);
     if (!result.successful()) return error.PackageFetchFailed;
@@ -211,6 +263,9 @@ fn unpack(gpa: std.mem.Allocator, io: std.Io, archive: []const u8, package_hash:
 /// A fresh child cache canonicalizes package bytes through the verified compiler.
 /// Existing source trees must match the canonical archive; conflicts are preserved.
 pub fn acquire(gpa: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map, compiler: jobs.toolchain.Receipt, cache: std.Io.Dir, package_hash: []const u8, input: Input) !Owned {
+    return acquireImpl(gpa, io, environment, compiler, cache, package_hash, input, null);
+}
+fn acquireImpl(gpa: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map, compiler: jobs.toolchain.Receipt, cache: std.Io.Dir, package_hash: []const u8, input: Input, session: ?*const CompilerSession) !Owned {
     try jobs.build_provenance.validatePackageHash(package_hash);
     switch (input) {
         .offline_archive => |path| {
@@ -225,7 +280,7 @@ pub fn acquire(gpa: std.mem.Allocator, io: std.Io, environment: *const std.proce
     const base = try cache.realPathFileAlloc(io, ".", gpa);
     defer gpa.free(base);
     if (base.len < 2 or within(base, compiler.distribution) or within(compiler.distribution, base)) return error.PackageCacheOverlapsToolchain;
-    try compiler.verify(gpa, io);
+    if (session) |admitted| try admitted.check(io) else try compiler.verify(gpa, io);
     var nonce: [16]u8 = undefined;
     io.random(&nonce);
     const temporary_name = ".package-" ++ std.fmt.bytesToHex(nonce, .lower);
@@ -241,7 +296,7 @@ pub fn acquire(gpa: std.mem.Allocator, io: std.Io, environment: *const std.proce
     const selected = switch (input) {
         .offline_archive, .download => |value| value,
     };
-    const fetched = try fetch(gpa, io, &child_environment, compiler, temporary_path, selected, package_hash);
+    const fetched = try fetch(gpa, io, &child_environment, compiler, temporary_path, selected, package_hash, session);
     defer gpa.free(fetched);
     const archive_path = try std.fmt.allocPrint(gpa, "{s}/p/{s}.tar.gz", .{ temporary_path, package_hash });
     defer gpa.free(archive_path);
@@ -256,7 +311,7 @@ pub fn acquire(gpa: std.mem.Allocator, io: std.Io, environment: *const std.proce
     for (0..8) |_| {
         const candidate = try package_root.realPathFileAlloc(io, ".", gpa);
         defer gpa.free(candidate);
-        const hash = try fetch(gpa, io, &child_environment, compiler, temporary_path, candidate, null);
+        const hash = try fetch(gpa, io, &child_environment, compiler, temporary_path, candidate, null, session);
         defer gpa.free(hash);
         if (std.mem.eql(u8, hash, package_hash)) {
             matched = true;
@@ -267,11 +322,12 @@ pub fn acquire(gpa: std.mem.Allocator, io: std.Io, environment: *const std.proce
     if (!matched) return error.DependencyPackageHashMismatch;
     const sources_path = try package_root.realPathFileAlloc(io, ".", gpa);
     defer gpa.free(sources_path);
-    const tree = try jobs.preparation.packageTreeDigest(gpa, io, package_root);
+    const audit = if (session) |admitted| admitted.audit_packages else true;
+    const tree: jobs.firmware.Digest = if (audit) try jobs.preparation.packageTreeDigest(gpa, io, package_root) else @splat(0);
     const archive_bytes = try std.Io.Dir.cwd().readFileAlloc(io, archive_path, gpa, .limited(512 * 1024 * 1024));
     defer gpa.free(archive_bytes);
     const archive_digest = jobs.firmware.digest(archive_bytes);
-    try compiler.verify(gpa, io);
+    if (session) |admitted| try admitted.check(io) else try compiler.verify(gpa, io);
     try cache.createDirPath(io, "p");
     var packages = try cache.openDir(io, "p", .{ .iterate = true });
     defer packages.close(io);
@@ -291,7 +347,7 @@ pub fn acquire(gpa: std.mem.Allocator, io: std.Io, environment: *const std.proce
         const expected = try std.fs.path.join(gpa, &.{ packages_path, package_hash });
         defer gpa.free(expected);
         if (!std.mem.eql(u8, actual, expected)) return error.PackageSourceOutsideCache;
-        if (!std.mem.eql(u8, &tree, &(try jobs.preparation.packageTreeDigest(gpa, io, directory)))) return error.CachedPackageSourceChanged;
+        if (audit and !std.mem.eql(u8, &tree, &(try jobs.preparation.packageTreeDigest(gpa, io, directory)))) return error.CachedPackageSourceChanged;
     } else try std.Io.Dir.cwd().renamePreserve(sources_path, packages, package_hash, io);
     var blobs = try cache.createDirPathOpen(io, "blobs", .{});
     defer blobs.close(io);
@@ -307,7 +363,7 @@ pub fn acquire(gpa: std.mem.Allocator, io: std.Io, environment: *const std.proce
     };
     if (old_blob) |bytes| {
         defer gpa.free(bytes);
-        if (!std.mem.eql(u8, &archive_digest, &jobs.firmware.digest(bytes))) return error.CachedBundleCorrupt;
+        if (audit and !std.mem.eql(u8, &archive_digest, &jobs.firmware.digest(bytes))) return error.CachedBundleCorrupt;
     } else {
         var blob = try blobs.createFileAtomic(io, blob_name, .{ .replace = false });
         defer blob.deinit(io);
@@ -319,7 +375,21 @@ pub fn acquire(gpa: std.mem.Allocator, io: std.Io, environment: *const std.proce
     const source_path = try std.fs.path.join(arena.allocator(), &.{ packages_path, package_hash });
     const blob_path = try std.fs.path.join(arena.allocator(), &.{ base, "blobs", blob_name });
     const source = try zon.clone(arena.allocator(), Source{ .package_hash = package_hash, .source_path = source_path, .tree_digest = tree, .archive_path = blob_path, .archive_digest = archive_digest });
-    try saveRecord(gpa, io, cache, source);
+    if (audit) {
+        try saveRecord(gpa, io, cache, source);
+    } else {
+        var records = try cache.createDirPathOpen(io, "source-records", .{});
+        defer records.close(io);
+        var encoded: std.Io.Writer.Allocating = .init(gpa);
+        defer encoded.deinit();
+        try std.zon.stringify.serialize(Record{ .package_hash = package_hash, .tree_digest = tree, .archive_digest = archive_digest, .content_audited = false }, .{}, &encoded.writer);
+        const name = try std.fmt.allocPrint(gpa, "{s}.zon", .{package_hash});
+        defer gpa.free(name);
+        var atomic = try records.createFileAtomic(io, name, .{ .replace = true });
+        defer atomic.deinit(io);
+        try atomic.file.writeStreamingAll(io, encoded.written());
+        try atomic.link(io);
+    }
     return .{ .arena = arena, .source = source };
 }
 test "package archive paths reject escapes links aliases and device names" {
@@ -428,11 +498,15 @@ test "package source records rebase paths verify bytes and preserve unsupported 
     try t.expect(!std.mem.eql(u8, source.source_path, rebased.source.source_path));
     try moved_blobs.writeFile(t.io, .{ .sub_path = blob_name, .data = "corrupt archive" });
     try t.expectError(error.CachedBundleCorrupt, load(t.allocator, t.io, moved.dir, hash));
+    var unaudited = (try loadWithAudit(t.allocator, t.io, moved.dir, hash, false)).?;
+    defer unaudited.deinit();
+    try t.expectEqualStrings(hash, unaudited.source.package_hash);
     var output: std.Io.Writer.Allocating = .init(t.allocator);
     defer output.deinit();
     try std.zon.stringify.serialize(Record{ .version = 2, .package_hash = hash, .tree_digest = source.tree_digest, .archive_digest = source.archive_digest }, .{}, &output.writer);
     try tmp.dir.writeFile(t.io, .{ .sub_path = record_path, .data = output.written() });
     try t.expectError(error.UnsupportedPackageSourceRecord, load(t.allocator, t.io, tmp.dir, hash));
+    try t.expectError(error.UnsupportedPackageSourceRecord, loadWithAudit(t.allocator, t.io, tmp.dir, hash, false));
     try t.expectError(error.UnsupportedPackageSourceRecord, saveRecord(t.allocator, t.io, tmp.dir, source));
     const retained = try tmp.dir.readFileAlloc(t.io, record_path, t.allocator, .limited(16 * 1024));
     defer t.allocator.free(retained);

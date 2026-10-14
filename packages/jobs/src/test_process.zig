@@ -327,7 +327,9 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
     try t.expectEqualStrings(cache_path, fetch_job.process.spec.environ_map.?.get("ZIG_GLOBAL_CACHE_DIR").?);
     const package_path = try std.fs.path.join(t.allocator, &.{ cache_path, "p" });
     defer t.allocator.free(package_path);
-    try t.expectEqualStrings(package_path, fetch_job.process.spec.environ_map.?.get("ZIG_LOCAL_PKG_DIR").?);
+    const relative_packages = try std.fs.path.relativeAlloc(t.allocator, fetch_job.command.cwd, null, fetch_job.command.cwd, package_path);
+    defer t.allocator.free(relative_packages);
+    try t.expectEqualStrings(relative_packages, fetch_job.process.spec.environ_map.?.get("ZIG_LOCAL_PKG_DIR").?);
     try t.expect(fetch_job.process.spec.environ_map.?.get("ZIG_LIB_DIR") != null);
     inline for (.{ "success", "missing-runner", "failed", "invalid", "missing", "hang" }) |mode| {
         try environment.put("ZIGMKAY_BUILD_FIXTURE", mode);

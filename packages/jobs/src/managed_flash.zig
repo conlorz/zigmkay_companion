@@ -10,6 +10,9 @@ pub const Job = struct {
     process: flash.Job,
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, frozen: inputs.Frozen, request: inputs.Request, selection: flash.Selection) !Job {
+        return initWithDiscovery(gpa, io, frozen, request, selection, 30_000);
+    }
+    pub fn initWithDiscovery(gpa: std.mem.Allocator, io: std.Io, frozen: inputs.Frozen, request: inputs.Request, selection: flash.Selection, discovery_ms: u32) !Job {
         try request.validate();
         var tools = try inputs.Tools.clone(gpa, frozen.tools.record);
         errdefer tools.deinit();
@@ -23,6 +26,7 @@ pub const Job = struct {
             .expected_sha256 = owned.uf2_hash,
             .snapshot_id = request.captured,
             .selection = selection,
+            .discovery_ms = discovery_ms,
         });
         return .{ .frozen = owned, .process = process };
     }

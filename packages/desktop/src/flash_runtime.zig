@@ -47,6 +47,7 @@ pub const Runtime = struct {
     job: ?*jobs.managed_flash.Job = null,
     operation: ?controller.Operation = null,
     last_error: ?anyerror = null,
+    discovery_ms: u32 = 35_000,
     pub fn init(gpa: std.mem.Allocator, io: std.Io) Runtime {
         return .{ .gpa = gpa, .io = io };
     }
@@ -73,7 +74,7 @@ pub const Runtime = struct {
         const request: jobs.flash_inputs.Request = .{ .captured = effect.operation.context.snapshot, .current = owner.current.snapshot };
         const job = try self.gpa.create(jobs.managed_flash.Job);
         errdefer self.gpa.destroy(job);
-        job.* = try jobs.managed_flash.Job.init(self.gpa, self.io, frozen.*, request, effect.selection);
+        job.* = try jobs.managed_flash.Job.initWithDiscovery(self.gpa, self.io, frozen.*, request, effect.selection, self.discovery_ms);
         errdefer job.deinit();
         try job.start(current, request);
         self.job = job;

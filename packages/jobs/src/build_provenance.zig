@@ -234,7 +234,8 @@ fn sourceTree(gpa: std.mem.Allocator, io: std.Io, directory: []const u8) !Digest
     return preparation.treeDigest(gpa, io, dir);
 }
 /// Same source-tree framing, with distribution-sized limits. Hidden compiler
-/// files are included, VCS/build caches excluded, and all symlinks rejected.
+/// files are included and VCS/build caches excluded. Compiler managers may add
+/// executable aliases; file symlinks contained within the distribution work too.
 pub fn compilerTreeDigest(gpa: std.mem.Allocator, io: std.Io, directory: []const u8) !Digest {
     try absolute(directory);
     var dir = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
@@ -250,7 +251,14 @@ pub fn compilerTreeDigest(gpa: std.mem.Allocator, io: std.Io, directory: []const
     hash.update("zigmkay-source-tree-v1\x00");
     var total: usize = 0;
     for (files) |file| {
-        if (file.kind != .file) return error.UnsupportedSourceKind;
+        if (file.kind == .sym_link) {
+            const root = try dir.realPathFileAlloc(io, ".", gpa);
+            defer gpa.free(root);
+            const alias_target = try dir.realPathFileAlloc(io, file.path, gpa);
+            defer gpa.free(alias_target);
+            if (alias_target.len <= root.len or !std.mem.startsWith(u8, alias_target, root) or !std.fs.path.isSep(alias_target[root.len])) return error.CompilerAliasOutsideDistribution;
+            if ((try dir.statFile(io, file.path, .{})).kind != .file) return error.UnsupportedSourceKind;
+        } else if (file.kind != .file) return error.UnsupportedSourceKind;
         const bytes = try dir.readFileAlloc(io, file.path, gpa, .limited(512 * 1024 * 1024));
         defer gpa.free(bytes);
         total += bytes.len;
@@ -263,6 +271,27 @@ pub fn compilerTreeDigest(gpa: std.mem.Allocator, io: std.Io, directory: []const
     }
     return hash.finalResult();
 }
+test "compiler distribution accepts mise executable aliases but not external targets" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const t = std.testing;
+    var tmp = t.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "zig", .data = "compiler fixture" });
+    try tmp.dir.createDirPath(t.io, "bin");
+    try tmp.dir.symLink(t.io, "../zig", "bin/zig", .{});
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    const initial = try compilerTreeDigest(t.allocator, t.io, root);
+    try t.expectEqual(initial, try compilerTreeDigest(t.allocator, t.io, root));
+    var external = t.tmpDir(.{});
+    defer external.cleanup();
+    try external.dir.writeFile(t.io, .{ .sub_path = "outside", .data = "not part of installation" });
+    const alias_target = try external.dir.realPathFileAlloc(t.io, "outside", t.allocator);
+    defer t.allocator.free(alias_target);
+    try tmp.dir.symLink(t.io, alias_target, "external", .{});
+    try t.expectError(error.CompilerAliasOutsideDistribution, compilerTreeDigest(t.allocator, t.io, root));
+}
+
 fn same(actual: Digest, expected: Digest) bool {
     return std.mem.eql(u8, &actual, &expected);
 }

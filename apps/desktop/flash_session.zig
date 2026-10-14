@@ -7,6 +7,17 @@ const preparation = desktop.flash_preparation;
 const desktop = @import("desktop-core");
 const jobs = @import("companion-jobs");
 
+pub const DiscoveryWait = struct {
+    pub const hid_ms: u32 = 5000;
+    pub const manual_ms: u32 = 30_000;
+    pub fn remaining(start: u64, delay: u32, now: u64) u32 {
+        return @intCast((@as(u64, delay) + manual_ms) -| (now -| start));
+    }
+    pub fn needsManual(start: u64, delay: u32, now: u64, discovered: bool) bool {
+        return !discovered and now -| start >= delay;
+    }
+};
+
 pub const Session = struct {
     tools: jobs.flash_inputs.Tools,
     request: desktop.build_worker.Request,
@@ -19,6 +30,19 @@ pub const Session = struct {
     prepared: ?preparation.Prepared = null,
     completion: ?desktop.flash_runtime.PollResult = null,
     reconnect: ?@FieldType(desktop.flash_controller.Effect, "watch_reconnect") = null,
+    discovery_started: ?u64 = null,
+    guidance_delay_ms: u32 = 5000,
+
+    pub fn status(self: *const Session, allocator: std.mem.Allocator, now: u64) ![]const u8 {
+        if (self.owner.phase == .verifying) if (self.discovery_started) |start| {
+            const discovered = if (self.runtime.job) |job| job.process.discovery_complete.load(.acquire) else false;
+            if (DiscoveryWait.needsManual(start, self.guidance_delay_ms, now, discovered)) {
+                const remaining = (DiscoveryWait.remaining(start, self.guidance_delay_ms, now) + 999) / 1000;
+                return std.fmt.allocPrint(allocator, "Keyboard not in BOOTSEL yet. Hold BOOTSEL while reconnecting USB; keep only this keyboard connected. Waiting {d}s; flashing continues automatically once detected.", .{remaining});
+            }
+        };
+        return self.view(null).status;
+    }
 
     /// Takes ownership of tools and request on success ONLY; on error the caller
     /// still owns both by-value inputs and must deinit them. Do not deinit copies
@@ -145,6 +169,8 @@ pub const Session = struct {
     /// `rendered` must be the view actually displayed to the user. This method
     /// is the sole transfer start; no preparation or selection can start it.
     pub fn confirm(self: *Session, rendered: desktop.flash_presenter.View, model: *const desktop.model.Model, generation: u64, now: u64) !void {
+        if (self.discovery_started == null) self.discovery_started = now;
+        self.runtime.discovery_ms = @max(1, DiscoveryWait.remaining(self.discovery_started.?, self.guidance_delay_ms, now));
         const phase_start = std.Io.Clock.awake.now(self.runtime.io);
         const preflight = blk: {
             defer std.log.info("flash session confirm_preflight_ms={d}", .{phase_start.durationTo(std.Io.Clock.awake.now(self.runtime.io)).toMilliseconds()});
@@ -205,6 +231,18 @@ pub fn readTools(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !jobs.fla
     return jobs.flash_inputs.Tools.parse(gpa, bytes);
 }
 
+test "manual BOOTSEL guidance starts at five seconds and expires thirty seconds later" {
+    const t = std.testing;
+    try t.expect(!DiscoveryWait.needsManual(100, 5000, 5099, false));
+    try t.expect(DiscoveryWait.needsManual(100, 5000, 5100, false));
+    try t.expect(!DiscoveryWait.needsManual(100, 5000, 5100, true));
+    try t.expectEqual(@as(u32, 30_000), DiscoveryWait.remaining(100, 5000, 5100));
+    try t.expectEqual(@as(u32, 1), DiscoveryWait.remaining(100, 5000, 35_099));
+    try t.expectEqual(@as(u32, 0), DiscoveryWait.remaining(100, 5000, 35_100));
+    try t.expect(DiscoveryWait.needsManual(100, 0, 100, false));
+    try t.expectEqual(@as(u32, 30_000), DiscoveryWait.remaining(100, 0, 100));
+}
+
 test "offline controller state needs selection and rendered confirmation" {
     var owner = desktop.flash_controller.Controller.init(std.testing.allocator, .{ .snapshot = @splat(1), .build_key = @splat(2) });
     defer owner.deinit();
@@ -215,7 +253,9 @@ test "offline controller state needs selection and rendered confirmation" {
     _ = try owner.receive(.{ .built = .{ .operation_id = building.build.id, .build_key = owner.current.build_key } }, 0);
     const freezing = try owner.dispatch(.freeze);
     _ = try owner.receive(.{ .frozen = .{ .operation_id = freezing.freeze.id, .artifact = .{
-        .context = owner.current, .path = "/cache/offline.uf2", .uf2_hash = @splat(3),
+        .context = owner.current,
+        .path = "/cache/offline.uf2",
+        .uf2_hash = @splat(3),
         .expected_identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(4) },
     } } }, 0);
     try std.testing.expect(!desktop.flash_presenter.view(&owner, null).can_confirm);

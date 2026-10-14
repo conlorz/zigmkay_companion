@@ -93,6 +93,7 @@ pub const Controller = struct {
     previous_session_token: ?u32 = null,
     reconnect_deadline: u64 = 0,
     reconnect_timeout_ms: u32 = 10_000,
+    reconnect_binding_prepared: bool = false,
     stale_after_cancel: bool = false,
 
     pub fn init(gpa: std.mem.Allocator, context: Context) Controller {
@@ -154,6 +155,7 @@ pub const Controller = struct {
                 self.failure = null;
                 self.stale_after_cancel = false;
                 self.previous_session_token = null;
+                self.reconnect_binding_prepared = false;
                 self.phase = .preparing;
                 return .{ .prepare_tools = self.operation() };
             },
@@ -314,6 +316,17 @@ pub const Controller = struct {
 };
 
 const test_context: Context = .{ .snapshot = @splat(1), .build_key = @splat(2) };
+test "reconnect binding is owned by each flash session even when operation IDs repeat" {
+    var first = Controller.init(std.testing.allocator, test_context);
+    defer first.deinit();
+    _ = try first.dispatch(.prepare);
+    first.reconnect_binding_prepared = true;
+    var second = Controller.init(std.testing.allocator, test_context);
+    defer second.deinit();
+    _ = try second.dispatch(.prepare);
+    try std.testing.expectEqual(first.operation_id, second.operation_id);
+    try std.testing.expect(!second.reconnect_binding_prepared);
+}
 const test_identity: Identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(3) };
 fn reachFrozen(controller: *Controller) !void {
     try std.testing.expectEqual(.prepare_tools, std.meta.activeTag(try controller.dispatch(.prepare)));

@@ -10,6 +10,7 @@ pub const Frame = struct {
     profiles: []const Profile,
     build_status: []const u8 = "",
     can_build: bool = false,
+    preparation_failed: bool = false,
     can_flash: bool = false,
     flash_status: []const u8 = "",
     flash_active: bool = false,
@@ -44,22 +45,22 @@ pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame) !?desk
             }
         }
         if (found) {
-            if (dvui.dropdown(@src(), names, .{ .choice = &choice }, .{}, ui.options(theme, .{ .x = 405, .y = 16, .w = 270, .h = 36 }, 14))) result = try desktop.editor_dispatch.Request.capture(model, .{ .profile = frame.profiles[choice].id });
-        } else ui.label(theme, doc.name, .{ .x = 405, .y = 16, .w = 270, .h = 36 }, 14);
-    } else ui.label(theme, doc.name, .{ .x = 405, .y = 16, .w = 270, .h = 36 }, 14);
-    if (model.dirty()) ui.label(theme, "Unsaved", .{ .x = 686, .y = 27, .w = 85, .h = 23 }, 12);
-    if (ui.button(theme, "Open / Export", "file.paths", .{ .x = 775, .y = 16, .w = 130, .h = 36 }) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .{ .open = .paths });
-    if (ui.buttonEnabled(theme, "Undo", "edit.undo", .{ .x = 920, .y = 16, .w = 68, .h = 36 }, model.undo_stack.items.len != 0) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .undo);
-    if (ui.buttonEnabled(theme, "Redo", "edit.redo", .{ .x = 996, .y = 16, .w = 68, .h = 36 }, model.redo_stack.items.len != 0) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .redo);
-    if (ui.button(theme, "Save", "file.save", .{ .x = 1078, .y = 16, .w = 76, .h = 36 }) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .save);
-    if (ui.buttonEnabled(theme, "Build", "firmware.build", .{ .x = 1166, .y = 16, .w = 110, .h = 36 }, frame.can_build) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .build);
-    if (ui.buttonEnabled(theme, if (frame.flash_active) "Flash details" else "Flash", "firmware.inspect", .{ .x = 1288, .y = 16, .w = 110, .h = 36 }, frame.can_flash or frame.flash_active) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .flash);
-    if (frame.flash_status.len != 0) {
-        ui.label(theme, frame.flash_status, .{ .x = 1166, .y = 52, .w = 232, .h = 14 }, 10);
-    } else if (frame.build_status.len != 0) ui.label(theme, frame.build_status, .{ .x = 1166, .y = 52, .w = 230, .h = 14 }, 10);
-    _ = dvui.checkbox(@src(), &view.auto_build, "Auto-build", .{ .rect = .{ .x = 1058, .y = 52, .w = 104, .h = 17 }, .tag = "firmware.auto_build" });
-    if (ui.button(theme, if (view.light) "Dark" else "Light", "theme.toggle", .{ .x = 1408, .y = 16, .w = 62, .h = 36 })) view.light = !view.light;
-    if (ui.button(theme, "Debug", "debug.menu", .{ .x = 1474, .y = 16, .w = 54, .h = 36 })) view.debug_menu_open = !view.debug_menu_open;
+            if (dvui.dropdown(@src(), names, .{ .choice = &choice }, .{}, ui.options(theme, .{ .x = 405, .y = 8, .w = 240, .h = 36 }, 14))) result = try desktop.editor_dispatch.Request.capture(model, .{ .profile = frame.profiles[choice].id });
+        } else ui.label(theme, doc.name, .{ .x = 405, .y = 8, .w = 240, .h = 36 }, 14);
+    } else ui.label(theme, doc.name, .{ .x = 405, .y = 8, .w = 240, .h = 36 }, 14);
+    if (model.dirty()) ui.label(theme, "Unsaved", .{ .x = 650, .y = 27, .w = 70, .h = 23 }, 12);
+    if (ui.button(theme, "Open / Export", "file.paths", .{ .x = 725, .y = 8, .w = 130, .h = 36 }) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .{ .open = .paths });
+    if (ui.buttonEnabled(theme, "Undo", "edit.undo", .{ .x = 870, .y = 8, .w = 68, .h = 36 }, model.undo_stack.items.len != 0) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .undo);
+    if (ui.buttonEnabled(theme, "Redo", "edit.redo", .{ .x = 946, .y = 8, .w = 68, .h = 36 }, model.redo_stack.items.len != 0) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .redo);
+    if (ui.button(theme, "Save", "file.save", .{ .x = 1028, .y = 8, .w = 76, .h = 36 }) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .save);
+    if (ui.buttonEnabled(theme, if (frame.preparation_failed) "Retry setup" else "Build", "firmware.build", .{ .x = 1116, .y = 8, .w = 110, .h = 36 }, frame.can_build or frame.preparation_failed) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .build);
+    if (ui.buttonEnabled(theme, if (frame.flash_active) "Flash details" else "Flash", "firmware.inspect", .{ .x = 1238, .y = 8, .w = 110, .h = 36 }, frame.can_flash or frame.flash_active) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .flash);
+    var auto_options = ui.options(theme, .{ .x = 1058, .y = 47, .w = 116, .h = 18 }, 12);
+    auto_options.padding = .{};
+    auto_options.tag = "firmware.auto_build";
+    _ = dvui.checkbox(@src(), &view.auto_build, "Auto-build", auto_options);
+    if (ui.button(theme, if (view.light) "Dark" else "Light", "theme.toggle", .{ .x = 1358, .y = 8, .w = 78, .h = 36 })) view.light = !view.light;
+    if (ui.button(theme, "Debug", "debug.menu", .{ .x = 1444, .y = 8, .w = 84, .h = 36 })) view.debug_menu_open = !view.debug_menu_open;
     if (view.debug_menu_open) drawDebugMenu(view, theme);
     return result;
 }

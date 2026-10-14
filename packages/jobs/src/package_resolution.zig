@@ -6,14 +6,14 @@ pub const Root = struct { name: []const u8, directory: []const u8 };
 pub const Override = struct { root: []const u8, dependency: []const u8, target_root: []const u8 };
 /// An explicit build-profile decision, never an automatic missing-source fallback.
 pub const InactiveLazy = struct { dependency: []const u8, package_hash: []const u8 };
-pub const Options = struct { roots: []const Root, sources: []const jobs.package_cache.Source = &.{}, cache_directory: ?[]const u8 = null, overrides: []const Override = &.{}, build_profile: []const u8 = "", inactive_lazy: []const InactiveLazy = &.{} };
+pub const Options = struct { roots: []const Root, sources: []const jobs.package_cache.Source = &.{}, cache_directory: ?[]const u8 = null, overrides: []const Override = &.{}, build_profile: []const u8 = "", inactive_lazy: []const InactiveLazy = &.{}, audit_packages: bool = true };
 pub const Provider = struct {
     context: *anyopaque,
     /// Return strings allocated in the supplied traversal allocator.
     acquire: *const fn (*anyopaque, std.mem.Allocator, std.Io, []const u8, jobs.package_manifest.Archive) anyerror!jobs.package_cache.Source,
 };
 pub const RootRecord = struct { name: []const u8, directory: []const u8, tree_digest: jobs.firmware.Digest };
-pub const Record = struct { roots: []const RootRecord, dependencies: []const jobs.build_provenance.Dependency, manifests: []const jobs.build_provenance.Manifest, sources: []const jobs.package_cache.Source, overrides: []const Override, closure_digest: jobs.firmware.Digest, resolution_digest: jobs.firmware.Digest, build_profile: []const u8 = "", inactive_lazy: []const InactiveLazy = &.{} };
+pub const Record = struct { roots: []const RootRecord, dependencies: []const jobs.build_provenance.Dependency, manifests: []const jobs.build_provenance.Manifest, sources: []const jobs.package_cache.Source, overrides: []const Override, closure_digest: jobs.firmware.Digest, resolution_digest: jobs.firmware.Digest, build_profile: []const u8 = "", inactive_lazy: []const InactiveLazy = &.{}, audit_packages: bool = true };
 pub const Owned = struct {
     arena: std.heap.ArenaAllocator,
     record: Record,
@@ -110,7 +110,7 @@ const Walker = struct {
                 const supplied = try provider.acquire(provider.context, self.a, self.io, hash, origin);
                 if (!std.mem.eql(u8, supplied.package_hash, hash)) return error.DependencyPackageHashMismatch;
                 const cache_path = try directory(self.a, self.io, self.options.cache_directory orelse return error.PreparedPackageCacheRequired);
-                try supplied.verify(self.gpa, self.io, cache_path);
+                if (self.options.audit_packages) try supplied.verify(self.gpa, self.io, cache_path);
                 const copied = try zon.clone(self.a, supplied);
                 try self.sources.append(self.a, copied);
                 selected = copied;
@@ -146,7 +146,7 @@ pub fn verify(gpa: std.mem.Allocator, io: std.Io, expected: Record, cache_direct
     const roots = try gpa.alloc(Root, expected.roots.len);
     defer gpa.free(roots);
     for (expected.roots, roots) |source, *root| root.* = .{ .name = source.name, .directory = source.directory };
-    var current = try resolve(gpa, io, .{ .roots = roots, .sources = expected.sources, .overrides = expected.overrides, .cache_directory = cache_directory, .build_profile = expected.build_profile, .inactive_lazy = expected.inactive_lazy });
+    var current = try resolve(gpa, io, .{ .roots = roots, .sources = expected.sources, .overrides = expected.overrides, .cache_directory = cache_directory, .build_profile = expected.build_profile, .inactive_lazy = expected.inactive_lazy, .audit_packages = expected.audit_packages });
     errdefer current.deinit();
     if (!std.mem.eql(u8, &expected.closure_digest, &(try jobs.build_provenance.closureDigest(gpa, expected.dependencies, expected.manifests)))) return error.InvalidResolutionClosure;
     if (!std.mem.eql(u8, &expected.closure_digest, &current.record.closure_digest) or !std.mem.eql(u8, &expected.resolution_digest, &current.record.resolution_digest)) return error.DependencyResolutionChanged;
@@ -162,6 +162,7 @@ pub fn verify(gpa: std.mem.Allocator, io: std.Io, expected: Record, cache_direct
 }
 /// Capture complete fresh dependency inputs instead of trusting caller inventories.
 pub fn capture(gpa: std.mem.Allocator, io: std.Io, expected: Record, cache_directory: ?[]const u8, selected: jobs.build_provenance.Selection, dependency_access: jobs.build_provenance.DependencyAccess) !jobs.build_provenance.Captured {
+    if (!expected.audit_packages) return error.PackageAuditNotCaptured;
     var verified = try verify(gpa, io, expected, cache_directory);
     defer verified.deinit();
     if (verified.record.overrides.len != 0 and selected.lock.source_kind != .development) return error.DevelopmentOverrideRequiresDevelopmentLock;
@@ -175,12 +176,10 @@ pub fn capture(gpa: std.mem.Allocator, io: std.Io, expected: Record, cache_direc
         if (std.mem.eql(u8, root.directory, companion)) {
             if (!std.mem.eql(u8, &root.tree_digest, &selected.expected_companion_tree_digest)) return error.CompanionTreeDigestMismatch;
             companion_found = true;
-
         }
         if (std.mem.eql(u8, root.directory, firmware)) {
             if (!std.mem.eql(u8, &root.tree_digest, &selected.lock.firmware_source_digest)) return error.FirmwareTreeDigestMismatch;
             firmware_found = true;
-
         }
     }
     if (!companion_found or !firmware_found) return error.BuildRootNotResolved;
@@ -212,14 +211,14 @@ fn traverse(gpa: std.mem.Allocator, io: std.Io, options: Options, provider: ?Pro
         for (root.name) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '_' and byte != '-') return error.InvalidResolutionRootName;
         for (options.roots[0..index]) |prior| if (std.mem.eql(u8, prior.name, root.name)) return error.DuplicateResolutionRoot;
         const path = try directory(a, io, root.directory);
-        record.* = .{ .name = try a.dupe(u8, root.name), .directory = path, .tree_digest = try tree(gpa, io, path) };
+        record.* = .{ .name = try a.dupe(u8, root.name), .directory = path, .tree_digest = if (options.audit_packages) try tree(gpa, io, path) else @splat(0) };
     }
     std.mem.sort(RootRecord, roots, {}, struct {
         fn less(_: void, lhs: RootRecord, rhs: RootRecord) bool {
             return std.mem.lessThan(u8, lhs.name, rhs.name);
         }
     }.less);
-    if (options.sources.len != 0) {
+    if (options.audit_packages and options.sources.len != 0) {
         const cache_path = try directory(a, io, options.cache_directory orelse return error.PreparedPackageCacheRequired);
         for (options.sources) |source| try source.verify(gpa, io, cache_path);
     }
@@ -232,8 +231,10 @@ fn traverse(gpa: std.mem.Allocator, io: std.Io, options: Options, provider: ?Pro
     for (roots) |root| try walker.walk(root.name, root.directory, root.directory, 0);
     for (used) |accepted| if (!accepted) return error.UnusedResolutionOverride;
     for (inactive_used) |accepted| if (!accepted) return error.UnusedInactiveDependency;
-    for (roots) |root| if (!std.mem.eql(u8, &root.tree_digest, &(try tree(gpa, io, root.directory)))) return error.ResolutionRootChanged;
-    if (walker.sources.items.len != 0) {
+    if (options.audit_packages) for (roots) |root| {
+        if (!std.mem.eql(u8, &root.tree_digest, &(try tree(gpa, io, root.directory)))) return error.ResolutionRootChanged;
+    };
+    if (options.audit_packages and walker.sources.items.len != 0) {
         const cache_path = try directory(a, io, options.cache_directory.?);
         for (walker.sources.items) |source| try source.verify(gpa, io, cache_path);
     }
@@ -286,7 +287,29 @@ fn traverse(gpa: std.mem.Allocator, io: std.Io, options: Options, provider: ?Pro
         resolution.update(&source.tree_digest);
         resolution.update(&source.archive_digest);
     }
-    return .{ .arena = arena, .record = .{ .roots = roots, .dependencies = dependencies, .manifests = manifests, .sources = sources, .overrides = overrides, .closure_digest = digest, .resolution_digest = resolution.finalResult(), .build_profile = try a.dupe(u8, options.build_profile), .inactive_lazy = try zon.clone(a, options.inactive_lazy) } };
+    return .{ .arena = arena, .record = .{ .roots = roots, .dependencies = dependencies, .manifests = manifests, .sources = sources, .overrides = overrides, .closure_digest = digest, .resolution_digest = resolution.finalResult(), .build_profile = try a.dupe(u8, options.build_profile), .inactive_lazy = try zon.clone(a, options.inactive_lazy), .audit_packages = options.audit_packages } };
+}
+
+test "unaudited resolution skips content hashing and preserves its policy on reuse" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{} }" });
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "payload", .data = "before" });
+    const path = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(path);
+    const roots = [_]Root{.{ .name = "fixture", .directory = path }};
+    var selected = try resolve(t.allocator, t.io, .{ .roots = &roots, .audit_packages = false });
+    defer selected.deinit();
+    try t.expect(!selected.record.audit_packages);
+    try t.expectEqual(@as(jobs.firmware.Digest, @splat(0)), selected.record.roots[0].tree_digest);
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "payload", .data = "after: deliberately not audited" });
+    var reused = try verify(t.allocator, t.io, selected.record, null);
+    defer reused.deinit();
+    try t.expect(!reused.record.audit_packages);
+    // Dependency manifests are still tracked, even without content audits.
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{}, .version = \"changed\" }" });
+    try t.expectError(error.DependencyResolutionChanged, verify(t.allocator, t.io, selected.record, null));
 }
 
 test "selected build binds inactive lazy pins and rejects silent omissions" {

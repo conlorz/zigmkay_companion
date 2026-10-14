@@ -671,6 +671,13 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project } },
             }) });
             flash_session_step.dependOn(&b.addRunArtifact(flash_dispatch_tests).step);
+            const automatic_tests = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path("apps/desktop/auto_prepare.zig"),
+                .target = b.graph.host,
+                .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project } },
+            }) });
+            flash_session_step.dependOn(&b.addRunArtifact(automatic_tests).step);
+            check.dependOn(&automatic_tests.step);
             tests.dependOn(flash_session_step);
             check.dependOn(&flash_session_tests.step);
             check.dependOn(&bootloader_gate_tests.step);
@@ -683,6 +690,17 @@ pub fn build(b: *std.Build) void {
                     .imports = &.{ .{ .name = "callback-ui", .module = b.modules.get("callback-ui").? }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "native-events", .module = graph.events }, .{ .name = "folder-dialog", .module = graph.folder_dialog }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "editor-frame-ui", .module = b.modules.get("editor-frame-ui").? }, .{ .name = "paths-ui", .module = b.modules.get("paths-ui").? }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "zkeymap", .module = input_source.module } },
                 }) });
                 app.root_module.addImport("companion-jobs", jobs);
+                const preparation_options = b.addOptions();
+                preparation_options.addOption([]const u8, "compiler", b.graph.zig_exe);
+                preparation_options.addOption([]const u8, "companion", b.root.root_dir.handle.realPathFileAlloc(b.graph.io, if (b.root.sub_path.len == 0) "." else b.root.sub_path, b.allocator) catch @panic("Cannot resolve companion source root"));
+                const manifest_text = @embedFile("build.zig.zon");
+                const firmware_url_start = std.mem.indexOf(u8, manifest_text, "git+https://github.com/EuroZig/zigmkay_firmware.git#").?;
+                const firmware_url_end = firmware_url_start + std.mem.indexOfScalar(u8, manifest_text[firmware_url_start..], '"').?;
+                const firmware_hash_start = std.mem.indexOf(u8, manifest_text, "zigmkay_firmware-0.1.0-").?;
+                const firmware_hash_end = firmware_hash_start + std.mem.indexOfScalar(u8, manifest_text[firmware_hash_start..], '"').?;
+                preparation_options.addOption([]const u8, "firmware_url", manifest_text[firmware_url_start..firmware_url_end]);
+                preparation_options.addOption([]const u8, "firmware_hash", manifest_text[firmware_hash_start..firmware_hash_end]);
+                app.root_module.addOptions("preparation-options", preparation_options);
                 app.root_module.addImport("flash-ui", b.createModule(.{ .root_source_file = b.path("packages/desktop/src/flash_ui.zig"), .imports = &.{ .{ .name = "dvui", .module = graph.dvui }, .{ .name = "flash-presenter", .module = flash_presenter } } }));
                 app.root_module.addImport("app-paths", installed_paths);
                 app.root_module.addImport("native-tray", graph.tray);

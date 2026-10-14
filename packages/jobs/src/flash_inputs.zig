@@ -132,8 +132,8 @@ pub fn freeze(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, cache_path:
     defer gpa.free(actual_cache_path);
     if (!std.mem.eql(u8, actual_cache_path, cache_path)) return error.CachePathMismatch;
     try tools.verify(gpa, io);
-    if (!std.mem.eql(u8, tools.record.firmware_revision, manifest.inputs.lock.firmware_revision)) return error.ToolsRevisionMismatch;
-    if (tools.record.source_kind != manifest.inputs.lock.source_kind or !std.mem.eql(u8, &tools.record.firmware_source_digest, &manifest.inputs.lock.firmware_source_digest)) return error.ToolsSourceMismatch;
+    // Picotool transfers UF2 bytes; its historical firmware-source provenance
+    // does not constrain which valid firmware artifact it can transfer.
     // Reparse the record to reject unsupported or manually altered manifests.
     const encoded = try manifest.serialize(gpa);
     defer gpa.free(encoded);
@@ -245,7 +245,10 @@ test "tools provenance and frozen artifact reject edits stale requests and cance
     var wrong_revision = try Tools.clone(gpa, parsed.record);
     defer wrong_revision.deinit();
     wrong_revision.record.firmware_revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    try std.testing.expectError(error.ToolsRevisionMismatch, freeze(gpa, io, tmp.dir, base, manifest, input, wrong_revision, request));
+    wrong_revision.record.firmware_source_digest = @splat(0);
+    wrong_revision.record.source_kind = if (parsed.record.source_kind == .published) .development else .published;
+    var independent_tools = try freeze(gpa, io, tmp.dir, base, manifest, input, wrong_revision, request);
+    defer independent_tools.deinit();
     try tmp.dir.writeFile(io, .{ .sub_path = "build.uf2", .data = "changed build output" });
     try frozen.verify(gpa, io, input, request);
     try std.testing.expectError(error.ArtifactChanged, freeze(gpa, io, tmp.dir, base, manifest, input, parsed, request));
