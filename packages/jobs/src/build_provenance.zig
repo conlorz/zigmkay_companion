@@ -7,6 +7,7 @@ const preparation = @import("preparation.zig");
 const target = @import("target_lock.zig");
 const sources = @import("source_files.zig");
 pub const Digest = firmware.Digest;
+pub const DependencyAccess = enum { offline, allow_pinned_fetch };
 pub const Dependency = struct {
     name: []const u8,
     revision: []const u8 = "",
@@ -29,6 +30,7 @@ pub const Receipt = struct {
     compiler_version_verified: bool,
     compiler_kind: target.CompilerKind = .checked_bundle,
     toolchain_receipt_digest: Digest = @splat(0),
+    dependency_access: DependencyAccess = .offline,
     pub fn validate(self: Receipt) !void {
         if (self.version != 1 and self.version != 2) return error.UnsupportedReceiptVersion;
         const zero: Digest = @splat(0);
@@ -49,15 +51,23 @@ pub const Receipt = struct {
             hash.update(&.{@backingInt(self.compiler_kind)});
             hash.update(&self.toolchain_receipt_digest);
         }
+        if (self.dependency_access == .allow_pinned_fetch) {
+            hash.update("zigmkay-dependency-access-v1\x00");
+            hash.update(&.{@backingInt(self.dependency_access)});
+        }
         return hash.finalResult();
     }
     pub fn serialize(self: Receipt, gpa: std.mem.Allocator) ![]u8 {
         try self.validate();
         var writer: std.Io.Writer.Allocating = .init(gpa);
         errdefer writer.deinit();
-        if (self.version == 1) {
+        if (self.version == 1 and self.dependency_access == .offline) {
             var legacy: LegacyReceipt = undefined;
             inline for (@typeInfo(LegacyReceipt).@"struct".field_names) |name| @field(legacy, name) = @field(self, name);
+            try std.zon.stringify.serializeMaxDepth(legacy, .{}, &writer.writer, 8);
+        } else if (self.dependency_access == .offline) {
+            var legacy: OfflineReceipt = undefined;
+            inline for (@typeInfo(OfflineReceipt).@"struct".field_names) |name| @field(legacy, name) = @field(self, name);
             try std.zon.stringify.serializeMaxDepth(legacy, .{}, &writer.writer, 8);
         } else try std.zon.stringify.serializeMaxDepth(self, .{}, &writer.writer, 8);
         return writer.toOwnedSlice();
@@ -83,6 +93,20 @@ const LegacyReceipt = struct {
     board_mapping_digest: Digest,
     compiler_version_verified: bool,
 };
+const OfflineReceipt = struct {
+    version: u16,
+    lock_digest: Digest,
+    compiler_digest: Digest,
+    compiler_bundle_digest: Digest,
+    compiler_tree_digest: Digest,
+    companion_tree_digest: Digest,
+    firmware_tree_digest: Digest,
+    dependency_closure_digest: Digest,
+    board_mapping_digest: Digest,
+    compiler_version_verified: bool,
+    compiler_kind: target.CompilerKind,
+    toolchain_receipt_digest: Digest,
+};
 pub const Selection = struct {
     lock: target.Lock,
     compiler_path: []const u8,
@@ -102,6 +126,7 @@ pub const Selection = struct {
     exported_source_digest: Digest,
     profile_id: [8]u8,
     identity_digest: [16]u8,
+    dependency_access: DependencyAccess = .offline,
 };
 pub const Captured = struct {
     arena: std.heap.ArenaAllocator,
@@ -209,7 +234,8 @@ fn sourceTree(gpa: std.mem.Allocator, io: std.Io, directory: []const u8) !Digest
     return preparation.treeDigest(gpa, io, dir);
 }
 /// Same source-tree framing, with distribution-sized limits. Hidden compiler
-/// files are included, VCS/build caches excluded, and all symlinks rejected.
+/// files are included and VCS/build caches excluded. Compiler managers may add
+/// executable aliases; file symlinks contained within the distribution work too.
 pub fn compilerTreeDigest(gpa: std.mem.Allocator, io: std.Io, directory: []const u8) !Digest {
     try absolute(directory);
     var dir = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
@@ -217,10 +243,7 @@ pub fn compilerTreeDigest(gpa: std.mem.Allocator, io: std.Io, directory: []const
     const files = try sources.collect(gpa, io, dir, .{ .excluded = struct {
         fn excluded(_: []const u8, name: []const u8, kind: std.Io.File.Kind) bool {
             if (kind != .directory) return false;
-            return std.mem.eql(u8, name, ".git") or
-                std.mem.eql(u8, name, ".zig-cache") or
-                std.mem.eql(u8, name, "zig-out") or
-                std.mem.eql(u8, name, "zig-pkg");
+            return preparation.excludedDirectoryName(name);
         }
     }.excluded, .max_files = 100_000 });
     defer sources.free(gpa, files);
@@ -228,7 +251,14 @@ pub fn compilerTreeDigest(gpa: std.mem.Allocator, io: std.Io, directory: []const
     hash.update("zigmkay-source-tree-v1\x00");
     var total: usize = 0;
     for (files) |file| {
-        if (file.kind != .file) return error.UnsupportedSourceKind;
+        if (file.kind == .sym_link) {
+            const root = try dir.realPathFileAlloc(io, ".", gpa);
+            defer gpa.free(root);
+            const alias_target = try dir.realPathFileAlloc(io, file.path, gpa);
+            defer gpa.free(alias_target);
+            if (alias_target.len <= root.len or !std.mem.startsWith(u8, alias_target, root) or !std.fs.path.isSep(alias_target[root.len])) return error.CompilerAliasOutsideDistribution;
+            if ((try dir.statFile(io, file.path, .{})).kind != .file) return error.UnsupportedSourceKind;
+        } else if (file.kind != .file) return error.UnsupportedSourceKind;
         const bytes = try dir.readFileAlloc(io, file.path, gpa, .limited(512 * 1024 * 1024));
         defer gpa.free(bytes);
         total += bytes.len;
@@ -241,6 +271,27 @@ pub fn compilerTreeDigest(gpa: std.mem.Allocator, io: std.Io, directory: []const
     }
     return hash.finalResult();
 }
+test "compiler distribution accepts mise executable aliases but not external targets" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const t = std.testing;
+    var tmp = t.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "zig", .data = "compiler fixture" });
+    try tmp.dir.createDirPath(t.io, "bin");
+    try tmp.dir.symLink(t.io, "../zig", "bin/zig", .{});
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    const initial = try compilerTreeDigest(t.allocator, t.io, root);
+    try t.expectEqual(initial, try compilerTreeDigest(t.allocator, t.io, root));
+    var external = t.tmpDir(.{});
+    defer external.cleanup();
+    try external.dir.writeFile(t.io, .{ .sub_path = "outside", .data = "not part of installation" });
+    const alias_target = try external.dir.realPathFileAlloc(t.io, "outside", t.allocator);
+    defer t.allocator.free(alias_target);
+    try tmp.dir.symLink(t.io, alias_target, "external", .{});
+    try t.expectError(error.CompilerAliasOutsideDistribution, compilerTreeDigest(t.allocator, t.io, root));
+}
+
 fn same(actual: Digest, expected: Digest) bool {
     return std.mem.eql(u8, &actual, &expected);
 }
@@ -300,7 +351,7 @@ pub fn capture(gpa: std.mem.Allocator, io: std.Io, selected: Selection) !Capture
     const board_mapping = firmware.digest(selected.board_mapping);
     if (!same(board_mapping, selected.lock.board_mapping_digest)) return error.BoardMappingDigestMismatch;
     if (selected.verify_compiler_version) try preparation.verifyCompiler(gpa, io, selected.compiler_path, compiler);
-    const receipt: Receipt = .{ .version = selected.lock.version, .compiler_kind = selected.lock.compiler_kind, .toolchain_receipt_digest = toolchain_receipt, .lock_digest = selected.lock.digest(), .compiler_digest = compiler, .compiler_bundle_digest = bundle, .compiler_tree_digest = compiler_tree, .companion_tree_digest = companion_tree, .firmware_tree_digest = firmware_tree, .dependency_closure_digest = closure, .board_mapping_digest = board_mapping, .compiler_version_verified = selected.verify_compiler_version };
+    const receipt: Receipt = .{ .version = selected.lock.version, .compiler_kind = selected.lock.compiler_kind, .toolchain_receipt_digest = toolchain_receipt, .lock_digest = selected.lock.digest(), .compiler_digest = compiler, .compiler_bundle_digest = bundle, .compiler_tree_digest = compiler_tree, .companion_tree_digest = companion_tree, .firmware_tree_digest = firmware_tree, .dependency_closure_digest = closure, .board_mapping_digest = board_mapping, .compiler_version_verified = selected.verify_compiler_version, .dependency_access = selected.dependency_access };
     var arena: std.heap.ArenaAllocator = .init(gpa);
     errdefer arena.deinit();
     var owned_lock = selected.lock;
@@ -308,25 +359,36 @@ pub fn capture(gpa: std.mem.Allocator, io: std.Io, selected: Selection) !Capture
     return .{ .arena = arena, .receipt = receipt, .inputs = .{ .project_digest = selected.project_digest, .source_digest = selected.exported_source_digest, .build_inputs_digest = receipt.digest(), .profile_id = selected.profile_id, .identity_digest = selected.identity_digest, .lock = owned_lock } };
 }
 
-test "compiler tree excludes build directories and includes hidden files" {
+test "compiler tree ignores local worktrees but includes hidden inputs" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.writeFile(io, .{ .sub_path = "zig", .data = "compiler" });
-    const base = try tmp.dir.realPathFileAlloc(io, ".", gpa);
-    defer gpa.free(base);
-    const original = try compilerTreeDigest(gpa, io, base);
-    inline for (.{ ".git", ".zig-cache", "zig-out", "zig-pkg" }) |name| {
-        try tmp.dir.createDir(io, name, .default_dir);
-        try tmp.dir.writeFile(io, .{ .sub_path = name ++ "/ignored", .data = "ignored" });
+    const path = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(path);
+    const original = try compilerTreeDigest(gpa, io, path);
+    try tmp.dir.createDirPath(io, ".slim/worktrees/nested/.slim");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".slim/worktrees/nested/.slim/source.zig", .data = "source" });
+    try std.testing.expectEqual(original, try compilerTreeDigest(gpa, io, path));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".slim/worktrees/nested/.slim/source.zig", .data = "changed" });
+    try std.testing.expectEqual(original, try compilerTreeDigest(gpa, io, path));
+    for ([_][]const u8{ ".zig-cache-flash-preparation", ".zig-cache2" }) |cache| {
+        try tmp.dir.createDirPath(io, cache);
+        const file = try std.fs.path.join(gpa, &.{ cache, "output" });
+        defer gpa.free(file);
+        try tmp.dir.writeFile(io, .{ .sub_path = file, .data = "ignored" });
+        try std.testing.expectEqual(original, try compilerTreeDigest(gpa, io, path));
+        try tmp.dir.writeFile(io, .{ .sub_path = file, .data = "edited ignored bytes" });
+        try std.testing.expectEqual(original, try compilerTreeDigest(gpa, io, path));
     }
-    try std.testing.expectEqual(original, try compilerTreeDigest(gpa, io, base));
-    try tmp.dir.writeFile(io, .{ .sub_path = ".hidden", .data = "included" });
-    const with_hidden = try compilerTreeDigest(gpa, io, base);
-    try std.testing.expect(!same(original, with_hidden));
-    try tmp.dir.writeFile(io, .{ .sub_path = ".hidden", .data = "changed" });
-    try std.testing.expect(!same(with_hidden, try compilerTreeDigest(gpa, io, base)));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache-note", .data = "hidden file" });
+    try std.testing.expect(!same(original, try compilerTreeDigest(gpa, io, path)));
+    const with_note = try compilerTreeDigest(gpa, io, path);
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache-note", .data = "changed hidden file" });
+    try std.testing.expect(!same(with_note, try compilerTreeDigest(gpa, io, path)));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".compiler-config", .data = "hidden input" });
+    try std.testing.expect(!same(original, try compilerTreeDigest(gpa, io, path)));
 }
 
 test "capture distinguishes archive from installed trees and detects changed inputs" {
@@ -358,6 +420,15 @@ test "capture distinguishes archive from installed trees and detects changed inp
     defer captured.deinit();
     try std.testing.expect(!same(captured.receipt.compiler_bundle_digest, captured.receipt.compiler_tree_digest));
     try std.testing.expectEqual(captured.receipt.digest(), captured.inputs.build_inputs_digest);
+    var fetch_receipt = captured.receipt;
+    fetch_receipt.dependency_access = .allow_pinned_fetch;
+    try std.testing.expect(!same(captured.receipt.digest(), fetch_receipt.digest()));
+    const offline_again = try captured.receipt.serialize(gpa);
+    defer gpa.free(offline_again);
+    const encoded_fetch = try fetch_receipt.serialize(gpa);
+    defer gpa.free(encoded_fetch);
+    try std.testing.expect(std.mem.indexOf(u8, offline_again, "dependency_access") == null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded_fetch, "dependency_access") != null);
     const encoded = try captured.receipt.serialize(gpa);
     defer gpa.free(encoded);
     const parsed = try Receipt.parse(gpa, encoded);

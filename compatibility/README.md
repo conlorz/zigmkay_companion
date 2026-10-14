@@ -1,7 +1,7 @@
 # Compatibility status
 
 The normal dependency is the published `EuroZig/zigmkay_firmware` PR #1 head
-`ba67fda557e2dffb4b86fba797ce2d2bd57fa9a4`, pinned to an immutable package
+`e122f7502df4ad58e831f0b37439085774b670cb`, pinned to an immutable package
 hash in `../build.zig.zon`. It supplies source for all 14 firmware selectors;
 this is not a native release or an accepted stable contract. Normal builds do
 not require a sibling firmware checkout. A local firmware override is an

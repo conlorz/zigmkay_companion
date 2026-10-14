@@ -666,19 +666,62 @@ pub fn build(b: *std.Build) void {
             const run_managed = b.addRunArtifact(managed_tool);
             const managed_config = b.option([]const u8, "managed-build-config", "Absolute prepared config for the explicit offline managed QWERTY build") orelse "";
             run_managed.addArg(managed_config);
+            if (b.option(bool, "managed-allow-pinned-fetch", "Explicitly permit pinned dependency fetch for this selected managed build only") orelse false) run_managed.addArg("--allow-pinned-fetch");
             b.step("check-managed-build", "Explicitly build and verify QWERTY UF2/runner through the editor worker without device access").dependOn(&run_managed.step);
             const run_environment = b.addRunArtifact(environment_tool);
             run_environment.addArgs(&.{ b.option([]const u8, "build-environment-plan", "Absolute explicit prepared build environment input plan") orelse "", b.option([]const u8, "build-environment-cache", "Absolute caller-owned build environment output cache") orelse "" });
             run_environment.addDirectoryArg2(b.path("."), .{ .make_absolute = true });
             run_environment.addDirectoryArg2(firmware.path(""), .{ .make_absolute = true });
             b.step("prepare-build-environment", "Revalidate prepared receipts and emit a matching catalog build config without acquisition").dependOn(&run_environment.step);
+            const flash_session_tests = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path("apps/desktop/flash_session.zig"),
+                .target = b.graph.host,
+                .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "project", .module = project } },
+            }) });
+            const flash_session_step = b.step("test-desktop-flash-session", "Test offline editor flash admission and confirmation gates");
+            flash_session_step.dependOn(&b.addRunArtifact(flash_session_tests).step);
+            const bootloader_gate_tests = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path("apps/desktop/flash_bootloader.zig"),
+                .target = b.graph.host,
+            }) });
+            flash_session_step.dependOn(&b.addRunArtifact(bootloader_gate_tests).step);
+            const flash_dispatch_tests = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path("apps/desktop/flash_fixture.zig"),
+                .target = b.graph.host,
+                .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project } },
+            }) });
+            flash_session_step.dependOn(&b.addRunArtifact(flash_dispatch_tests).step);
+            const automatic_tests = b.addTest(.{ .root_module = b.createModule(.{
+                .root_source_file = b.path("apps/desktop/auto_prepare.zig"),
+                .target = b.graph.host,
+                .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project } },
+            }) });
+            flash_session_step.dependOn(&b.addRunArtifact(automatic_tests).step);
+            check.dependOn(&automatic_tests.step);
+            tests.dependOn(flash_session_step);
+            check.dependOn(&flash_session_tests.step);
+            check.dependOn(&bootloader_gate_tests.step);
+            check.dependOn(&flash_dispatch_tests.step);
             if (desktop_graph) |graph| {
                 const installed_paths = b.createModule(.{ .root_source_file = b.path("packages/platform/src/app_paths.zig"), .target = b.graph.host });
                 const app = b.addExecutable(.{ .name = "zigmkay-companion", .root_module = b.createModule(.{
                     .root_source_file = b.path("apps/desktop/main.zig"),
                     .target = b.graph.host,
-                    .imports = &.{ .{ .name = "callback-ui", .module = b.modules.get("callback-ui").? }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "native-events", .module = graph.events }, .{ .name = "folder-dialog", .module = graph.folder_dialog }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "editor-frame-ui", .module = b.modules.get("editor-frame-ui").? }, .{ .name = "paths-ui", .module = b.modules.get("paths-ui").? }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "zkeymap", .module = input_source.module }, .{ .name = "companion-jobs", .module = jobs } },
+                    .imports = &.{ .{ .name = "callback-ui", .module = b.modules.get("callback-ui").? }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "native-events", .module = graph.events }, .{ .name = "folder-dialog", .module = graph.folder_dialog }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "editor-frame-ui", .module = b.modules.get("editor-frame-ui").? }, .{ .name = "paths-ui", .module = b.modules.get("paths-ui").? }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "zkeymap", .module = input_source.module } },
                 }) });
+                app.root_module.addImport("companion-jobs", jobs);
+                const preparation_options = b.addOptions();
+                preparation_options.addOption([]const u8, "compiler", b.graph.zig_exe);
+                preparation_options.addOption([]const u8, "companion", b.root.root_dir.handle.realPathFileAlloc(b.graph.io, if (b.root.sub_path.len == 0) "." else b.root.sub_path, b.allocator) catch @panic("Cannot resolve companion source root"));
+                const manifest_text = @embedFile("build.zig.zon");
+                const firmware_url_start = std.mem.indexOf(u8, manifest_text, "git+https://github.com/EuroZig/zigmkay_firmware.git#").?;
+                const firmware_url_end = firmware_url_start + std.mem.indexOfScalar(u8, manifest_text[firmware_url_start..], '"').?;
+                const firmware_hash_start = std.mem.indexOf(u8, manifest_text, "zigmkay_firmware-0.1.0-").?;
+                const firmware_hash_end = firmware_hash_start + std.mem.indexOfScalar(u8, manifest_text[firmware_hash_start..], '"').?;
+                preparation_options.addOption([]const u8, "firmware_url", manifest_text[firmware_url_start..firmware_url_end]);
+                preparation_options.addOption([]const u8, "firmware_hash", manifest_text[firmware_hash_start..firmware_hash_end]);
+                app.root_module.addOptions("preparation-options", preparation_options);
+                app.root_module.addImport("flash-ui", b.createModule(.{ .root_source_file = b.path("packages/desktop/src/flash_ui.zig"), .imports = &.{ .{ .name = "dvui", .module = graph.dvui }, .{ .name = "flash-presenter", .module = flash_presenter } } }));
                 app.root_module.addImport("app-paths", installed_paths);
                 app.root_module.addImport("native-tray", graph.tray);
                 const companion_ui = b.createModule(.{
@@ -692,12 +735,6 @@ pub fn build(b: *std.Build) void {
                 const overlay_tests = b.addTest(.{ .root_module = companion_window });
                 b.step("test-companion-placement", "Validate optional overlay bounds without creating a window").dependOn(&b.addRunArtifact(overlay_tests).step);
                 desktop_app = app;
-                const flash_session_tests = b.addTest(.{ .root_module = b.createModule(.{
-                    .root_source_file = b.path("apps/desktop/flash_session.zig"),
-                    .target = b.graph.host,
-                    .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "dvui", .module = graph.dvui } },
-                }) });
-                b.step("test-desktop-flash-session", "Validate explicit offline editor flash receipt gating").dependOn(&b.addRunArtifact(flash_session_tests).step);
                 app.root_module.addImport("practice-ui", b.modules.get("practice-ui").?);
                 app.root_module.addImport("editor-ui", graph.ui);
                 app.root_module.addImport("native-draft-input", b.modules.get("native-draft-input").?);

@@ -24,8 +24,8 @@
             .lazy = true,
         },
         .zigmkay_firmware = .{
-            .url = "git+https://github.com/EuroZig/zigmkay_firmware.git#ba67fda557e2dffb4b86fba797ce2d2bd57fa9a4",
-            .hash = "zigmkay_firmware-0.1.0-EZ4qw7A3PwDa4i6OQYIg4wcVJpsXfyNSr2BvLXDawttF",
+            .url = "git+https://github.com/EuroZig/zigmkay_firmware.git#e122f7502df4ad58e831f0b37439085774b670cb",
+            .hash = "zigmkay_firmware-0.1.0-EZ4qwyFcPwDnw-hTsHM-NGdUaBgKZewm1ZVU_nMOmdDg",
             .lazy = true,
         },
     },

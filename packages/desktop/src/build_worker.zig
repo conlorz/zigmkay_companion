@@ -36,9 +36,48 @@ pub const Request = struct {
         self.arena.deinit();
         self.* = undefined;
     }
-    pub fn prepare(self: *const Request, gpa: std.mem.Allocator, io: std.Io) !Prepared {
-        var exported = try self.file.prepare(gpa, io);
-        defer exported.deinit();
+    pub const CurrentInputs = struct {
+        captured: jobs.build_provenance.Captured,
+        board_id: [8]u8,
+        profile_id: [8]u8,
+        pub fn deinit(self: *CurrentInputs) void {
+            self.captured.deinit();
+            self.* = undefined;
+        }
+    };
+    /// Export and verify the frozen editor state without invoking a compiler or device.
+    pub fn captureCurrentInputs(self: *const Request, gpa: std.mem.Allocator, io: std.Io, expected_export_tree: jobs.firmware.Digest) !CurrentInputs {
+        return self.captureCurrentInputsMode(gpa, io, expected_export_tree, .fast);
+    }
+    pub fn captureCurrentInputsMode(self: *const Request, gpa: std.mem.Allocator, io: std.Io, expected_export_tree: jobs.firmware.Digest, mode: jobs.managed_build.Request.AuditMode) !CurrentInputs {
+        const verified = try self.verifiedRequest(gpa, io, .existing_export);
+        if (!std.mem.eql(u8, &verified.expected_export_tree, &expected_export_tree)) return error.ExportedSourceChanged;
+        var captured: jobs.build_provenance.Captured = undefined;
+        if (mode == .deep) {
+            captured = try jobs.package_resolution.capture(gpa, io, verified.resolution, verified.source_cache, verified.selection, verified.dependency_access);
+        } else {
+            const prepared = verified.prepared orelse return error.PreparedBuildInputsRequired;
+            try capturePrepared(&captured, gpa, prepared);
+        }
+        errdefer captured.deinit();
+        var dir = try std.Io.Dir.cwd().openDir(io, self.file.path, .{ .iterate = true });
+        defer dir.close(io);
+        const current_tree = try jobs.preparation.treeDigest(gpa, io, dir);
+        if (!std.mem.eql(u8, &current_tree, &verified.expected_export_tree)) return error.ExportedSourceChanged;
+        return .{ .captured = captured, .board_id = self.config.board_id, .profile_id = verified.selection.profile_id };
+    }
+    noinline fn capturePrepared(captured: *jobs.build_provenance.Captured, gpa: std.mem.Allocator, prepared: anytype) !void {
+        captured.arena = .init(gpa);
+        errdefer captured.arena.deinit();
+        captured.inputs = try p.owned_zon.clone(captured.arena.allocator(), prepared.inputs);
+        captured.receipt = prepared.receipt;
+    }
+    const ExportMode = enum { create_export, existing_export };
+    fn verifiedRequest(self: *const Request, gpa: std.mem.Allocator, io: std.Io, mode: ExportMode) !jobs.managed_build.Request {
+        if (mode == .create_export) {
+            var exported = try self.file.prepare(gpa, io);
+            defer exported.deinit();
+        }
         var inventory = try p.export_inventory.read(p.owned_zon, gpa, io, self.file.path);
         defer inventory.deinit();
         const manifest = inventory.manifest;
@@ -50,17 +89,31 @@ pub const Request = struct {
         request.selection.exported_source_digest = inventory.source_digest;
         request.selection.profile_id = manifest.profile_id;
         request.selection.identity_digest = identity.digest;
+        if (request.prepared) |*prepared| {
+            prepared.inputs.project_digest = request.selection.project_digest;
+            prepared.inputs.source_digest = request.selection.exported_source_digest;
+            prepared.inputs.profile_id = request.selection.profile_id;
+            prepared.inputs.identity_digest = request.selection.identity_digest;
+        }
         var dir = try std.Io.Dir.cwd().openDir(io, self.file.path, .{ .iterate = true });
         defer dir.close(io);
         request.expected_export_tree = try jobs.preparation.treeDigest(gpa, io, dir);
+        return request;
+    }
+    pub fn prepare(self: *const Request, gpa: std.mem.Allocator, io: std.Io) !Prepared {
+        const export_start = std.Io.Clock.awake.now(io);
+        const request = try self.verifiedRequest(gpa, io, .create_export);
+        std.log.info("build phase export_ms={d}", .{export_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds()});
         var job = try jobs.managed_build.Job.init(gpa, io, &self.environment, request);
         defer job.deinit();
         try job.start(job.captured.inputs);
+        const wait_start = std.Io.Clock.awake.now(io);
         var result: jobs.Result = while (true) {
             if (job.poll()) |completion| break try completion;
             try std.Io.sleep(io, .fromMilliseconds(1), .awake);
         };
         defer result.deinit(gpa);
+        std.log.info("build phase child_wait_ms={d}", .{wait_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds()});
         const output_path = std.fs.path.dirname(std.fs.path.dirname(job.command.uf2_path).?).?;
         var output = try std.Io.Dir.cwd().openDir(io, output_path, .{});
         defer output.close(io);
@@ -83,7 +136,7 @@ pub const Request = struct {
         errdefer frozen_runner.deinit();
         try jobs.sidecar.saveRunner(gpa, io, output, frozen_runner, .create);
         try jobs.sidecar.saveManifest(gpa, io, output, candidate, .create);
-        return .{ .ticket = .{ .generation = self.generation, .snapshot = self.captured }, .manifest = candidate, .runner = frozen_runner, .receipt = job.captured.receipt };
+        return .{ .ticket = .{ .generation = self.generation, .snapshot = self.captured }, .manifest = candidate, .runner = frozen_runner, .receipt = job.captured.receipt, .expected_export_tree = request.expected_export_tree };
     }
 };
 pub const Prepared = struct {
@@ -91,6 +144,7 @@ pub const Prepared = struct {
     manifest: ?jobs.firmware.Manifest,
     runner: ?Runner = null,
     receipt: jobs.build_provenance.Receipt,
+    expected_export_tree: jobs.firmware.Digest = std.mem.zeroes(jobs.firmware.Digest),
     pub fn deinit(self: *Prepared) void {
         if (self.manifest) |*manifest| manifest.deinit();
         if (self.runner) |*runner| runner.deinit();
@@ -109,12 +163,13 @@ pub const Prepared = struct {
         const runner = self.runner orelse return error.RunnerBuildNotCompleted;
         self.manifest = null;
         self.runner = null;
-        return .{ .firmware = manifest, .runner = runner };
+        return .{ .firmware = manifest, .runner = runner, .expected_export_tree = self.expected_export_tree };
     }
 };
 pub const Bundle = struct {
     firmware: Artifact,
     runner: Runner,
+    expected_export_tree: jobs.firmware.Digest = std.mem.zeroes(jobs.firmware.Digest),
     pub fn deinit(self: *Bundle) void {
         self.firmware.deinit();
         self.runner.deinit();

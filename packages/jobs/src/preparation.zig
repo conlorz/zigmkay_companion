@@ -33,15 +33,18 @@ pub fn packageLink(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []
     defer gpa.free(actual);
     if (!std.mem.eql(u8, actual, root) and (!std.mem.startsWith(u8, actual, root) or actual.len <= root.len or !std.fs.path.isSep(actual[root.len]))) return error.PackageLinkEscapesRoot;
     var components = std.mem.tokenizeAny(u8, actual[root.len..], "/\\");
-    while (components.next()) |component| for ([_][]const u8{ ".git", ".zig-cache", "zig-out", "zig-pkg" }) |excluded| if (std.mem.eql(u8, component, excluded)) return error.PackageLinkTargetsExcludedInput;
+    while (components.next()) |component| if (excludedDirectoryName(component)) return error.PackageLinkTargetsExcludedInput;
     return gpa.dupe(u8, target);
 }
+pub fn excludedDirectoryName(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, ".zig-cache") or
+        std.mem.eql(u8, name, ".git") or
+        std.mem.eql(u8, name, "zig-out") or
+        std.mem.eql(u8, name, "zig-pkg") or
+        std.mem.eql(u8, name, ".slim");
+}
 fn excludedDirectory(_: []const u8, name: []const u8, kind: std.Io.File.Kind) bool {
-    return kind == .directory and
-        (std.mem.eql(u8, name, ".git") or
-            std.mem.eql(u8, name, ".zig-cache") or
-            std.mem.eql(u8, name, "zig-out") or
-            std.mem.eql(u8, name, "zig-pkg"));
+    return kind == .directory and excludedDirectoryName(name);
 }
 
 fn tree(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, allow_links: bool) !Digest {
@@ -147,10 +150,70 @@ test "source trees ignore caches but retain hidden and non-Zig build inputs" {
     try tmp.dir.createDirPath(io, ".zig-cache");
     try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache/output", .data = "ignored" });
     try std.testing.expectEqual(original, try treeDigest(gpa, io, tmp.dir));
+    for ([_][]const u8{ ".zig-cache-flash-preparation", ".zig-cache2" }) |cache| {
+        try tmp.dir.createDirPath(io, cache);
+        const file = try std.fs.path.join(gpa, &.{ cache, "output" });
+        defer gpa.free(file);
+        try tmp.dir.writeFile(io, .{ .sub_path = file, .data = "ignored" });
+        try std.testing.expectEqual(original, try treeDigest(gpa, io, tmp.dir));
+        try std.testing.expectEqual(original, try packageTreeDigest(gpa, io, tmp.dir));
+        try tmp.dir.writeFile(io, .{ .sub_path = file, .data = "edited ignored bytes" });
+        try std.testing.expectEqual(original, try treeDigest(gpa, io, tmp.dir));
+        try std.testing.expectEqual(original, try packageTreeDigest(gpa, io, tmp.dir));
+    }
+    try tmp.dir.createDirPath(io, ".slim/worktrees/nested/.slim");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".slim/worktrees/nested/.slim/source.zig", .data = "nested source" });
+    try std.testing.expectEqual(original, try treeDigest(gpa, io, tmp.dir));
+    try std.testing.expectEqual(original, try packageTreeDigest(gpa, io, tmp.dir));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".slim/worktrees/nested/.slim/source.zig", .data = "edited nested source" });
+    try std.testing.expectEqual(original, try treeDigest(gpa, io, tmp.dir));
+    try std.testing.expectEqual(original, try packageTreeDigest(gpa, io, tmp.dir));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache-note", .data = "hidden project input" });
+    try std.testing.expect(!std.mem.eql(u8, &original, &try treeDigest(gpa, io, tmp.dir)));
+    try std.testing.expect(!std.mem.eql(u8, &original, &try packageTreeDigest(gpa, io, tmp.dir)));
+    const with_note = try treeDigest(gpa, io, tmp.dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache-note", .data = "edited hidden project input" });
+    try std.testing.expect(!std.mem.eql(u8, &with_note, &try treeDigest(gpa, io, tmp.dir)));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".project-settings", .data = "hidden input" });
+    try std.testing.expect(!std.mem.eql(u8, &original, &try treeDigest(gpa, io, tmp.dir)));
+    try std.testing.expect(!std.mem.eql(u8, &original, &try packageTreeDigest(gpa, io, tmp.dir)));
     try tmp.dir.writeFile(io, .{ .sub_path = "bridge.c", .data = "changed" });
     try std.testing.expect(!std.mem.eql(u8, &original, &try treeDigest(gpa, io, tmp.dir)));
 }
 
+test "package tree links stay contained and never bypass excluded inputs" {
+    const t = std.testing;
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = t.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "source.zig", .data = "source bytes" });
+    try t.expectEqual(try treeDigest(t.allocator, t.io, tmp.dir), try packageTreeDigest(t.allocator, t.io, tmp.dir));
+    try tmp.dir.symLink(t.io, "source.zig", "alias.zig", .{});
+    try t.expectError(error.UnsupportedSourceKind, treeDigest(t.allocator, t.io, tmp.dir));
+    const before = try packageTreeDigest(t.allocator, t.io, tmp.dir);
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "source.zig", .data = "changed target bytes" });
+    try t.expect(!std.mem.eql(u8, &before, &(try packageTreeDigest(t.allocator, t.io, tmp.dir))));
+    try tmp.dir.createDirPath(t.io, ".zig-cache");
+    try tmp.dir.writeFile(t.io, .{ .sub_path = ".zig-cache/hidden.zig", .data = "excluded bytes" });
+    try tmp.dir.symLink(t.io, ".zig-cache/hidden.zig", "excluded-link", .{});
+    try t.expectError(error.PackageLinkTargetsExcludedInput, packageTreeDigest(t.allocator, t.io, tmp.dir));
+    try tmp.dir.deleteFile(t.io, "excluded-link");
+    try tmp.dir.createDirPath(t.io, ".zig-cache-flash-preparation");
+    try tmp.dir.writeFile(t.io, .{ .sub_path = ".zig-cache-flash-preparation/hidden.zig", .data = "excluded bytes" });
+    try tmp.dir.symLink(t.io, ".zig-cache-flash-preparation/hidden.zig", "excluded-link", .{});
+    try t.expectError(error.PackageLinkTargetsExcludedInput, packageTreeDigest(t.allocator, t.io, tmp.dir));
+    try tmp.dir.deleteFile(t.io, "excluded-link");
+    try tmp.dir.createDirPath(t.io, ".zig-cache2");
+    try tmp.dir.writeFile(t.io, .{ .sub_path = ".zig-cache2/hidden.zig", .data = "excluded bytes" });
+    try tmp.dir.symLink(t.io, ".zig-cache2/hidden.zig", "excluded-link", .{});
+    try t.expectError(error.PackageLinkTargetsExcludedInput, packageTreeDigest(t.allocator, t.io, tmp.dir));
+    try tmp.dir.deleteFile(t.io, "excluded-link");
+    try tmp.dir.symLink(t.io, "..", "escape", .{ .is_directory = true });
+    try t.expectError(error.PackageLinkEscapesRoot, packageTreeDigest(t.allocator, t.io, tmp.dir));
+    try tmp.dir.deleteFile(t.io, "escape");
+    try tmp.dir.symLink(t.io, "cycle", "cycle", .{});
+    try t.expectError(error.SymLinkLoop, packageTreeDigest(t.allocator, t.io, tmp.dir));
+}
 test "excluded directories ignore nested contents but same-named files remain inputs" {
     const t = std.testing;
     const names = [_][]const u8{ ".git", ".zig-cache", "zig-out", "zig-pkg" };
@@ -176,28 +239,4 @@ test "excluded directories ignore nested contents but same-named files remain in
     try tmp.dir.createDirPath(t.io, "ordinary");
     try tmp.dir.writeFile(t.io, .{ .sub_path = "ordinary/kept.zig", .data = "kept" });
     try t.expect(!std.mem.eql(u8, &original, &try treeDigest(t.allocator, t.io, tmp.dir)));
-}
-
-test "package tree links stay contained and never bypass excluded inputs" {
-    const t = std.testing;
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var tmp = t.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(t.io, .{ .sub_path = "source.zig", .data = "source bytes" });
-    try t.expectEqual(try treeDigest(t.allocator, t.io, tmp.dir), try packageTreeDigest(t.allocator, t.io, tmp.dir));
-    try tmp.dir.symLink(t.io, "source.zig", "alias.zig", .{});
-    try t.expectError(error.UnsupportedSourceKind, treeDigest(t.allocator, t.io, tmp.dir));
-    const before = try packageTreeDigest(t.allocator, t.io, tmp.dir);
-    try tmp.dir.writeFile(t.io, .{ .sub_path = "source.zig", .data = "changed target bytes" });
-    try t.expect(!std.mem.eql(u8, &before, &(try packageTreeDigest(t.allocator, t.io, tmp.dir))));
-    try tmp.dir.createDirPath(t.io, ".zig-cache");
-    try tmp.dir.writeFile(t.io, .{ .sub_path = ".zig-cache/hidden.zig", .data = "excluded bytes" });
-    try tmp.dir.symLink(t.io, ".zig-cache/hidden.zig", "excluded-link", .{});
-    try t.expectError(error.PackageLinkTargetsExcludedInput, packageTreeDigest(t.allocator, t.io, tmp.dir));
-    try tmp.dir.deleteFile(t.io, "excluded-link");
-    try tmp.dir.symLink(t.io, "..", "escape", .{ .is_directory = true });
-    try t.expectError(error.PackageLinkEscapesRoot, packageTreeDigest(t.allocator, t.io, tmp.dir));
-    try tmp.dir.deleteFile(t.io, "escape");
-    try tmp.dir.symLink(t.io, "cycle", "cycle", .{});
-    try t.expectError(error.SymLinkLoop, packageTreeDigest(t.allocator, t.io, tmp.dir));
 }
