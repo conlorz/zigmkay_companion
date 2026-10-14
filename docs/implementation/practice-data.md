@@ -10,7 +10,8 @@ first-party capture, persistence, validation, import/export and UI logic is Zig.
 - Official archive SHA3-256, verified locally:
   `f5e3e724e9c9b3b5d512c76b02082091a59eeea9becd169a9fbf4d376403acce`.
 - Immutable Zig package hash is recorded in `build.zig.zon`. The dependency
-  contains the archive's `sqlite-autoconf-3540000` root directory.
+  strips the archive's `sqlite-autoconf-3540000` root directory. Clean CI
+  fetching verifies the same package hash on macOS, Linux and Windows.
 - Database application ID `0x5a4d5052`, schema version 1. Counts record version 1
   retains backward-compatible default fields; raw timing payload version 1 is
   independent of existing metric/cohort versions.

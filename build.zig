@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
     const desktop_geometry = b.addModule("desktop-geometry", .{ .root_source_file = b.path("packages/desktop/src/geometry.zig") });
     const desktop_tests_step = b.step("test-desktop-core", "Validate practice and explicit flash intents without GUI or devices");
     const sqlite = b.dependency("sqlite", .{});
-    const sqlite_source = sqlite.path("sqlite-autoconf-3540000/sqlite3.c");
+    const sqlite_source = sqlite.path("sqlite3.c");
     const practice_data_tests = b.step("test-practice-data", "Validate timing, database portability and legacy migration without firmware or devices");
     for ([_][]const u8{ "practice_generator.zig", "practice_results.zig", "practice_history.zig", "practice_history_runtime.zig", "practice_timing.zig", "practice_database.zig" }) |name| {
         const practice_tests = b.addTest(.{ .root_module = b.createModule(.{

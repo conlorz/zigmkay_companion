@@ -6,7 +6,7 @@
     .dependencies = .{
         .sqlite = .{
             .url = "https://www.sqlite.org/2026/sqlite-autoconf-3540000.tar.gz",
-            .hash = "N-V-__8AAKEJxgBNgi0a2esHEp84CYcHMiwsvz3R_WeQjKnn",
+            .hash = "N-V-__8AAKEJxgAqL7tBBStLJr_SloDtRVAE49PAFiABzwky",
         },
         .freetype = .{
             .url = "git+https://github.com/david-vanderson/freetype#4938878b58e8481bc11ac52d6fe10a7cf6c3c7d5",
