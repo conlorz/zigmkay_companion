@@ -21,7 +21,7 @@ pub fn main(init: std.process.Init) !void {
     if (plan.version != 1) return error.UnsupportedBuildCapturePlan;
     // This command never runs a compiler; version execution belongs to preparation.
     if (plan.selection.verify_compiler_version) return error.CompilerExecutionRequiresPreparation;
-    var captured = try jobs.package_resolution.capture(init.gpa, init.io, plan.resolution, plan.source_cache, plan.selection);
+    var captured = try jobs.package_resolution.capture(init.gpa, init.io, plan.resolution, plan.source_cache, plan.selection, .offline);
     defer captured.deinit();
     var output: std.Io.Writer.Allocating = .init(init.gpa);
     defer output.deinit();

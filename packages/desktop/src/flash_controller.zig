@@ -51,8 +51,10 @@ pub const Intent = union(enum) {
     freeze,
     select: Selection,
     /// An explicit user action bound to the rendered operation and artifact.
+    /// For unique_bootsel the confirmation display must clearly state the
+    /// assumption that exactly one RPI-RP2 BOOTSEL keyboard is connected.
     /// It is not a separate permission prompt or background-build completion.
-    confirm: struct { operation_id: u64, uf2_hash: Digest, previous_session_token: ?u32 = null },
+    confirm: struct { operation_id: u64, uf2_hash: Digest, selection_revision: u64, previous_session_token: ?u32 = null },
     cancel,
     reset,
 };
@@ -85,9 +87,13 @@ pub const Controller = struct {
     failure: ?Failure = null,
     artifact: ?Frozen = null,
     selected: ?Selection = null,
+    /// Presenter must capture this alongside the displayed selection and pass it
+    /// back with confirm; changing selection invalidates previously rendered intents.
+    selection_revision: u64 = 0,
     previous_session_token: ?u32 = null,
     reconnect_deadline: u64 = 0,
     reconnect_timeout_ms: u32 = 10_000,
+    reconnect_binding_prepared: bool = false,
     stale_after_cancel: bool = false,
 
     pub fn init(gpa: std.mem.Allocator, context: Context) Controller {
@@ -100,7 +106,7 @@ pub const Controller = struct {
     fn clearSelection(self: *Controller) void {
         if (self.selected) |selected| switch (selected) {
             .serial => |serial| self.gpa.free(serial),
-            .bus_address => {},
+            .bus_address, .unique_bootsel => {},
         };
         self.selected = null;
     }
@@ -149,6 +155,7 @@ pub const Controller = struct {
                 self.failure = null;
                 self.stale_after_cancel = false;
                 self.previous_session_token = null;
+                self.reconnect_binding_prepared = false;
                 self.phase = .preparing;
                 return .{ .prepare_tools = self.operation() };
             },
@@ -164,6 +171,7 @@ pub const Controller = struct {
             },
             .select => |selection| {
                 if ((self.phase != .frozen and self.phase != .awaiting_confirmation) or !self.fresh()) return error.InvalidIntent;
+                if (self.selection_revision == std.math.maxInt(u64)) return error.SelectionRevisionExhausted;
                 const owned: Selection = switch (selection) {
                     .bus_address => |address| blk: {
                         if (address.address == 0 or address.address > 127) return error.InvalidSelection;
@@ -173,15 +181,17 @@ pub const Controller = struct {
                         if (serial.len == 0 or std.mem.indexOfScalar(u8, serial, 0) != null) return error.InvalidSelection;
                         break :blk .{ .serial = try self.gpa.dupe(u8, serial) };
                     },
+                    .unique_bootsel => .unique_bootsel,
                 };
                 self.clearSelection();
                 self.selected = owned;
+                self.selection_revision += 1;
                 self.phase = .awaiting_confirmation;
                 return .none;
             },
             .confirm => |confirmation| {
                 if (self.phase != .awaiting_confirmation or !self.fresh()) return error.InvalidIntent;
-                if (confirmation.operation_id != self.operation_id or !std.mem.eql(u8, &confirmation.uf2_hash, &self.artifact.?.uf2_hash)) return error.StaleConfirmation;
+                if (confirmation.operation_id != self.operation_id or confirmation.selection_revision != self.selection_revision or !std.mem.eql(u8, &confirmation.uf2_hash, &self.artifact.?.uf2_hash)) return error.StaleConfirmation;
                 self.previous_session_token = confirmation.previous_session_token;
                 self.phase = .verifying;
                 return .{ .start_managed = .{ .operation = self.operation(), .frozen = self.artifact.?, .selection = self.selected.? } };
@@ -306,6 +316,17 @@ pub const Controller = struct {
 };
 
 const test_context: Context = .{ .snapshot = @splat(1), .build_key = @splat(2) };
+test "reconnect binding is owned by each flash session even when operation IDs repeat" {
+    var first = Controller.init(std.testing.allocator, test_context);
+    defer first.deinit();
+    _ = try first.dispatch(.prepare);
+    first.reconnect_binding_prepared = true;
+    var second = Controller.init(std.testing.allocator, test_context);
+    defer second.deinit();
+    _ = try second.dispatch(.prepare);
+    try std.testing.expectEqual(first.operation_id, second.operation_id);
+    try std.testing.expect(!second.reconnect_binding_prepared);
+}
 const test_identity: Identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(3) };
 fn reachFrozen(controller: *Controller) !void {
     try std.testing.expectEqual(.prepare_tools, std.meta.activeTag(try controller.dispatch(.prepare)));
@@ -320,7 +341,7 @@ fn reachFrozen(controller: *Controller) !void {
 }
 fn confirm(controller: *Controller) !Effect {
     _ = try controller.dispatch(.{ .select = .{ .bus_address = .{ .bus = 1, .address = 2 } } });
-    return controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = controller.artifact.?.uf2_hash, .previous_session_token = 10 } });
+    return controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = controller.artifact.?.uf2_hash, .selection_revision = controller.selection_revision, .previous_session_token = 10 } });
 }
 fn successfulResult() jobs.picotool_job.Result {
     return .{ .process = .{ .term = .{ .exited = 0 }, .stdout = &.{}, .stderr = &.{} }, .snapshot_id = test_context.snapshot, .cancelled = false, .timed_out = false, .diagnostics_truncated = false };
@@ -335,12 +356,38 @@ test "prepare build freeze and selection never flash without exact explicit conf
     _ = try controller.dispatch(.{ .select = .{ .serial = &serial } });
     serial[0] = 'x';
     try std.testing.expectEqualStrings("abc", controller.selected.?.serial);
-    try std.testing.expectError(error.StaleConfirmation, controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id + 1, .uf2_hash = @splat(4) } }));
-    try std.testing.expectError(error.StaleConfirmation, controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(5) } }));
-    const effect = try controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(4) } });
+    try std.testing.expectError(error.StaleConfirmation, controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id + 1, .uf2_hash = @splat(4), .selection_revision = controller.selection_revision } }));
+    try std.testing.expectError(error.StaleConfirmation, controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(5), .selection_revision = controller.selection_revision } }));
+    const effect = try controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(4), .selection_revision = controller.selection_revision } });
     try std.testing.expectEqual(.start_managed, std.meta.activeTag(effect));
     try std.testing.expectEqual(Phase.verifying, controller.phase);
-    try std.testing.expectError(error.InvalidIntent, controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(4) } }));
+    try std.testing.expectError(error.InvalidIntent, controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(4), .selection_revision = controller.selection_revision } }));
+}
+test "unique BOOTSEL selection requires explicit confirmation and is never automatic" {
+    var controller = Controller.init(std.testing.allocator, test_context);
+    defer controller.deinit();
+    try reachFrozen(&controller);
+    try std.testing.expect(controller.selected == null);
+    try std.testing.expectError(error.InvalidIntent, controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(4), .selection_revision = controller.selection_revision } }));
+    _ = try controller.dispatch(.{ .select = .unique_bootsel });
+    try std.testing.expectEqual(Phase.awaiting_confirmation, controller.phase);
+    try std.testing.expectError(error.StaleConfirmation, controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id + 1, .uf2_hash = @splat(4), .selection_revision = controller.selection_revision } }));
+    const effect = try controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(4), .selection_revision = controller.selection_revision } });
+    try std.testing.expectEqual(.start_managed, std.meta.activeTag(effect));
+    try std.testing.expectEqual(Selection.unique_bootsel, effect.start_managed.selection);
+}
+test "reselection invalidates rendered unique BOOTSEL confirmation" {
+    var controller = Controller.init(std.testing.allocator, test_context);
+    defer controller.deinit();
+    try reachFrozen(&controller);
+    _ = try controller.dispatch(.{ .select = .unique_bootsel });
+    const rendered_revision = controller.selection_revision;
+    _ = try controller.dispatch(.{ .select = .{ .serial = "keyboard-2" } });
+    try std.testing.expect(controller.selection_revision != rendered_revision);
+    try std.testing.expectError(error.StaleConfirmation, controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(4), .selection_revision = rendered_revision } }));
+    try std.testing.expectEqual(Phase.awaiting_confirmation, controller.phase);
+    const effect = try controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(4), .selection_revision = controller.selection_revision } });
+    try std.testing.expectEqualStrings("keyboard-2", effect.start_managed.selection.serial);
 }
 test "managed transfer completion requires fresh full-identity live reconnection before ready" {
     var controller = Controller.init(std.testing.allocator, test_context);

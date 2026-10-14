@@ -305,13 +305,39 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
     const compiler_tree = try jobs.preparation.treeDigest(t.allocator, t.io, distribution);
     const selection = jobs.build_provenance.Selection{ .lock = lock, .compiler_path = compiler, .compiler_distribution_path = compiler_root, .compiler_bundle_path = bundle, .expected_compiler_tree_digest = compiler_tree, .companion_path = root, .expected_companion_tree_digest = lock.firmware_source_digest, .firmware_path = root, .dependencies = &.{}, .manifests = &.{}, .board_mapping = "mapping", .project_digest = @splat(1), .exported_source_digest = @splat(2), .profile_id = @splat(3), .identity_digest = @splat(4) };
     const export_tree = try jobs.preparation.treeDigest(t.allocator, t.io, exported);
-    const request = jobs.managed_build.Request{ .resolution = graph.record, .selection = selection, .export_directory = export_path, .expected_export_tree = export_tree, .install_directory = install, .development_firmware = root, .timeout_ms = 5000 };
+    const request = jobs.managed_build.Request{ .audit_mode = .deep, .resolution = graph.record, .selection = selection, .export_directory = export_path, .expected_export_tree = export_tree, .install_directory = install, .development_firmware = root, .timeout_ms = 5000 };
     var environment: std.process.Environ.Map = .init(t.allocator);
     defer environment.deinit();
+    // The helper stands in for the compiler: argv is inspected without fetching packages.
+    var fetch_request = request;
+    fetch_request.dependency_access = .allow_pinned_fetch;
+    try t.expectError(error.PreparedPackageCacheRequired, jobs.managed_build.Job.init(t.allocator, t.io, &environment, fetch_request));
+    fetch_request.source_cache = "relative-cache";
+    try t.expectError(error.PreparedPackageCacheRequired, jobs.managed_build.Job.init(t.allocator, t.io, &environment, fetch_request));
+    var cache = try tmp.dir.createDirPathOpen(t.io, ".zig-cache/prepared-packages", .{});
+    defer cache.close(t.io);
+    const cache_path = try cache.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(cache_path);
+    fetch_request.source_cache = cache_path;
+    var fetch_job = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, fetch_request);
+    defer fetch_job.deinit();
+    try t.expectEqual(request.dependency_access, .offline);
+    try t.expectEqual(.allow_pinned_fetch, fetch_job.captured.receipt.dependency_access);
+    for (fetch_job.command.argv) |arg| try t.expect(!std.mem.eql(u8, arg, "--system"));
+    try t.expectEqualStrings(cache_path, fetch_job.process.spec.environ_map.?.get("ZIG_GLOBAL_CACHE_DIR").?);
+    const package_path = try std.fs.path.join(t.allocator, &.{ cache_path, "p" });
+    defer t.allocator.free(package_path);
+    const relative_packages = try std.fs.path.relativeAlloc(t.allocator, fetch_job.command.cwd, null, fetch_job.command.cwd, package_path);
+    defer t.allocator.free(relative_packages);
+    try t.expectEqualStrings(relative_packages, fetch_job.process.spec.environ_map.?.get("ZIG_LOCAL_PKG_DIR").?);
+    try t.expect(fetch_job.process.spec.environ_map.?.get("ZIG_LIB_DIR") != null);
     inline for (.{ "success", "missing-runner", "failed", "invalid", "missing", "hang" }) |mode| {
         try environment.put("ZIGMKAY_BUILD_FIXTURE", mode);
         var job = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, request);
         defer job.deinit();
+        try t.expectEqual(.offline, job.captured.receipt.dependency_access);
+        try t.expect(!std.mem.eql(u8, &job.captured.inputs.build_inputs_digest, &fetch_job.captured.inputs.build_inputs_digest));
+        try t.expect(!std.mem.eql(u8, &job.command.build_key, &fetch_job.command.build_key));
         try t.expectEqualStrings("--system", job.command.argv[job.command.argv.len - 2]);
         try t.expect(std.fs.path.isAbsolute(job.command.argv[job.command.argv.len - 1]));
         try t.expectEqualStrings(job.command.argv[job.command.argv.len - 1], job.process.spec.environ_map.?.get("ZIG_LOCAL_PKG_DIR").?);
@@ -323,6 +349,8 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
         try job.start(job.captured.inputs);
         if (comptime std.mem.eql(u8, mode, "hang")) {
             job.cancel();
+            try t.expect(!job.finish_verified);
+            try t.expectError(error.RunnerBuildNotCompleted, job.finishRunner(job.captured.inputs));
             try t.expect(job.process.future == null and job.poll() == null);
             continue;
         }
@@ -337,10 +365,14 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
             var manifest = try job.finish(result, job.captured.inputs);
             defer manifest.deinit();
             try t.expectError(error.FileNotFound, job.finishRunner(job.captured.inputs));
+            try t.expectError(error.RunnerBuildNotCompleted, job.finishRunner(job.captured.inputs));
         } else if (comptime std.mem.eql(u8, mode, "success")) {
             var manifest = try job.finish(result, job.captured.inputs);
             defer manifest.deinit();
             try t.expectEqual(job.command.build_key, manifest.build_key);
+            try t.expect(job.finish_verified);
+            try t.expectEqual(job.command.build_key, job.finish_verified_key);
+            try t.expect(std.meta.eql(job.captured.receipt, job.finish_verified_receipt));
             var runner = try job.finishRunner(job.captured.inputs);
             defer runner.deinit();
             try runner.verifyFile(t.allocator, t.io, job.captured.inputs);
@@ -349,6 +381,8 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
             try t.expectError(error.BuildNotCompleted, job.finish(result, job.captured.inputs));
         } else if (comptime std.mem.eql(u8, mode, "failed")) {
             try t.expectError(error.BuildFailed, job.finish(result, job.captured.inputs));
+            try t.expect(!job.finish_verified);
+            try t.expectError(error.RunnerBuildNotCompleted, job.finishRunner(job.captured.inputs));
         } else if (comptime std.mem.eql(u8, mode, "missing")) {
             try t.expectError(error.FileNotFound, job.finish(result, job.captured.inputs));
         } else {
@@ -356,6 +390,20 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
         }
     }
     try environment.put("ZIGMKAY_BUILD_FIXTURE", "success");
+    var changed_runner = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, request);
+    defer changed_runner.deinit();
+    try changed_runner.start(changed_runner.captured.inputs);
+    var runner_result: jobs.Result = while (true) {
+        if (changed_runner.poll()) |completed| break try completed;
+        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
+    };
+    defer runner_result.deinit(t.allocator);
+    var runner_firmware = try changed_runner.finish(runner_result, changed_runner.captured.inputs);
+    defer runner_firmware.deinit();
+    var runner_current = changed_runner.captured.inputs;
+    runner_current.project_digest[0] ^= 1;
+    try t.expectError(error.StaleBuild, changed_runner.finishRunner(runner_current));
+    try t.expectError(error.RunnerBuildNotCompleted, changed_runner.finishRunner(changed_runner.captured.inputs));
     var completed_export = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, request);
     defer completed_export.deinit();
     try completed_export.start(completed_export.captured.inputs);
@@ -367,9 +415,52 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
     var changed_current = completed_export.captured.inputs;
     changed_current.project_digest[0] ^= 1;
     try t.expectError(error.StaleBuild, completed_export.finish(completed_result, changed_current));
+    try t.expectError(error.RunnerBuildNotCompleted, completed_export.finishRunner(completed_export.captured.inputs));
     var changed_export = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, request);
     defer changed_export.deinit();
     try exported.writeFile(t.io, .{ .sub_path = "keymap.zig", .data = "changed export" });
     try t.expectError(error.ExportedSourceChanged, changed_export.start(changed_export.captured.inputs));
     try t.expect(!changed_export.process.started);
+    try exported.writeFile(t.io, .{ .sub_path = "keymap.zig", .data = "frozen fixture export" });
+    var fast_request = request;
+    fast_request.audit_mode = .fast;
+    try t.expectEqual(.fast, (jobs.managed_build.Request{ .resolution = graph.record, .selection = selection, .export_directory = export_path, .expected_export_tree = export_tree, .install_directory = install }).audit_mode);
+    try t.expectError(error.PreparedBuildInputsRequired, jobs.managed_build.Job.init(t.allocator, t.io, &environment, fast_request));
+    fast_request.prepared = .{ .inputs = completed_export.captured.inputs, .receipt = completed_export.captured.receipt };
+    var fast_start = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, fast_request);
+    defer fast_start.deinit();
+    try exported.writeFile(t.io, .{ .sub_path = "keymap.zig", .data = "mutated before start" });
+    try t.expectError(error.ExportedSourceChanged, fast_start.start(fast_start.captured.inputs));
+    try exported.writeFile(t.io, .{ .sub_path = "keymap.zig", .data = "frozen fixture export" });
+    var fast_finish = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, fast_request);
+    defer fast_finish.deinit();
+    try fast_finish.start(fast_finish.captured.inputs);
+    var fast_result: jobs.Result = while (true) {
+        if (fast_finish.poll()) |completed| break try completed;
+        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
+    };
+    defer fast_result.deinit(t.allocator);
+    try exported.writeFile(t.io, .{ .sub_path = "keymap.zig", .data = "mutated after start" });
+    try t.expectError(error.ExportedSourceChanged, fast_finish.finish(fast_result, fast_finish.captured.inputs));
+    try exported.writeFile(t.io, .{ .sub_path = "keymap.zig", .data = "frozen fixture export" });
+    var fast_success = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, fast_request);
+    defer fast_success.deinit();
+    try fast_success.start(fast_success.captured.inputs);
+    var success_result: jobs.Result = while (true) {
+        if (fast_success.poll()) |completed| break try completed;
+        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
+    };
+    defer success_result.deinit(t.allocator);
+    var fast_manifest = try fast_success.finish(success_result, fast_success.captured.inputs);
+    defer fast_manifest.deinit();
+    try t.expectEqual(.fast_prepared_inputs_no_fresh_full_provenance_audit, fast_manifest.audit_mode);
+    const serialized = try fast_manifest.serialize(t.allocator);
+    defer t.allocator.free(serialized);
+    var restored = try jobs.firmware.Manifest.parse(t.allocator, serialized);
+    defer restored.deinit();
+    try t.expectEqual(@as(u32, 2), restored.version);
+    try t.expectEqual(.fast_prepared_inputs_no_fresh_full_provenance_audit, restored.audit_mode);
+    const uf2_bytes = try std.Io.Dir.cwd().readFileAlloc(t.io, restored.uf2_path, t.allocator, .limited(4 * 1024 * 1024));
+    defer t.allocator.free(uf2_bytes);
+    try restored.verify(t.allocator, fast_success.captured.inputs, uf2_bytes);
 }

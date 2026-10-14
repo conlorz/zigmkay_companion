@@ -2,7 +2,6 @@
 const std = @import("std");
 const firmware = @import("firmware.zig");
 const target = @import("target_lock.zig");
-const preparation = @import("preparation.zig");
 pub const Digest = firmware.Digest;
 pub const tools_name = "flash-tools.zon";
 pub const picotool_revision = "d8df33801dbea792128baaab516291720d400a91";
@@ -110,6 +109,9 @@ pub const Frozen = struct {
         try request.validate();
         if (!std.mem.eql(u8, &self.build_key, &firmware.key(current))) return error.StaleBuild;
         try self.tools.verify(gpa, io);
+        const name = std.fmt.bytesToHex(self.uf2_hash, .lower);
+        const basename = std.fs.path.basename(self.path);
+        if (basename.len != name.len + 4 or !std.mem.eql(u8, basename[0..name.len], &name) or !std.mem.eql(u8, basename[name.len..], ".uf2")) return error.ArtifactChanged;
         const bytes = try std.Io.Dir.cwd().readFileAlloc(io, self.path, gpa, .limited(4 * 1024 * 1024));
         defer gpa.free(bytes);
         if (bytes.len != self.uf2_size or !std.mem.eql(u8, &self.uf2_hash, &firmware.digest(bytes))) return error.ArtifactChanged;
@@ -130,8 +132,8 @@ pub fn freeze(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, cache_path:
     defer gpa.free(actual_cache_path);
     if (!std.mem.eql(u8, actual_cache_path, cache_path)) return error.CachePathMismatch;
     try tools.verify(gpa, io);
-    if (!std.mem.eql(u8, tools.record.firmware_revision, manifest.inputs.lock.firmware_revision)) return error.ToolsRevisionMismatch;
-    if (tools.record.source_kind != manifest.inputs.lock.source_kind or !std.mem.eql(u8, &tools.record.firmware_source_digest, &manifest.inputs.lock.firmware_source_digest)) return error.ToolsSourceMismatch;
+    // Picotool transfers UF2 bytes; its historical firmware-source provenance
+    // does not constrain which valid firmware artifact it can transfer.
     // Reparse the record to reject unsupported or manually altered manifests.
     const encoded = try manifest.serialize(gpa);
     defer gpa.free(encoded);
@@ -143,11 +145,38 @@ pub fn freeze(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, cache_path:
     var owned = try Tools.clone(gpa, tools.record);
     errdefer owned.deinit();
     const name = std.fmt.bytesToHex(validated.uf2_hash, .lower);
-    const frozen_path = try std.fs.path.join(owned.arena.allocator(), &.{ cache_path, &name });
-    try preparation.importBlob(gpa, io, cache, validated.uf2_hash, bytes);
+    const filename = try std.fmt.allocPrint(gpa, "{s}.uf2", .{name});
+    defer gpa.free(filename);
+    const frozen_path = try std.fs.path.join(owned.arena.allocator(), &.{ cache_path, filename });
+    try importUf2(gpa, io, cache, filename, validated.uf2_hash, bytes);
     const frozen: Frozen = .{ .tools = owned, .path = frozen_path, .build_key = validated.build_key, .uf2_hash = validated.uf2_hash, .uf2_size = validated.uf2_size };
     try frozen.verify(gpa, io, current, request);
     return frozen;
+}
+
+/// Atomically install a named UF2 without replacing or silently accepting corrupt entries.
+fn importUf2(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, name: []const u8, expected: Digest, bytes: []const u8) !void {
+    if (!std.mem.eql(u8, &expected, &firmware.digest(bytes))) return error.BundleDigestMismatch;
+    const present = cache.readFileAlloc(io, name, gpa, .limited(4 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    if (present) |data| {
+        defer gpa.free(data);
+        if (!std.mem.eql(u8, &expected, &firmware.digest(data))) return error.CachedBundleCorrupt;
+        return;
+    }
+    var atomic = try cache.createFileAtomic(io, name, .{ .replace = false });
+    defer atomic.deinit(io);
+    try atomic.file.writeStreamingAll(io, bytes);
+    atomic.link(io) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            const existing = try cache.readFileAlloc(io, name, gpa, .limited(4 * 1024 * 1024));
+            defer gpa.free(existing);
+            if (!std.mem.eql(u8, &expected, &firmware.digest(existing))) return error.CachedBundleCorrupt;
+        },
+        else => return err,
+    };
 }
 
 fn fixtureUf2() [512]u8 {
@@ -190,21 +219,36 @@ test "tools provenance and frozen artifact reject edits stale requests and cance
     var manifest = try firmware.Manifest.complete(gpa, .succeeded, firmware.key(input), input, input, artifact, &bytes);
     defer manifest.deinit();
     const request: Request = .{ .captured = @splat(1), .current = @splat(1) };
+    const blob_name = std.fmt.bytesToHex(manifest.uf2_hash, .lower);
+    const blob_filename = try std.fmt.allocPrint(gpa, "{s}.uf2", .{blob_name});
+    defer gpa.free(blob_filename);
     var frozen = try freeze(gpa, io, tmp.dir, base, manifest, input, parsed, request);
     defer frozen.deinit();
+    try std.testing.expect(std.mem.endsWith(u8, frozen.path, ".uf2"));
+    try std.testing.expectEqualStrings(blob_filename, std.fs.path.basename(frozen.path));
     try frozen.verify(gpa, io, input, request);
     try std.testing.expectError(error.CachePathMismatch, freeze(gpa, io, tmp.dir, "/missing-flash-cache", manifest, input, parsed, request));
     var other_cache = try tmp.dir.createDirPathOpen(io, "other-cache", .{});
     defer other_cache.close(io);
     const other_path = try other_cache.realPathFileAlloc(io, ".", gpa);
     defer gpa.free(other_path);
-    const blob_name = std.fmt.bytesToHex(manifest.uf2_hash, .lower);
-    try other_cache.writeFile(io, .{ .sub_path = &blob_name, .data = &bytes });
+    try other_cache.writeFile(io, .{ .sub_path = blob_filename, .data = &bytes });
     try std.testing.expectError(error.CachePathMismatch, freeze(gpa, io, tmp.dir, other_path, manifest, input, parsed, request));
+    try tmp.dir.writeFile(io, .{ .sub_path = blob_filename, .data = "corrupt cached UF2" });
+    try std.testing.expectError(error.CachedBundleCorrupt, freeze(gpa, io, tmp.dir, base, manifest, input, parsed, request));
+    try std.testing.expectError(error.ArtifactChanged, frozen.verify(gpa, io, input, request));
+    try tmp.dir.writeFile(io, .{ .sub_path = blob_filename, .data = &bytes });
+    var mismatched = frozen;
+    mismatched.uf2_hash[0] ^= 1;
+    try std.testing.expectError(error.ArtifactChanged, mismatched.verify(gpa, io, input, request));
+    try frozen.verify(gpa, io, input, request);
     var wrong_revision = try Tools.clone(gpa, parsed.record);
     defer wrong_revision.deinit();
     wrong_revision.record.firmware_revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    try std.testing.expectError(error.ToolsRevisionMismatch, freeze(gpa, io, tmp.dir, base, manifest, input, wrong_revision, request));
+    wrong_revision.record.firmware_source_digest = @splat(0);
+    wrong_revision.record.source_kind = if (parsed.record.source_kind == .published) .development else .published;
+    var independent_tools = try freeze(gpa, io, tmp.dir, base, manifest, input, wrong_revision, request);
+    defer independent_tools.deinit();
     try tmp.dir.writeFile(io, .{ .sub_path = "build.uf2", .data = "changed build output" });
     try frozen.verify(gpa, io, input, request);
     try std.testing.expectError(error.ArtifactChanged, freeze(gpa, io, tmp.dir, base, manifest, input, parsed, request));

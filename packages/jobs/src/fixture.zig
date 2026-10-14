@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
             for ([_]struct { usize, u32 }{ .{ 0, 0x0a324655 }, .{ 4, 0x9e5d5157 }, .{ 8, 0x2000 }, .{ 12, 0x10000000 }, .{ 16, 256 }, .{ 24, 1 }, .{ 28, 0xe48bff56 }, .{ 508, 0x0ab16f30 } }) |entry| std.mem.writeInt(u32, bytes[entry[0]..][0..4], entry[1], .little);
             if (std.mem.eql(u8, mode, "invalid")) bytes[0] = 0;
             try dir.writeFile(init.io, .{ .sub_path = "project.uf2", .data = &bytes });
-            if (std.mem.eql(u8, mode, "missing-runner") or std.mem.eql(u8, mode, "invalid")) return;
+            if (std.mem.eql(u8, mode, "missing-runner")) return;
             const bin_path = try std.fs.path.join(init.arena.allocator(), &.{ install.?, "bin" });
             var bin = try std.Io.Dir.cwd().createDirPathOpen(init.io, bin_path, .{});
             defer bin.close(init.io);

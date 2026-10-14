@@ -684,7 +684,7 @@ test "explicit desktop flash reaps an offline wrapper and retains diagnostics" {
     const request: jobs.flash_inputs.Request = .{ .captured = @splat(1), .current = @splat(1) };
     var frozen = try jobs.flash_inputs.freeze(t.allocator, t.io, tmp.dir, base, manifest, current, tools, request);
     defer frozen.deinit();
-    for ([_][]const u8{ "ok", "wait", "flood" }) |serial| {
+    for ([_][]const u8{ "ok", "wait", "flood", "unique_bootsel" }) |serial| {
         var owner = desktop.flash_controller.Controller.init(t.allocator, .{ .snapshot = request.current, .build_key = jobs.firmware.key(current) });
         defer owner.deinit();
         _ = try owner.dispatch(.prepare);
@@ -693,8 +693,11 @@ test "explicit desktop flash reaps an offline wrapper and retains diagnostics" {
         _ = try owner.receive(.{ .built = .{ .operation_id = owner.operation_id, .build_key = owner.current.build_key } }, 0);
         _ = try owner.dispatch(.freeze);
         _ = try owner.receive(.{ .frozen = .{ .operation_id = owner.operation_id, .artifact = .{ .context = owner.current, .path = frozen.path, .uf2_hash = frozen.uf2_hash, .expected_identity = .{ .board_id = "board_v1".*, .profile_id = current.profile_id, .digest = current.identity_digest } } } }, 0);
-        _ = try owner.dispatch(.{ .select = .{ .serial = serial } });
-        const start = (try owner.dispatch(.{ .confirm = .{ .operation_id = owner.operation_id, .uf2_hash = frozen.uf2_hash } })).start_managed;
+        _ = try owner.dispatch(.{ .select = if (std.mem.eql(u8, serial, "unique_bootsel")) .unique_bootsel else .{ .serial = serial } });
+        const rendered = desktop.flash_presenter.view(&owner, null);
+        try t.expect(rendered.can_confirm);
+        const start = (try owner.dispatch(try rendered.intent(.confirm, null))).start_managed;
+        try t.expectError(error.InvalidIntent, owner.dispatch(try rendered.intent(.confirm, null)));
         var runtime = desktop.flash_runtime.Runtime.init(t.allocator, t.io);
         defer runtime.deinit();
         try t.expect((try runtime.start(&owner, start, &frozen, current, "board_v1".*, 0)) == .none);
@@ -870,9 +873,28 @@ test "build worker owns verified exports and accepts only the current editor pre
     const manifest = bundle_result.firmware;
     try bundle_result.runner.verifyFile(t.allocator, t.io, manifest.inputs);
     try t.expectEqual(captured, manifest.inputs.project_digest);
+    try t.expectEqual(.fast_prepared_inputs_no_fresh_full_provenance_audit, manifest.audit_mode);
     try t.expectEqual(model.document().profile_id, manifest.inputs.profile_id);
     try t.expect(!std.mem.eql(u8, &manifest.inputs.source_digest, &@as([32]u8, @splat(0))));
     try t.expectError(error.BuildAlreadyCompleted, candidate.take(&model, candidate.ticket));
+    // The prepared claim reuses the receipt; deep capture independently audits selected sources.
+    var audit_request = try desktop.build_worker.Request.capture(&model, config, &environment, 44);
+    defer audit_request.deinit();
+    var fast_inputs = try audit_request.captureCurrentInputs(t.allocator, t.io, candidate.expected_export_tree);
+    defer fast_inputs.deinit();
+    var deep_inputs = try audit_request.captureCurrentInputsMode(t.allocator, t.io, candidate.expected_export_tree, .deep);
+    defer deep_inputs.deinit();
+    try t.expectEqualDeep(deep_inputs.captured.receipt.digest(), fast_inputs.captured.receipt.digest());
+    try t.expectEqualDeep(manifest.inputs.build_inputs_digest, fast_inputs.captured.inputs.build_inputs_digest);
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{}, .name = .changed }" });
+    var still_prepared = try audit_request.captureCurrentInputs(t.allocator, t.io, candidate.expected_export_tree);
+    defer still_prepared.deinit();
+    try t.expectEqualDeep(fast_inputs.captured.receipt.digest(), still_prepared.captured.receipt.digest());
+    if (audit_request.captureCurrentInputsMode(t.allocator, t.io, candidate.expected_export_tree, .deep)) |changed| {
+        var modified = changed;
+        defer modified.deinit();
+        try t.expect(!std.mem.eql(u8, &deep_inputs.captured.inputs.build_inputs_digest, &modified.captured.inputs.build_inputs_digest));
+    } else |_| {} // A changed package manifest can also fail deep resolution verification.
     try environment.put("ZIGMKAY_BUILD_FIXTURE", if (@import("builtin").os.tag == .windows) "hang" else "spawn-hang");
     const cancel_install = try std.fs.path.join(t.allocator, &.{ root, ".zig-cache/cancelled-build" });
     defer t.allocator.free(cancel_install);

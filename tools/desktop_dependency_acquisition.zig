@@ -191,7 +191,10 @@ pub fn main(init: std.process.Init) !void {
     if (existing_bytes) |bytes| {
         existing = try Receipt.parse(gpa, bytes);
         const old = existing.?;
-        if (!std.mem.eql(u8, old.cache_path, cache) or !std.mem.eql(u8, old.compiler_path, compiler) or !std.mem.eql(u8, &old.compiler_digest, &compiler_digest)) return error.SourceInputsChanged;
+        // Cached GUI sources belong to immutable package pins, not to the
+        // installation path of the compiler that originally downloaded them.
+        // The selected compiler version is checked below before any fetch.
+        if (!std.mem.eql(u8, old.cache_path, cache)) return error.SourceInputsChanged;
     }
     var version = try jobs.run(gpa, io, .{ .argv = &.{ compiler, "version" }, .cwd = cache, .snapshot_id = compiler_digest, .timeout_ms = 5000 });
     defer version.deinit(gpa);
