@@ -3,11 +3,6 @@ const std = @import("std");
 const jobs = @import("root.zig");
 const zon = @import("owned-zon");
 const builtin = @import("builtin");
-var test_init_count: std.atomic.Value(usize) = .init(0);
-
-fn testMarker(invocation: usize, comptime stage: []const u8) void {
-    if (builtin.is_test) std.debug.print("managed_build.init #{d} {s}\n", .{ invocation, stage });
-}
 pub const Request = struct {
     resolution: jobs.package_resolution.Record,
     source_cache: ?[]const u8 = null,
@@ -32,9 +27,6 @@ pub const Job = struct {
     accepted: bool = false,
     runner_completed: bool = false,
     pub fn init(gpa: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map, request: Request) !Job {
-        const invocation = if (builtin.is_test) test_init_count.fetchAdd(1, .monotonic) + 1 else 0;
-        testMarker(invocation, "begin");
-        defer testMarker(invocation, "end");
         if (request.timeout_ms == 0) return error.InvalidBuildDeadline;
         if (request.selection.verify_compiler_version) return error.CompilerExecutionRequiresPreparation;
         var arena: std.heap.ArenaAllocator = .init(gpa);
@@ -54,24 +46,15 @@ pub const Job = struct {
             };
             if (!matched) return error.UnsupportedBuildOverride;
         }
-        testMarker(invocation, "verifyExport begin");
         try verifyExport(gpa, io, owned);
-        testMarker(invocation, "verifyExport end");
-        testMarker(invocation, "capture begin");
         var captured = try jobs.package_resolution.capture(gpa, io, owned.resolution, owned.source_cache, owned.selection);
-        testMarker(invocation, "capture end");
         errdefer captured.deinit();
-        testMarker(invocation, "nonce begin");
         var nonce: [16]u8 = undefined;
         io.random(&nonce);
         const install_name = try std.fmt.allocPrint(arena.allocator(), "build-{s}", .{std.fmt.bytesToHex(nonce, .lower)});
         const install_path = try std.fs.path.join(arena.allocator(), &.{ owned.install_directory, install_name });
-        testMarker(invocation, "nonce end");
-        testMarker(invocation, "Command.init begin");
         var command = try jobs.firmware.Command.init(gpa, captured.inputs, owned.selection.compiler_path, owned.selection.companion_path, owned.export_directory, install_path, owned.development_firmware);
-        testMarker(invocation, "Command.init end");
         errdefer command.deinit();
-        testMarker(invocation, "environment begin");
         var selected_environment = try environment.clone(gpa);
         defer selected_environment.deinit();
         if (owned.source_cache) |cache| {
@@ -90,10 +73,7 @@ pub const Job = struct {
         try selected_environment.put("ZIG_LOCAL_PKG_DIR", args[command.argv.len + 1]);
         try selected_environment.put("ZIG_LIB_DIR", try std.fs.path.join(a, &.{ owned.selection.compiler_distribution_path, "lib" }));
         command.argv = args;
-        testMarker(invocation, "environment end");
-        testMarker(invocation, "jobs.Job.init begin");
         const process = try jobs.Job.init(gpa, io, .{ .argv = command.argv, .cwd = command.cwd, .snapshot_id = command.build_key, .timeout_ms = owned.timeout_ms, .environ_map = &selected_environment, .isolated_group = builtin.os.tag != .windows and builtin.os.tag != .wasi });
-        testMarker(invocation, "jobs.Job.init end");
         return .{ .arena = arena, .gpa = gpa, .io = io, .request = owned, .captured = captured, .command = command, .process = process, .install_name = install_name };
     }
     pub fn start(self: *Job, current: jobs.firmware.Inputs) !void {

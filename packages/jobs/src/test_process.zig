@@ -5,17 +5,11 @@ test "selected toolchain receipts own verified inputs and preserve future sideca
     const io = t.io;
     var tmp = t.tmpDir(.{ .iterate = true });
     defer {
-        std.debug.print("selected receipts: cleaning temporary directory\n", .{});
         tmp.cleanup();
-        std.debug.print("selected receipts: temporary directory cleaned\n", .{});
     }
-    std.debug.print("selected receipts: creating distribution\n", .{});
     var distribution = try tmp.dir.createDirPathOpen(io, "distribution", .{});
-    std.debug.print("selected receipts: distribution created\n", .{});
     defer {
-        std.debug.print("selected receipts: closing distribution\n", .{});
         distribution.close(io);
-        std.debug.print("selected receipts: distribution closed\n", .{});
     }
     const executable_name = if (@import("builtin").os.tag == .windows) "zig.exe" else "zig";
     const helper = try std.Io.Dir.cwd().readFileAlloc(io, @import("options").helper_path, t.allocator, .limited(64 * 1024 * 1024));
@@ -31,12 +25,9 @@ test "selected toolchain receipts own verified inputs and preserve future sideca
     const compiler = try distribution.realPathFileAlloc(io, executable_name, t.allocator);
     defer t.allocator.free(compiler);
     const compiler_digest = jobs.firmware.digest(helper);
-    std.debug.print("selected receipts: preparing toolchain\n", .{});
     var selected = try jobs.toolchain.prepare(t.allocator, io, .{ .compiler = compiler, .distribution = root, .expected_compiler = compiler_digest });
     defer selected.deinit();
-    std.debug.print("selected receipts: verifying toolchain\n", .{});
     try selected.receipt.verify(t.allocator, io);
-    std.debug.print("selected receipts: toolchain verified\n", .{});
     try t.expect(selected.receipt.kind == .selected_installation and selected.receipt.bundle_digest == null);
     const bytes = try selected.receipt.serialize(t.allocator);
     defer t.allocator.free(bytes);
@@ -53,9 +44,7 @@ test "selected toolchain receipts own verified inputs and preserve future sideca
     const manifest_path = try tmp.dir.realPathFileAlloc(io, "build.zig.zon", t.allocator);
     defer t.allocator.free(manifest_path);
     const manifests = [_]jobs.build_provenance.Manifest{.{ .name = "fixture-build", .path = manifest_path, .expected_digest = jobs.firmware.digest(manifest_bytes) }};
-    std.debug.print("selected receipts: hashing source tree\n", .{});
     const source_tree = try jobs.preparation.treeDigest(t.allocator, io, tmp.dir);
-    std.debug.print("selected receipts: source tree hashed\n", .{});
     var lock = try selected.receipt.targetLock(t.allocator, jobs.target_lock.fixture());
     lock.firmware_source_digest = source_tree;
     lock.dependency_digest = try jobs.build_provenance.closureDigest(t.allocator, &.{}, &manifests);
@@ -77,9 +66,7 @@ test "selected toolchain receipts own verified inputs and preserve future sideca
         .profile_id = @splat(3),
         .identity_digest = @splat(4),
     };
-    std.debug.print("selected receipts: capturing provenance\n", .{});
     var captured = try jobs.build_provenance.capture(t.allocator, io, inputs);
-    std.debug.print("selected receipts: provenance captured\n", .{});
     defer captured.deinit();
     try t.expectEqual(@as(u16, 2), captured.receipt.version);
     try t.expect(captured.receipt.compiler_kind == .selected_installation);
@@ -93,10 +80,8 @@ test "selected toolchain receipts own verified inputs and preserve future sideca
     defer t.allocator.free(captured_bytes);
     const restored_receipt = try jobs.build_provenance.Receipt.parse(t.allocator, captured_bytes);
     try t.expectEqual(captured.receipt.digest(), restored_receipt.digest());
-    std.debug.print("selected receipts: verifying provenance\n", .{});
     var verified = try jobs.build_provenance.verify(t.allocator, io, inputs, captured.receipt);
     defer verified.deinit();
-    std.debug.print("selected receipts: provenance verified\n", .{});
     inputs.toolchain_receipt_path = null;
     try t.expectError(error.ToolchainReceiptRequired, jobs.build_provenance.capture(t.allocator, io, inputs));
     inputs.toolchain_receipt_path = receipt_path;
@@ -276,17 +261,11 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
     const t = std.testing;
     var tmp = t.tmpDir(.{ .iterate = true });
     defer {
-        std.debug.print("managed build: cleaning temporary directory\n", .{});
         tmp.cleanup();
-        std.debug.print("managed build: temporary directory cleaned\n", .{});
     }
-    std.debug.print("managed build: creating compiler directory\n", .{});
     var distribution = try tmp.dir.createDirPathOpen(t.io, "compiler", .{ .open_options = .{ .iterate = true } });
-    std.debug.print("managed build: compiler directory created\n", .{});
     defer {
-        std.debug.print("managed build: closing distribution\n", .{});
         distribution.close(t.io);
-        std.debug.print("managed build: distribution closed\n", .{});
     }
     const helper = try std.Io.Dir.cwd().readFileAlloc(t.io, @import("options").helper_path, t.allocator, .limited(64 * 1024 * 1024));
     defer t.allocator.free(helper);
@@ -308,41 +287,31 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
     defer t.allocator.free(compiler);
     const bundle = try distribution.realPathFileAlloc(t.io, "bundle.tar", t.allocator);
     defer t.allocator.free(bundle);
-    std.debug.print("managed build: creating export directory\n", .{});
     var exported = try tmp.dir.createDirPathOpen(t.io, ".zig-cache/export", .{ .open_options = .{ .iterate = true } });
-    std.debug.print("managed build: export directory created\n", .{});
     defer exported.close(t.io);
     try exported.writeFile(t.io, .{ .sub_path = "keymap.zig", .data = "frozen fixture export" });
     const export_path = try exported.realPathFileAlloc(t.io, ".", t.allocator);
     defer t.allocator.free(export_path);
     const install = try std.fs.path.join(t.allocator, &.{ root, ".zig-cache/install" });
     defer t.allocator.free(install);
-    std.debug.print("managed build: resolving source tree\n", .{});
     var graph = try jobs.package_resolution.resolve(t.allocator, t.io, .{ .roots = &.{.{ .name = "fixture", .directory = root }} });
     defer graph.deinit();
-    std.debug.print("managed build: source tree resolved\n", .{});
     var lock = jobs.target_lock.fixture();
     lock.compiler_digest = jobs.firmware.digest(helper);
     lock.compiler_bundle_digest = jobs.firmware.digest("fixture bundle");
     lock.firmware_source_digest = graph.record.roots[0].tree_digest;
     lock.dependency_digest = graph.record.closure_digest;
     lock.board_mapping_digest = jobs.firmware.digest("mapping");
-    std.debug.print("managed build: hashing compiler tree\n", .{});
     const compiler_tree = try jobs.preparation.treeDigest(t.allocator, t.io, distribution);
-    std.debug.print("managed build: compiler tree hashed\n", .{});
     const selection = jobs.build_provenance.Selection{ .lock = lock, .compiler_path = compiler, .compiler_distribution_path = compiler_root, .compiler_bundle_path = bundle, .expected_compiler_tree_digest = compiler_tree, .companion_path = root, .expected_companion_tree_digest = lock.firmware_source_digest, .firmware_path = root, .dependencies = &.{}, .manifests = &.{}, .board_mapping = "mapping", .project_digest = @splat(1), .exported_source_digest = @splat(2), .profile_id = @splat(3), .identity_digest = @splat(4) };
-    std.debug.print("managed build: hashing export tree\n", .{});
     const export_tree = try jobs.preparation.treeDigest(t.allocator, t.io, exported);
-    std.debug.print("managed build: export tree hashed\n", .{});
     const request = jobs.managed_build.Request{ .resolution = graph.record, .selection = selection, .export_directory = export_path, .expected_export_tree = export_tree, .install_directory = install, .development_firmware = root, .timeout_ms = 5000 };
     var environment: std.process.Environ.Map = .init(t.allocator);
     defer environment.deinit();
     inline for (.{ "success", "missing-runner", "failed", "invalid", "missing", "hang" }) |mode| {
         try environment.put("ZIGMKAY_BUILD_FIXTURE", mode);
-        std.debug.print("managed build ({s}): initializing job\n", .{mode});
         var job = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, request);
         defer job.deinit();
-        std.debug.print("managed build ({s}): job initialized\n", .{mode});
         try t.expectEqualStrings("--system", job.command.argv[job.command.argv.len - 2]);
         try t.expect(std.fs.path.isAbsolute(job.command.argv[job.command.argv.len - 1]));
         try t.expectEqualStrings(job.command.argv[job.command.argv.len - 1], job.process.spec.environ_map.?.get("ZIG_LOCAL_PKG_DIR").?);
@@ -351,17 +320,12 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
         changed.project_digest[0] ^= 1;
         try t.expectError(error.StaleBuild, job.start(changed));
         try t.expectError(error.RunnerBuildNotCompleted, job.finishRunner(job.captured.inputs));
-        std.debug.print("managed build ({s}): starting job\n", .{mode});
         try job.start(job.captured.inputs);
-        std.debug.print("managed build ({s}): job started\n", .{mode});
         if (comptime std.mem.eql(u8, mode, "hang")) {
-            std.debug.print("managed build ({s}): cancelling job\n", .{mode});
             job.cancel();
-            std.debug.print("managed build ({s}): job cancelled\n", .{mode});
             try t.expect(job.process.future == null and job.poll() == null);
             continue;
         }
-        std.debug.print("managed build ({s}): waiting for job\n", .{mode});
         const deadline = std.Io.Clock.awake.now(t.io).toMilliseconds() + 10_000;
         var result: jobs.Result = while (true) {
             if (job.poll()) |completed| break try completed;
@@ -369,7 +333,6 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
             try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
         };
         defer result.deinit(t.allocator);
-        std.debug.print("managed build ({s}): job completed\n", .{mode});
         if (comptime std.mem.eql(u8, mode, "missing-runner")) {
             var manifest = try job.finish(result, job.captured.inputs);
             defer manifest.deinit();
@@ -389,34 +352,24 @@ test "managed build freezes inputs rechecks sources and refuses failed stale or 
         } else if (comptime std.mem.eql(u8, mode, "missing")) {
             try t.expectError(error.FileNotFound, job.finish(result, job.captured.inputs));
         } else {
-            std.debug.print("managed build (invalid): finishing invalid artifact\n", .{});
             try t.expectError(error.InvalidUf2Magic, job.finish(result, job.captured.inputs));
-            std.debug.print("managed build (invalid): invalid artifact rejected\n", .{});
         }
     }
-    std.debug.print("managed build: mode jobs complete; checking stale inputs\n", .{});
     try environment.put("ZIGMKAY_BUILD_FIXTURE", "success");
-    std.debug.print("managed build (stale inputs): initializing job\n", .{});
     var completed_export = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, request);
     defer completed_export.deinit();
-    std.debug.print("managed build (stale inputs): starting job\n", .{});
     try completed_export.start(completed_export.captured.inputs);
-    std.debug.print("managed build (stale inputs): waiting for job\n", .{});
     var completed_result: jobs.Result = while (true) {
         if (completed_export.poll()) |completed| break try completed;
         try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
     };
     defer completed_result.deinit(t.allocator);
-    std.debug.print("managed build (stale inputs): job completed\n", .{});
     var changed_current = completed_export.captured.inputs;
     changed_current.project_digest[0] ^= 1;
     try t.expectError(error.StaleBuild, completed_export.finish(completed_result, changed_current));
-    std.debug.print("managed build (changed export): initializing job\n", .{});
     var changed_export = try jobs.managed_build.Job.init(t.allocator, t.io, &environment, request);
     defer changed_export.deinit();
-    std.debug.print("managed build (changed export): job initialized\n", .{});
     try exported.writeFile(t.io, .{ .sub_path = "keymap.zig", .data = "changed export" });
     try t.expectError(error.ExportedSourceChanged, changed_export.start(changed_export.captured.inputs));
     try t.expect(!changed_export.process.started);
-    std.debug.print("managed build: assertions complete; releasing resources\n", .{});
 }
