@@ -25,7 +25,9 @@ pub const Runtime = struct {
         if (self.worker) |worker| {
             if (worker.future) |*future| {
                 const outcome = future.await(self.io);
-                if (outcome) |_| {
+                if (outcome) |value| {
+                    var completed_data = value;
+                    completed_data.deinit();
                     if (self.clearing) self.discardQueue();
                     if (self.writing) {
                         self.popQueue();
@@ -47,14 +49,16 @@ pub const Runtime = struct {
                 defer final_request.deinit();
                 final_request.record = record;
                 if (self.timings[index]) |owned| final_request.timing = owned.payload;
-                _ = final_request.prepare(self.gpa, self.io) catch |err| {
+                var final_data = final_request.prepare(self.gpa, self.io) catch |err| {
                     std.log.err("Practice history shutdown: {s}", .{@errorName(err)});
                     break;
                 };
+                final_data.deinit();
             }
             self.gpa.free(path);
         }
         self.discardQueue();
+        self.data.deinit();
     }
     pub fn enqueue(self: *Runtime, record: results.Record) !void {
         return self.enqueueWithTiming(record, null);
@@ -85,6 +89,7 @@ pub const Runtime = struct {
                 return;
             };
             if (self.clearing) self.discardQueue();
+            self.data.deinit();
             self.data = data;
             self.cohort = self.requested_cohort;
             self.error_value = null;
@@ -158,6 +163,8 @@ test "background saves drain once retries retain IDs and reopening restores comp
     try t.expect(runtime.error_value == null);
     try t.expectEqual(@as(usize, 0), runtime.queued);
     try t.expect(runtime.data.contains_requested);
+    try t.expectEqual(@as(usize, 1), runtime.data.progress.?.count);
+    try t.expectEqual(record.id, runtime.data.requested_record.?.id);
     var reopened = try Runtime.init(t.allocator, t.io, root);
     defer reopened.deinit();
     try reopened.request(.{}, null, false, false, null);

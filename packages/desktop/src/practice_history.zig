@@ -4,6 +4,7 @@ const std = @import("std");
 const results = @import("practice_results.zig");
 const database = @import("practice_database.zig");
 const timing = @import("practice_timing.zig");
+const progress = @import("practice_progress.zig");
 pub const Record = results.Record;
 pub const max_record_bytes = 512 * 1024;
 pub const Query = struct {
@@ -18,11 +19,17 @@ pub const Query = struct {
     oldest_recent: ?Record = null,
     recent_ids: [10][16]u8 = @splat(@splat(0)),
     recent_count: usize = 0,
+    progress: ?*progress.Summary = null,
+    progress_allocator: std.mem.Allocator = std.heap.page_allocator,
+    requested_record: ?Record = null,
     database_runs: usize = 0,
     database_events: usize = 0,
     exported: bool = false,
     imported: ?usize = null,
-    pub fn deinit(_: *Query) void {}
+    pub fn deinit(self: *Query) void {
+        if (self.progress) |value| self.progress_allocator.destroy(value);
+        self.progress = null;
+    }
 };
 pub fn newer(a: Record, b: Record) bool {
     return if (a.timestamp == b.timestamp) std.mem.order(u8, &a.id, &b.id) == .gt else a.timestamp > b.timestamp;
@@ -198,6 +205,11 @@ pub const Request = struct {
         }
         if (self.record) |*record| try db.save(record, self.timing);
         var output: Query = .{ .requested_id = self.current_id, .rejected = rejected };
+        output.progress_allocator = gpa;
+        output.progress = try gpa.create(progress.Summary);
+        output.progress.?.* = .{};
+        errdefer output.deinit();
+        output.progress.?.today = @divFloor(@as(i64, @intCast(std.Io.Clock.real.now(io).toNanoseconds())), progress.day_ns);
         switch (self.transfer) {
             .none => {},
             .export_database => {
@@ -224,7 +236,9 @@ pub const Request = struct {
             output.total += 1;
             if (self.current_id) |id| if (std.mem.eql(u8, &id, &record.id)) {
                 output.contains_requested = true;
+                output.requested_record = record;
             };
+            output.progress.?.add(&record);
             try output.all.add(&record);
             if (record.scored) insert(&newest, &newest_count, record);
             if (self.before) |boundary| if (!newer(boundary, record)) continue;
@@ -236,6 +250,15 @@ pub const Request = struct {
         }
         output.recent_count = newest_count;
         if (newest_count == 10) output.oldest_recent = newest[9];
+        // Raw payloads are decoded one at a time on this background worker.
+        // The GUI receives only bounded derived character timing summaries.
+        for (output.progress.?.points[0..output.progress.?.count]) |*point| if (point.timing) {
+            if (try db.timingFor(point.id, gpa)) |value| {
+                var owned = value;
+                defer owned.deinit();
+                try point.enrich(gpa, owned.payload);
+            }
+        };
         output.database_events = try db.eventCount();
         return output;
     }

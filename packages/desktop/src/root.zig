@@ -53,3 +53,4 @@ pub const practice_history_runtime = @import("practice_history_runtime.zig");
 
 pub const practice_context = @import("practice_context.zig");
 pub const practice_timing = @import("practice_timing.zig");
+pub const practice_progress = @import("practice_progress.zig");

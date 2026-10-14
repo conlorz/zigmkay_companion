@@ -64,6 +64,43 @@ from the prepared real processor, with the existing cancellation and snapshot
 guards. Detected layout/input-source changes invalidate a run's comparability and require
 a fresh exercise. Loss of verified live state shows an unavailable keyboard.
 
+## Progress and daily activity
+
+Open **Progress** for history charts without expanding the immediate rundown.
+**Trends** separates speed and attempt accuracy on aligned time axes. Blue marks
+are raw measurements; optional yellow smoothing uses an exponential weight of
+0.35 for the new point and never joins gaps longer than 24 hours. Zero-duration
+runs do not produce plotted measurements. Single runs still produce a point.
+The view uses the newest 60 scored completed runs in the exact comparison cohort;
+Today and Last 7 days filter that bounded window. The displayed UTC date range
+and sample count stay explicit. Assistance, challenge/drill mode, length, source
+and layout remain separate cohorts rather than silently mixed trends.
+
+![Native progress trends](screenshots/typing-practice/progress-wide.png)
+
+The matrix shows the newest 12 displayed runs and up to six characters ranked
+by all-history weakness. Switch between missed occurrences/sample counts,
+exposure, and median clean interval in milliseconds. Timing excludes correction,
+batch, paste, repeat, first-input and boundary intervals. An asterisk marks fewer
+than five valid intervals or a truncated recording; a dash means no timing
+sample, including older count-only runs. These intervals describe text input
+events, not physical key hold duration. Click a date to open that saved rundown,
+or a cell to open the run with its character selected.
+
+**Activity** shows active practice minutes for the last 28 UTC days, including
+matching scored runs older than the plotted window. Choose a voluntary 1-, 3-
+or 5-minute goal; blue days have practice, green days meet that goal. The choice
+lasts for this editor session. The accuracy streak counts consecutive newest
+scored completed runs with positive duration and at least 95% attempt accuracy;
+it is explicitly limited to the newest 60, not a claim about all-time records.
+
+![Native daily activity](screenshots/typing-practice/activity-wide.png)
+
+The view scrolls in small windows. Empty histories explain how to start; failed
+reads offer Retry. History with rejected records is identified as incomplete.
+
+![Small-window progress](screenshots/typing-practice/progress-small.png)
+
 ## The layer rundown
 
 Completion replaces the typing view with a keyboard heatmap. Choose **This run**,

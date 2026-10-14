@@ -38,7 +38,7 @@ pub fn color(stat: ?results.Stat, light: bool) dvui.Color {
     if (value.opportunities == 0) return ui.color(if (light) 0xDFE3E8 else 0x464B55);
     return ui.color(if (value.misses == 0) (if (light) @as(u24, 0xC5EBDC) else 0x245C4D) else if (value.rate() <= 10) (if (light) @as(u24, 0xD4E6FF) else 0x264F80) else if (value.rate() <= 25) (if (light) @as(u24, 0xF8DEA3) else 0x775A24) else (if (light) @as(u24, 0xF4BEBF) else 0x853D48));
 }
-fn select(view: *View, stat: results.Stat) void {
+pub fn select(view: *View, stat: results.Stat) void {
     view.selected = stat.cp;
     if (stat.route_count > 0) {
         view.layer = stat.routes[0].layer;

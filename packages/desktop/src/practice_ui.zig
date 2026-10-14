@@ -8,6 +8,7 @@ const geometry = @import("physical-ui");
 const presentation = @import("practice_presentation.zig");
 const control = desktop.practice_controller;
 const rundown = @import("practice_rundown.zig");
+const progress_ui = @import("practice_progress_ui.zig");
 pub const Frame = struct {
     /// Live frames must come from the coherent identity-checked session adapter.
     /// Native text and an editable draft never establish a live frame.
@@ -53,6 +54,8 @@ pub const View = struct {
     hint_generation: u64 = 0,
     hint_position: ?usize = null,
     data_open: bool = false,
+    progress_open: bool = false,
+    progress: progress_ui.View = .{},
     data_path: [4096]u8 = @splat(0),
     transfer: enum { none, export_database, import_database } = .none,
 };
@@ -215,6 +218,31 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         if (ui.button(theme, "Back to practice", "practice.data.back", .{ .y = @min(height - 62, 620), .w = 180, .h = 42 })) view.data_open = false;
         return .{ .input_effect = focus_effect };
     }
+    if (view.progress_open) {
+        if (view.progress.inspect) |id| if (input.history) |history| if (history.requested_record) |record| if (std.mem.eql(u8, &id, &record.id)) {
+            view.rundown.reviewed = record;
+            view.rundown.selected = view.progress.selected;
+            if (view.progress.selected) |cp| for (record.stats[0..record.stat_count]) |stat| if (stat.cp == cp) {
+                rundown.select(&view.rundown, stat);
+            };
+            view.progress.inspect = null;
+            view.progress_open = false;
+        };
+        if (view.progress_open) {
+            if (view.progress.inspect) |id| if (input.history) |history| if (history.requested_id) |requested| if (std.mem.eql(u8, &id, &requested) and !history.contains_requested and !input.history_saving) {
+                view.progress.inspect = null;
+                view.progress.message = "This saved run is no longer available.";
+            };
+            const progress_cohort = if (view.rundown.reviewed) |record| record.cohort else if (owner.completed) |record| record.cohort else owner.configCohort();
+            if (try progress_ui.draw(&view.progress, if (std.meta.eql(progress_cohort, input.history_cohort)) input.history else null, input.history_failure, input.history_saving, theme, .{ .w = width, .h = height })) view.progress_open = false;
+            if (view.progress.retry) {
+                view.rundown.retry = true;
+                view.progress.retry = false;
+            }
+            if (view.progress.inspect != null) view.rundown.refresh = true;
+            return .{ .input_effect = focus_effect };
+        }
+    }
     // Exercise input precedes controls so Space cannot toggle a focused checkbox.
     var input_effect = try consumeInput(owner, window.data(), input);
     if (focus_effect.runner != .none or focus_effect.reset_text) input_effect = focus_effect;
@@ -257,6 +285,11 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
                 const default_path = try std.fs.path.join(dvui.currentWindow().arena(), &.{ input.history_path, "practice-export.sqlite3" });
                 if (default_path.len < view.data_path.len) @memcpy(view.data_path[0..default_path.len], default_path);
             }
+        }
+        if (dvui.button(@src(), "Progress", .{}, .{ .tag = "practice.progress.open" })) {
+            view.progress_open = true;
+            view.rundown.refresh = true;
+            if (owner.active and owner.session.state != .complete) pending = .pause;
         }
     }
     if (view.challenge_open and mode == 0) {
