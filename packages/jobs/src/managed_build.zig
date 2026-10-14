@@ -2,7 +2,6 @@
 const std = @import("std");
 const jobs = @import("root.zig");
 const zon = @import("owned-zon");
-const builtin = @import("builtin");
 pub const Request = struct {
     resolution: jobs.package_resolution.Record,
     source_cache: ?[]const u8 = null,
@@ -73,7 +72,7 @@ pub const Job = struct {
         try selected_environment.put("ZIG_LOCAL_PKG_DIR", args[command.argv.len + 1]);
         try selected_environment.put("ZIG_LIB_DIR", try std.fs.path.join(a, &.{ owned.selection.compiler_distribution_path, "lib" }));
         command.argv = args;
-        const process = try jobs.Job.init(gpa, io, .{ .argv = command.argv, .cwd = command.cwd, .snapshot_id = command.build_key, .timeout_ms = owned.timeout_ms, .environ_map = &selected_environment, .isolated_group = builtin.os.tag != .windows and builtin.os.tag != .wasi });
+        const process = try jobs.Job.init(gpa, io, .{ .argv = command.argv, .cwd = command.cwd, .snapshot_id = command.build_key, .timeout_ms = owned.timeout_ms, .environ_map = &selected_environment, .isolated_group = @import("builtin").os.tag != .windows and @import("builtin").os.tag != .wasi });
         return .{ .arena = arena, .gpa = gpa, .io = io, .request = owned, .captured = captured, .command = command, .process = process, .install_name = install_name };
     }
     pub fn start(self: *Job, current: jobs.firmware.Inputs) !void {
