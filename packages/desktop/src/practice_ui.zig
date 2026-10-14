@@ -9,6 +9,7 @@ const presentation = @import("practice_presentation.zig");
 const control = desktop.practice_controller;
 const rundown = @import("practice_rundown.zig");
 const progress_ui = @import("practice_progress_ui.zig");
+const diagnostics_ui = @import("practice_diagnostics_ui.zig");
 pub const Frame = struct {
     /// Live frames must come from the coherent identity-checked session adapter.
     /// Native text and an editable draft never establish a live frame.
@@ -56,6 +57,8 @@ pub const View = struct {
     data_open: bool = false,
     progress_open: bool = false,
     progress: progress_ui.View = .{},
+    diagnostics_open: bool = false,
+    diagnostics: diagnostics_ui.View = .{},
     data_path: [4096]u8 = @splat(0),
     transfer: enum { none, export_database, import_database } = .none,
 };
@@ -225,6 +228,10 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
             if (view.progress.selected) |cp| for (record.stats[0..record.stat_count]) |stat| if (stat.cp == cp) {
                 rundown.select(&view.rundown, stat);
             };
+            if (view.progress.selected != null and view.progress.matrix == 2) {
+                view.rundown.diagnostics = true;
+                view.rundown.refresh = true;
+            }
             view.progress.inspect = null;
             view.progress_open = false;
         };
@@ -242,6 +249,33 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
             if (view.progress.inspect != null) view.rundown.refresh = true;
             return .{ .input_effect = focus_effect };
         }
+    }
+    if (view.rundown.diagnostics) {
+        view.diagnostics_open = true;
+        view.diagnostics = .{};
+        view.rundown.diagnostics = false;
+    }
+    if (view.diagnostics_open) {
+        const record = if (view.rundown.reviewed) |*reviewed| reviewed else if (owner.completed) |*completed| completed else {
+            view.diagnostics_open = false;
+            return .{};
+        };
+        const matching = if (input.history) |history| (if (history.requested_record) |saved| std.mem.eql(u8, &saved.id, &record.id) else false) else false;
+        const action = try diagnostics_ui.draw(&view.diagnostics, view.rundown.selected, owner, record, if (matching) input.history else null, input.history_saving, input.history_failure, theme, .{ .w = width, .h = height });
+        if (view.diagnostics.retry) {
+            view.rundown.retry = true;
+            view.diagnostics.retry = false;
+        }
+        switch (action) {
+            .none => {},
+            .back => view.diagnostics_open = false,
+            .drill => |config| {
+                view.diagnostics_open = false;
+                view.rundown.reviewed = null;
+                return .{ .input_effect = focus_effect, .action = owner.action(.{ .drill = config }) };
+            },
+        }
+        return .{ .input_effect = focus_effect };
     }
     // Exercise input precedes controls so Space cannot toggle a focused checkbox.
     var input_effect = try consumeInput(owner, window.data(), input);

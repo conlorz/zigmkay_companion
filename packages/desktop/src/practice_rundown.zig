@@ -23,6 +23,7 @@ pub const View = struct {
     heatmap_mode: usize = 0,
     sort: usize = 0,
     more_details: bool = false,
+    diagnostics: bool = false,
 };
 pub const Action = union(enum) { none, new_exercise, drill: desktop.practice_controller.Config };
 fn glyph(cp: u21, buffer: *[4]u8) []const u8 {
@@ -272,6 +273,10 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         view.before = null;
     }
     if (ui.button(theme, "More details", "practice.result.more", .{ .x = 520, .y = actions_y, .w = 140, .h = 38 })) view.more_details = !view.more_details;
+    if (view.more_details and ui.button(theme, "Timing details", "practice.result.timing", .{ .x = 670, .y = actions_y, .w = 155, .h = 38 })) {
+        view.diagnostics = true;
+        view.refresh = true;
+    }
     if (view.more_details and ui.button(theme, "Clear history", "practice.history.clear", .{ .x = width - 140, .y = actions_y + 78, .w = 140, .h = 30 })) view.confirm_clear = true;
     var focus_note: std.Io.Writer.Allocating = .init(arena);
     if (record.cohort.family == .english) try focus_note.writer.print("Seed {d} · generation / corpus / coverage v1 · {d} outside-reference errors", .{ record.seed, record.outside_errors }) else try focus_note.writer.print("Zig lesson {s} · original text corpus v1 · {d} outside-reference errors", .{ desktop.practice.lesson_ids[record.cohort.lesson], record.outside_errors });

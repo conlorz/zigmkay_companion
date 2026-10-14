@@ -9,6 +9,11 @@ pub const Scroll = struct { position: f32 = 0, at: ?u64 = null };
 pub fn caption(text: []const u8, bounds: dvui.Rect, size: f32, color: dvui.Color, tag: ?[]const u8) void {
     dvui.labelNoFmt(@src(), text, .{ .align_x = 0.5, .align_y = 0.5 }, .{ .rect = bounds, .font = dvui.Font.theme(.body).withSize(size), .color_text = .{ .color = color }, .padding = .{}, .tag = tag, .id_extra = std.hash.Wyhash.hash(0, std.mem.asBytes(&bounds)) });
 }
+pub fn paragraph(text: []const u8, bounds: dvui.Rect, size: f32, color: dvui.Color) void {
+    const layout = dvui.textLayout(@src(), .{ .break_lines = true }, .{ .rect = bounds, .font = dvui.Font.theme(.body).withSize(size), .color_text = .{ .color = color }, .padding = .{}, .id_extra = std.hash.Wyhash.hash(0, std.mem.asBytes(&bounds)) });
+    layout.addText(text, .{});
+    layout.deinit();
+}
 fn letter(s: *const practice.Session, index: usize, focus: usize, bounds: dvui.Rect, size: f32, t: ui.Theme, hero: bool) void {
     const current = index == focus and s.state != .complete;
     const wrong = index < s.len and s.typed[index] != s.reference[index];

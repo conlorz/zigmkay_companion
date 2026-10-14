@@ -249,13 +249,15 @@ test "queued timing is frozen across new exercises; migration and clear do not r
     record.stats[0] = .{ .cp = 'a', .opportunities = 1 };
     try runtime.enqueueWithTiming(record, recorder.payload());
     recorder.reset(&.{'z'});
-    try runtime.request(.{}, null, false, false, null);
+    try runtime.request(.{}, null, false, false, record.id);
     while (runtime.worker != null) {
         runtime.poll();
         try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
     }
     try t.expect(runtime.error_value == null);
     try t.expectEqual(@as(usize, 2), runtime.data.database_runs);
+    try t.expectEqual(@as(u21, 'a'), runtime.data.timing.?.payload.reference[0]);
+    try t.expectEqual(@as(usize, 0), runtime.data.analysis.?.eligible);
     const db_path = try std.fs.path.join(t.allocator, &.{ runtime.path.?, "practice.sqlite3" });
     defer t.allocator.free(db_path);
     var db = try @import("practice_database.zig").Database.open(t.allocator, db_path, true);
@@ -270,6 +272,7 @@ test "queued timing is frozen across new exercises; migration and clear do not r
     }
     try t.expect(runtime.error_value == null);
     try t.expectEqual(@as(usize, 0), runtime.data.database_runs);
+    try t.expect(runtime.data.timing == null and runtime.data.analysis == null);
     try runtime.request(.{}, null, false, false, null);
     while (runtime.worker != null) {
         runtime.poll();

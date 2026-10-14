@@ -101,6 +101,45 @@ reads offer Retry. History with rejected records is identified as incomplete.
 
 ![Small-window progress](screenshots/typing-practice/progress-small.png)
 
+## On-demand timing details
+
+Choose **More details → Timing details** in the rundown, or click a timing
+matrix cell in Progress. **Characters** shows the selected character's clean
+interval median, p95 slow tail, sample count, first-pass success and matching
+run medians over time. The median averages the two middle values for an even
+sample; p95 uses the nearest-rank definition. Missing samples show a dash.
+
+![Native character timing](screenshots/typing-practice/diagnostics-wide.png)
+
+A personal reference needs at least three other matching, nontruncated runs,
+each with five valid intervals for that character. It is the median of their
+run medians, not a universal speed target. A run median more than 25% above that
+reference suggests a careful drill when the current run has at least five
+samples. **Practice this character** keeps the current source/layout, assistance,
+length and preset; it requires a scored English run with matching settings and
+corpus coverage. Transition rows expose slow pairs into the selected character
+with median, p95 and sample counts. They describe consecutive reference context;
+the character drill does not guarantee a particular bigram.
+
+**Run rhythm / events** shows 64 buckets over active practice time. Blue marks
+show mean eligible interval, with separate error, correction, pause and hint
+markers. Empty buckets stay empty. The raw event list includes every retained
+event, including excluded attempts, in pages of twelve. Select one for its
+reference context, typed character, observed clock, elapsed/active time, batch,
+assistance and eligibility. Analysis exclusions do not delete observations.
+
+![Native rhythm and raw events](screenshots/typing-practice/rhythm-wide.png)
+
+**Skills / provenance** shows clock sources and exclusion counts. Text events
+cannot establish which physical route, layer, modifier or finger was used.
+Frozen proven routes remain labeled **possible**, and physical performance is
+explicitly unavailable. Frame timestamps also remain distinguishable from
+native event timestamps. Older count-only histories explain their missing data;
+truncated recordings label conclusions incomplete. Details scroll in small
+windows and do not record ordinary keyboard input while open.
+
+![Native skill provenance](screenshots/typing-practice/skills-wide.png)
+
 ## The layer rundown
 
 Completion replaces the typing view with a keyboard heatmap. Choose **This run**,

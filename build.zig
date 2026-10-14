@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
     const sqlite = b.dependency("sqlite", .{});
     const sqlite_source = sqlite.path("sqlite3.c");
     const practice_data_tests = b.step("test-practice-data", "Validate timing, database portability and legacy migration without firmware or devices");
-    for ([_][]const u8{ "practice_generator.zig", "practice_results.zig", "practice_history.zig", "practice_history_runtime.zig", "practice_timing.zig", "practice_database.zig", "practice_progress.zig" }) |name| {
+    for ([_][]const u8{ "practice_generator.zig", "practice_results.zig", "practice_history.zig", "practice_history_runtime.zig", "practice_timing.zig", "practice_database.zig", "practice_progress.zig", "practice_analysis.zig" }) |name| {
         const practice_tests = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("packages/desktop/src/{s}", .{name})),
             .target = b.graph.host,

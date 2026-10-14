@@ -5,6 +5,7 @@ const results = @import("practice_results.zig");
 const database = @import("practice_database.zig");
 const timing = @import("practice_timing.zig");
 const progress = @import("practice_progress.zig");
+const analysis = @import("practice_analysis.zig");
 pub const Record = results.Record;
 pub const max_record_bytes = 512 * 1024;
 pub const Query = struct {
@@ -22,13 +23,19 @@ pub const Query = struct {
     progress: ?*progress.Summary = null,
     progress_allocator: std.mem.Allocator = std.heap.page_allocator,
     requested_record: ?Record = null,
+    timing: ?timing.Owned = null,
+    analysis: ?*analysis.Summary = null,
     database_runs: usize = 0,
     database_events: usize = 0,
     exported: bool = false,
     imported: ?usize = null,
     pub fn deinit(self: *Query) void {
         if (self.progress) |value| self.progress_allocator.destroy(value);
+        if (self.timing) |*value| value.deinit();
+        if (self.analysis) |value| self.progress_allocator.destroy(value);
         self.progress = null;
+        self.timing = null;
+        self.analysis = null;
     }
 };
 pub fn newer(a: Record, b: Record) bool {
@@ -260,6 +267,10 @@ pub const Request = struct {
             }
         };
         output.database_events = try db.eventCount();
+        if (output.requested_record) |record| if (record.timing_available) {
+            output.timing = try db.timingFor(record.id, gpa);
+            if (output.timing) |owned| output.analysis = try analysis.analyze(gpa, owned.payload);
+        };
         return output;
     }
 };
