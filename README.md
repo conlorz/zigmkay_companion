@@ -1,6 +1,6 @@
 <div align="center">
 
-# Zigmkay
+# Zigmkay Companion
 
 **Make your keyboard yours. Learn it as you go.**
 
