@@ -1,7 +1,9 @@
 //! Controlled wrapper contract 1. This module never transfers firmware itself.
 const std = @import("std");
 pub const output_limit = 64 * 1024;
-pub const Selection = union(enum) { bus_address: struct { bus: u8, address: u8 }, serial: []const u8 };
+/// unique_bootsel delegates zero/multiple-device handling to the wrapper's
+/// picotool-info discovery; it must only follow explicit user confirmation.
+pub const Selection = union(enum) { bus_address: struct { bus: u8, address: u8 }, serial: []const u8, unique_bootsel };
 pub const Spec = struct {
     wrapper: []const u8,
     picotool: []const u8,
@@ -57,6 +59,7 @@ pub const Job = struct {
             .serial => |s| if (s.len == 0 or std.mem.indexOfScalar(u8, s, 0) != null) {
                 return error.InvalidSelection;
             },
+            .unique_bootsel => {},
         }
         var arena = std.heap.ArenaAllocator.init(gpa);
         errdefer arena.deinit();
@@ -74,6 +77,7 @@ pub const Job = struct {
                 copied.selection = .{ .serial = try a.dupe(u8, s) };
                 try args.appendSlice(a, &.{ "--serial", copied.selection.serial });
             },
+            .unique_bootsel => {}, // No selector: wrapper must reject ambiguity and retry absence.
         }
         return .{ .arena = arena, .gpa = gpa, .io = io, .spec = copied, .argv = try args.toOwnedSlice(a) };
     }
@@ -183,3 +187,17 @@ pub const Job = struct {
         self.* = undefined;
     }
 };
+
+test "unique BOOTSEL emits no selector arguments for wrapper discovery" {
+    var job = try Job.init(std.testing.allocator, std.testing.io, .{
+        .wrapper = "/fake/wrapper", .picotool = "/fake/picotool", .firmware = "/fake/artifact.uf2",
+        .expected_sha256 = @splat(0), .snapshot_id = @splat(0), .selection = .unique_bootsel,
+    });
+    defer job.deinit();
+    for (job.argv) |arg| {
+        try std.testing.expect(!std.mem.eql(u8, arg, "--serial"));
+        try std.testing.expect(!std.mem.eql(u8, arg, "--bus"));
+        try std.testing.expect(!std.mem.eql(u8, arg, "--address"));
+    }
+    try std.testing.expectEqualStrings("--cancel-stdin", job.argv[job.argv.len - 1]);
+}

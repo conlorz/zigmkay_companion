@@ -161,7 +161,7 @@ pub fn verify(gpa: std.mem.Allocator, io: std.Io, expected: Record, cache_direct
     return current;
 }
 /// Capture complete fresh dependency inputs instead of trusting caller inventories.
-pub fn capture(gpa: std.mem.Allocator, io: std.Io, expected: Record, cache_directory: ?[]const u8, selected: jobs.build_provenance.Selection) !jobs.build_provenance.Captured {
+pub fn capture(gpa: std.mem.Allocator, io: std.Io, expected: Record, cache_directory: ?[]const u8, selected: jobs.build_provenance.Selection, dependency_access: jobs.build_provenance.DependencyAccess) !jobs.build_provenance.Captured {
     var verified = try verify(gpa, io, expected, cache_directory);
     defer verified.deinit();
     if (verified.record.overrides.len != 0 and selected.lock.source_kind != .development) return error.DevelopmentOverrideRequiresDevelopmentLock;
@@ -175,14 +175,17 @@ pub fn capture(gpa: std.mem.Allocator, io: std.Io, expected: Record, cache_direc
         if (std.mem.eql(u8, root.directory, companion)) {
             if (!std.mem.eql(u8, &root.tree_digest, &selected.expected_companion_tree_digest)) return error.CompanionTreeDigestMismatch;
             companion_found = true;
+
         }
         if (std.mem.eql(u8, root.directory, firmware)) {
             if (!std.mem.eql(u8, &root.tree_digest, &selected.lock.firmware_source_digest)) return error.FirmwareTreeDigestMismatch;
             firmware_found = true;
+
         }
     }
     if (!companion_found or !firmware_found) return error.BuildRootNotResolved;
     var complete = selected;
+    complete.dependency_access = dependency_access;
     complete.dependencies = verified.record.dependencies;
     complete.manifests = verified.record.manifests;
     return jobs.build_provenance.capture(gpa, io, complete);
@@ -470,7 +473,7 @@ test "read-only resolution capture supplies complete inventory and rejects unres
     lock.dependency_digest = graph.record.closure_digest;
     lock.board_mapping_digest = jobs.firmware.digest("mapping");
     var selection = jobs.build_provenance.Selection{ .lock = lock, .compiler_path = compiler, .compiler_distribution_path = path, .compiler_bundle_path = bundle, .expected_compiler_tree_digest = lock.firmware_source_digest, .companion_path = path, .expected_companion_tree_digest = lock.firmware_source_digest, .firmware_path = path, .dependencies = &.{}, .manifests = &.{}, .board_mapping = "mapping", .project_digest = @splat(1), .exported_source_digest = @splat(2), .profile_id = @splat(3), .identity_digest = @splat(4) };
-    var captured = try capture(t.allocator, t.io, graph.record, null, selection);
+    var captured = try capture(t.allocator, t.io, graph.record, null, selection, .offline);
     defer captured.deinit();
     try t.expectEqual(graph.record.closure_digest, captured.receipt.dependency_closure_digest);
     var unrelated = t.tmpDir(.{ .iterate = true });
@@ -478,8 +481,8 @@ test "read-only resolution capture supplies complete inventory and rejects unres
     const unrelated_path = try unrelated.dir.realPathFileAlloc(t.io, ".", t.allocator);
     defer t.allocator.free(unrelated_path);
     selection.companion_path = unrelated_path;
-    try t.expectError(error.BuildRootNotResolved, capture(t.allocator, t.io, graph.record, null, selection));
+    try t.expectError(error.BuildRootNotResolved, capture(t.allocator, t.io, graph.record, null, selection, .offline));
     selection.companion_path = path;
     try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{}, .changed = true }" });
-    try t.expectError(error.DependencyResolutionChanged, capture(t.allocator, t.io, graph.record, null, selection));
+    try t.expectError(error.DependencyResolutionChanged, capture(t.allocator, t.io, graph.record, null, selection, .offline));
 }

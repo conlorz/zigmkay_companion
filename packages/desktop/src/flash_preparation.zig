@@ -41,6 +41,8 @@ pub fn compose(
     if (!std.mem.eql(u8, &identity.board_id, &board_id) or
         !std.mem.eql(u8, &identity.profile_id, &current.profile_id) or
         !std.mem.eql(u8, &identity.digest, &current.identity_digest)) return error.IdentityMismatch;
+    const freeze_start = std.Io.Clock.awake.now(io);
+    defer std.log.info("flash preparation artifact_freeze_ms={d}", .{freeze_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds()});
     var frozen = try jobs.flash_inputs.freeze(gpa, io, cache, cache_path, manifest, current, tools, .{
         .captured = captured.snapshot,
         .current = current_context.snapshot,

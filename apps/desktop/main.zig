@@ -2,6 +2,9 @@
 //! modes and fixtures avoid devices; flashing and acquisition remain explicit.
 const std = @import("std");
 const flash_session = @import("flash_session.zig");
+const bootloader = @import("flash_bootloader.zig");
+const flash_ui = @import("flash-ui");
+const jobs_api = @import("companion-jobs");
 const dvui = @import("dvui");
 const Backend = @import("dvui_backend");
 const desktop = @import("desktop-core");
@@ -171,8 +174,16 @@ fn startFile(gpa: std.mem.Allocator, io: std.Io, view: *editor.View, model: *des
     errdefer request.deinit();
     return .{ .worker = try desktop.project_worker.Owner.create(gpa, io, &request, generation), .action = action, .editor_generation = editor_generation };
 }
-fn startBuild(gpa: std.mem.Allocator, io: std.Io, model: *const desktop.model.Model, config: desktop.build_worker.Config, environment: *const std.process.Environ.Map, generation: u64, editor_generation: u64) !BuildJob {
-    var request = try desktop.build_worker.Request.capture(model, config, environment, generation);
+fn artifactMatchesAudit(artifact: anytype, full: bool) bool {
+    return artifact.audit_mode == (if (full) jobs_api.firmware.AuditMode.deep else .fast_prepared_inputs_no_fresh_full_provenance_audit);
+}
+fn auditConfig(config: desktop.build_worker.Config, full: bool) desktop.build_worker.Config {
+    var selected = config;
+    selected.request.audit_mode = if (full) .deep else .fast;
+    return selected;
+}
+fn startBuild(gpa: std.mem.Allocator, io: std.Io, model: *const desktop.model.Model, config: desktop.build_worker.Config, full: bool, environment: *const std.process.Environ.Map, generation: u64, editor_generation: u64) !BuildJob {
+    var request = try desktop.build_worker.Request.capture(model, auditConfig(config, full), environment, generation);
     errdefer request.deinit();
     return .{ .worker = try desktop.build_worker.Owner.create(gpa, io, &request, generation), .editor_generation = editor_generation };
 }
@@ -213,11 +224,52 @@ fn remember(gpa: std.mem.Allocator, io: std.Io, user_paths: installed.Paths, vie
     try registry.set(.{ .board_id = model.document().board_id, .profile_id = model.document().profile_id }, std.mem.sliceTo(&view.paths.project, 0));
     try registry.save(io, config);
 }
+/// Route both toolbar clicks and offline state-machine tests through the same
+/// captured editor request. This only authorizes an intent; it never starts a
+/// build, discovers a device, or transfers firmware.
+pub fn dispatchFlash(owner: *desktop.editor_dispatch.State, model: *desktop.model.Model) !desktop.editor_dispatch.Effect {
+    return owner.request(model, try desktop.editor_dispatch.Request.capture(model, .flash));
+}
+pub fn acceptFlashEffect(model: *const desktop.model.Model, captured: desktop.editor_dispatch.Request) !void {
+    if (captured.intent != .flash) return error.NotFlashRequest;
+    try captured.validate(model);
+}
+fn flashSnapshot(session: *const flash_session.Session, rendered: desktop.flash_presenter.View, generation: u64) bootloader.Snapshot {
+    return .{
+        .operation = rendered.operation_id,
+        .model_generation = generation,
+        .board_id = session.request.config.board_id,
+        .build_key = session.owner.current.build_key,
+        .artifact_hash = rendered.uf2_hash orelse @splat(0),
+        .selection_revision = rendered.selection_revision,
+        .selected_target = if (session.owner.selected) |selection| if (selection == .unique_bootsel) @as(u64, 1) else 0 else 0,
+    };
+}
+// A HID BOOTSEL request requires a coherent running binding on the artifact's
+// board; the selected project's profile and digest may differ from firmware.
+fn flashLiveMatches(driver: *const LiveDriver, running: ?@TypeOf(@as(LiveDriver, undefined).session.expected), selected: @TypeOf(@as(LiveDriver, undefined).session.expected), artifact_board: [8]u8) bool {
+    const expected = running orelse return false;
+    return driver.connected and driver.session.token != 0 and driver.session.hasCoherentState() and
+        std.meta.eql(driver.session.expected, expected) and
+        std.mem.eql(u8, &expected.board_id, &artifact_board) and
+        std.mem.eql(u8, &selected.board_id, &artifact_board);
+}
+fn bootloaderStatus(status: @TypeOf(@as(LiveDriver, undefined).session.bootloader_status)) bootloader.Session.Status {
+    return switch (status) {
+        .idle => .idle, .requested => .requested, .accepted => .accepted,
+        .rejected => .rejected, .timed_out => .timed_out, .disconnected => .disconnected,
+    };
+}
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const args = try init.minimal.args.toSlice(gpa);
     defer gpa.free(args);
     var frame_limit: ?usize = null;
+    const physical_flash = args.len > 1 and std.mem.eql(u8, args[1], "--physical-flash-once");
+    if (physical_flash) {
+        if (args.len != 5 or !std.mem.eql(u8, init.environ_map.get("ZIGMKAY_EXPLICIT_FLASH_TRIAL") orelse "", "1")) return error.ExplicitFlashAuthorizationRequired;
+        for (args[2..]) |path| if (!std.fs.path.isAbsolute(path)) return error.AbsolutePreparedInputRequired;
+    }
     const background_offline = args.len == 2 and std.mem.eql(u8, args[1], "--background-offline");
     const offline = background_offline or (args.len == 2 and std.mem.eql(u8, args[1], "--offline"));
     const background = background_offline or (args.len == 2 and std.mem.eql(u8, args[1], "--background"));
@@ -235,13 +287,44 @@ pub fn main(init: std.process.Init) !void {
     var native_tray_fixture = false;
     var source_refresh_fixture = false;
     var draft_manifest: ?[]const u8 = null;
+    var flash_tools_path: ?[]const u8 = null;
     var build_plan: ?desktop.build_worker.Plan = null;
     defer if (build_plan) |plan| project.owned_zon.free(gpa, plan);
     if (args.len != 1 and !background and !offline and !light and !explicit_live) {
         draft_fixture = std.mem.eql(u8, args[1], "--offline-draft-frames");
         build_fixture = std.mem.eql(u8, args[1], "--offline-build-frames");
+        if (physical_flash) {
+            flash_tools_path = args[4];
+            const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[3], gpa, .limited(1024 * 1024));
+            defer gpa.free(bytes);
+            const text = try gpa.dupeSentinel(u8, bytes, 0);
+            defer gpa.free(text);
+            build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
+            if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
+        } else if (args.len == 5 and std.mem.eql(u8, args[1], "--prepared-build-config") and std.mem.eql(u8, args[3], "--prepared-flash-tools")) {
+            if (!std.fs.path.isAbsolute(args[2]) or !std.fs.path.isAbsolute(args[4])) return error.AbsolutePreparedInputRequired;
+            flash_tools_path = args[4];
+            const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[2], gpa, .limited(1024 * 1024));
+            defer gpa.free(bytes);
+            const text = try gpa.dupeSentinel(u8, bytes, 0);
+            defer gpa.free(text);
+            build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
+            if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
+        } else if (args.len == 5 and std.mem.eql(u8, args[1], "--prepared-flash-tools") and std.mem.eql(u8, args[3], "--prepared-build-config")) {
+            if (!std.fs.path.isAbsolute(args[2]) or !std.fs.path.isAbsolute(args[4])) return error.AbsolutePreparedInputRequired;
+            flash_tools_path = args[2];
+            const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[4], gpa, .limited(1024 * 1024));
+            defer gpa.free(bytes);
+            const text = try gpa.dupeSentinel(u8, bytes, 0);
+            defer gpa.free(text);
+            build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
+            if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
+        } else {
         if (args.len != (if (draft_fixture or build_fixture) @as(usize, 4) else 3)) return error.Usage;
-        if (std.mem.eql(u8, args[1], "--prepared-build-config")) {
+        if (std.mem.eql(u8, args[1], "--prepared-flash-tools")) {
+            if (args.len != 3 or !std.fs.path.isAbsolute(args[2])) return error.AbsoluteFlashToolsRequired;
+            flash_tools_path = args[2];
+        } else if (std.mem.eql(u8, args[1], "--prepared-build-config")) {
             if (!std.fs.path.isAbsolute(args[2])) return error.AbsoluteBuildConfigRequired;
             const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[2], gpa, .limited(1024 * 1024));
             defer gpa.free(bytes);
@@ -279,6 +362,7 @@ pub fn main(init: std.process.Init) !void {
                 if (!std.mem.eql(u8, std.mem.span(driver), "dummy")) return error.DummyVideoRequired;
             }
         }
+        }
     }
     const live_enabled = explicit_live or (!offline and !light and frame_limit == null);
     if (frame_limit != null and live_enabled) return error.OfflineFixtureOpenedLiveMode;
@@ -289,8 +373,6 @@ pub fn main(init: std.process.Init) !void {
     defer model.deinit();
     var owner = try desktop.editor_dispatch.State.init(&model);
     defer owner.deinit();
-    var flash = flash_session.Session.init(gpa, .{ .snapshot = try model.id(), .build_key = @splat(0) });
-    defer flash.deinit();
     var view: editor.View = .{};
     view.toolbar.light = light;
     var registry = desktop.profile_projects.Registry.init(gpa);
@@ -344,12 +426,18 @@ pub fn main(init: std.process.Init) !void {
             }
         }
     }
-    if (explicit_live and args.len == 3) {
+    if (physical_flash or (explicit_live and args.len == 3)) {
         if (!std.fs.path.isAbsolute(args[2]) or args[2].len >= view.paths.project.len) return error.AbsoluteProjectPathRequired;
         view.paths.project = @splat(0);
         @memcpy(view.paths.project[0..args[2].len], args[2]);
         _ = try fileOperation(gpa, init.io, &view, &model, view.paths.action(try model.id(), .open));
         try owner.sync(&model);
+    }
+    if (physical_flash) {
+        if (!std.mem.eql(u8, &model.board.id, "lk7\x00\x00\x00\x00\x00") or
+            !std.mem.eql(u8, &model.document().profile_id, "eurmac\x00\x00") or
+            !std.mem.eql(u8, &build_plan.?.config.board_id, &model.board.id) or
+            !std.mem.eql(u8, build_plan.?.config.build_board, "lk7")) return error.PhysicalFlashIdentityMismatch;
     }
     var source: ?Source = if (frame_limit == null) Source.init() else null;
     defer if (source) |*active| active.deinit();
@@ -400,6 +488,22 @@ pub fn main(init: std.process.Init) !void {
     var job_generation: u64 = 0;
     var jobs: Jobs = .{};
     defer jobs.cancel();
+    var flash_tools: ?jobs_api.flash_inputs.Tools = if (flash_tools_path) |path| try flash_session.readTools(gpa, init.io, path) else null;
+    defer if (flash_tools) |*tools| tools.deinit();
+    if (physical_flash and flash_tools == null) return error.FlashToolsReceiptRequired;
+    var trial_start: ?i128 = null;
+    var flash: ?flash_session.Session = null;
+    var flash_panel = false;
+    var flash_details_open = false;
+    var flash_failure: ?anyerror = null;
+    var flash_gate: bootloader.Gate = .{};
+    var handed_off_operation: ?u64 = null;
+    var retained_flash_view: ?desktop.flash_presenter.View = null;
+    var pending_flash: ?struct { snapshot: [32]u8, generation: u64, full_provenance_audit: bool } = null;
+    var advance_flash = false;
+    var built_generation: u64 = 0;
+    var built_tree: jobs_api.firmware.Digest = @splat(0);
+    defer if (flash) |*session| session.deinit();
     var built: ?desktop.build_worker.Artifact = null;
     defer if (built) |*artifact| artifact.deinit();
     var built_runner: ?desktop.build_worker.Runner = null;
@@ -423,8 +527,35 @@ pub fn main(init: std.process.Init) !void {
     var build_checked = false;
     var build_scheduler: desktop.auto_build.Scheduler = .{};
     while (!owner.closed) {
+        if (physical_flash) if (trial_start) |start| {
+            const elapsed = native.nanoTime() - start;
+            if (flash) |*session| {
+                if (session.owner.phase == .ready) {
+                    if (!(try session.matchesModel(&model, built_generation)) or flash_failure != null) return error.PhysicalFlashIdentityMismatch;
+                    std.log.info("Physical flash ready in {d} ms", .{@divTrunc(elapsed, std.time.ns_per_ms)});
+                    return;
+                }
+                if (session.owner.phase == .failed or session.owner.phase == .stale or session.owner.phase == .cancelled or session.owner.phase == .reconnect_timeout) {
+                    std.log.err("Physical flash terminated after {d} ms: {t}; error={s}; runtime={s}", .{ @divTrunc(elapsed, std.time.ns_per_ms), session.owner.phase, if (flash_failure) |err| @errorName(err) else "none", if (session.runtime.last_error) |err| @errorName(err) else "none" });
+                    if (session.completion) |result| if (result.completion) |completed| {
+                        std.log.err("Flash wrapper stdout: {s}", .{completed.process.stdout});
+                        std.log.err("Flash wrapper stderr: {s}", .{completed.process.stderr});
+                    };
+                    return error.PhysicalFlashFailed;
+                }
+            }
+            if (flash_failure) |err| {
+                std.log.err("Physical flash failed after {d} ms: {s}", .{ @divTrunc(elapsed, std.time.ns_per_ms), @errorName(err) });
+                return err;
+            }
+            if (elapsed >= 35 * std.time.ns_per_s) {
+                std.log.err("Physical flash timed out after {d} ms", .{@divTrunc(elapsed, std.time.ns_per_ms)});
+                return error.PhysicalFlashTimeout;
+            }
+        };
         if (live) |*driver| {
-            driver.poll(driver.transport.now());
+            const driver_now = driver.transport.now();
+            driver.poll(driver_now);
             live_frame = try presenter.select(&running_captions.labels, running_identity, &driver.session, &live_pressed);
             const status = liveStatus(driver, live_frame);
             if (last_live_status == null or last_live_status.? != status) {
@@ -473,7 +604,7 @@ pub fn main(init: std.process.Init) !void {
             .quit => events.quit = true,
             .bind_saved_project => bind: {
                 if (!live_enabled) break :bind;
-                if (jobs.busy()) {
+                if (jobs.busy() or pending_flash != null or flash != null) {
                     view.report(error.ProjectJobInProgress);
                     break :bind;
                 }
@@ -508,6 +639,8 @@ pub fn main(init: std.process.Init) !void {
                     view.report(err);
                     break :bind;
                 };
+                flash_gate.cancel();
+                retained_flash_view = null;
                 if (live) |*driver| driver.disconnect(driver.transport.now());
                 live = next_driver;
                 std.mem.swap(desktop.model.Model, &running_model, &replacement);
@@ -525,7 +658,7 @@ pub fn main(init: std.process.Init) !void {
             _ = Backend.c.SDL_ShowWindow(native.window);
         }
         if (life.quit_requested and owner.close_requested == null and owner.pending == null and !owner.closed) life.cancelQuit();
-        if (frame_limit == null and !life.editor_visible and !life.companion_visible and !jobs.busy() and draft_runtime.owner == null) {
+        if (frame_limit == null and !life.editor_visible and !life.companion_visible and !jobs.busy() and flash == null and pending_flash == null and retained_flash_view == null and draft_runtime.owner == null) {
             // An idle resident does not construct editor frames or redraw hidden
             // windows. SDL waits for native events between bounded tray polls.
             tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = false });
@@ -710,22 +843,52 @@ pub fn main(init: std.process.Init) !void {
             jobs.build = null;
             defer job.worker.destroy();
             var prepared = event.result catch |err| {
+                if (pending_flash != null) {
+                    flash_failure = err;
+                    flash_panel = true;
+                }
+                pending_flash = null;
+                advance_flash = false;
                 view.report(err);
                 continue;
             };
             defer prepared.deinit();
             if (job.editor_generation != owner_generation or !std.meta.eql(event.ticket, job.worker.ticket)) {
+                if (pending_flash != null) {
+                    flash_failure = error.StaleBuild;
+                    flash_panel = true;
+                }
+                pending_flash = null;
+                advance_flash = false;
                 view.report(error.StaleBuild);
                 continue;
             }
             const bundle = prepared.takeBundle(&model, .{ .generation = job_generation, .snapshot = try model.id() }) catch |err| {
+                if (pending_flash != null) {
+                    flash_failure = err;
+                    flash_panel = true;
+                }
+                pending_flash = null;
+                advance_flash = false;
                 view.report(err);
                 continue;
             };
+            flash_gate.cancel();
+            retained_flash_view = null;
+            if (pending_flash) |pending| {
+                if (pending.generation == owner_generation and pending.full_provenance_audit == view.toolbar.full_provenance_audit and std.mem.eql(u8, &pending.snapshot, &(try model.id()))) {
+                    advance_flash = true;
+                } else pending_flash = null;
+            }
+            if (flash) |*previous| previous.deinit();
+            flash = null;
             if (built) |*previous| previous.deinit();
             if (built_runner) |*previous| previous.deinit();
             built = bundle.firmware;
             built_runner = bundle.runner;
+            built_generation = job_generation;
+            built_tree = bundle.expected_export_tree;
+            flash_panel = false;
             view.diagnostic = @splat(0);
         };
         if (jobs.file) |job| if (job.worker.poll()) |event| {
@@ -829,6 +992,132 @@ pub fn main(init: std.process.Init) !void {
             if (prepared.existing) if (user_paths) |owned| remember(gpa, init.io, owned.paths, &view, &model) catch |err| view.report(err);
         };
         const now_us: u64 = @intCast(@max(0, native.nanoTime()) / 1000);
+        if (flash) |*session| {
+            if (retained_flash_view != null) {
+                const current = flashSnapshot(session, session.view(null), built_generation);
+                flash_gate.observe(current);
+                if (flash_gate.phase == .idle or !(session.matchesModel(&model, built_generation) catch false)) {
+                    flash_gate.cancel();
+                    retained_flash_view = null;
+                }
+            }
+            _ = session.observe(&model, built_generation) catch |err| { flash_failure = err; view.report(err); };
+            if (retained_flash_view) |rendered_view| {
+                const current = flashSnapshot(session, session.view(null), built_generation);
+                const driver_now = if (live) |*driver| driver.transport.now() else @as(u64, @intCast(std.Io.Clock.awake.now(init.io).toMilliseconds()));
+                if (live) |*driver| {
+                    if (driver.session.bootloader_status == .accepted) flash_gate.observeAccepted(current, driver_now);
+                }
+                // Only the board must match the selected artifact; the live
+                // session remains bound to the verified running firmware.
+                const selected_identity = project.snapshot.identity(gpa, model.current.snapshot, model.board) catch null;
+                const gate_session: bootloader.Session = if (live) |*driver| .{
+                    .available = if (selected_identity) |selected| flashLiveMatches(driver, running_identity, selected, current.board_id) and driver.session.bootloaderAvailable() else false,
+                    .status = bootloaderStatus(driver.session.bootloader_status),
+                } else .{};
+                switch (flash_gate.step(gate_session, current, driver_now)) {
+                    .request_once => if (live) |*driver| {
+                        if (!gate_session.available) {
+                            flash_gate.requestFailed();
+                        } else driver.enterBootloader(driver_now) catch |err| {
+                            flash_gate.requestFailed();
+                            flash_failure = err;
+                            view.report(err);
+                        };
+                    },
+                    .start => {
+                        session.confirm(rendered_view, &model, built_generation, now_us / 1000) catch |err| { flash_failure = err; view.report(err); };
+                        retained_flash_view = null;
+                    },
+                    else => {},
+                }
+                if (flash_gate.phase == .manual and flash_gate.consumeManual(current)) {
+                    const message = "Enter BOOTSEL manually; connect exactly one RPI-RP2 device. Waiting for the unique device.";
+                    view.diagnostic = @splat(0);
+                    @memcpy(view.diagnostic[0..message.len], message);
+                    session.confirm(rendered_view, &model, built_generation, now_us / 1000) catch |err| { flash_failure = err; view.report(err); };
+                    retained_flash_view = null;
+                }
+                if (flash_gate.phase == .idle) retained_flash_view = null;
+            }
+            const poll_effect = session.poll(now_us / 1000) catch |err| failed: {
+                flash_failure = err;
+                view.report(err);
+                break :failed desktop.flash_controller.Effect.none;
+            };
+            if (poll_effect == .watch_reconnect and session.owner.phase == .reconnecting and
+                handed_off_operation != poll_effect.watch_reconnect.operation.id and
+                (session.matchesModel(&model, built_generation) catch false)) handoff: {
+                const watch = poll_effect.watch_reconnect;
+                const artifact = session.owner.artifact orelse break :handoff;
+                if (!std.meta.eql(watch.expected, artifact.expected_identity)) break :handoff;
+                var replacement = desktop.model.Model.init(gpa, session.request.file.board, session.request.file.loaded.snapshot) catch |err| {
+                    view.report(err);
+                    break :handoff;
+                };
+                defer replacement.deinit();
+                const next_identity = project.snapshot.identity(gpa, replacement.current.snapshot, replacement.board) catch |err| {
+                    view.report(err);
+                    break :handoff;
+                };
+                if (!std.mem.eql(u8, &replacement.board.id, &artifact.expected_identity.board_id) or
+                    !std.mem.eql(u8, &replacement.document().profile_id, &artifact.expected_identity.profile_id) or
+                    !std.mem.eql(u8, &next_identity.digest, &artifact.expected_identity.digest) or
+                    !std.meta.eql(next_identity, try project.snapshot.identity(gpa, model.current.snapshot, model.board))) break :handoff;
+                var next_captions = if (source) |*active| Captions.init(gpa, &replacement, active, active.id(), revision) catch |err| {
+                    view.report(err);
+                    break :handoff;
+                } else Captions.init(gpa, &replacement, &fixture, "Offline live fixture", revision) catch |err| {
+                    view.report(err);
+                    break :handoff;
+                };
+                defer next_captions.deinit();
+                var next_board = boards.OwnedBoard.fromDocument(gpa, replacement.document()) catch |err| {
+                    view.report(err);
+                    break :handoff;
+                };
+                defer next_board.deinit();
+                var next_seed: u32 = 0;
+                std.Io.randomSecure(init.io, std.mem.asBytes(&next_seed)) catch |err| {
+                    view.report(err);
+                    break :handoff;
+                };
+                const old_token = session.owner.previous_session_token orelse if (live) |driver| driver.session.token else 0;
+                const first_token = if (next_seed == std.math.maxInt(u32)) @as(u32, 1) else next_seed + 1;
+                if (old_token != 0 and first_token == old_token) next_seed +%= 1;
+                const next_driver = LiveDriver.init(.{ .io = init.io }, next_identity, next_seed, null) catch |err| {
+                    view.report(err);
+                    break :handoff;
+                };
+                if (live) |*driver| {
+                    if (driver.session.token != 0 and session.owner.previous_session_token == null)
+                        session.owner.previous_session_token = driver.session.token;
+                    driver.disconnect(driver.transport.now());
+                }
+                live = next_driver;
+                std.mem.swap(desktop.model.Model, &running_model, &replacement);
+                std.mem.swap(Captions, &running_captions, &next_captions);
+                std.mem.swap(boards.OwnedBoard, &running_board, &next_board);
+                running_identity = next_identity;
+                resetLivePresentation(&presenter, &visibility, &live_frame, &live_pressed, &life);
+                handed_off_operation = watch.operation.id;
+                std.log.info("Flash reconnect binding prepared for operation {d}", .{watch.operation.id});
+            }
+            if (session.owner.phase == .failed and flash_failure == null) {
+                if (session.runtime.last_error) |err| {
+                    flash_failure = err;
+                    view.report(err);
+                }
+            }
+            if (session.reconnect) |watch| if (live) |*driver| {
+                const identity = driver.session.expected;
+                if (driver.connected and driver.session.token != 0 and (session.owner.previous_session_token == null or driver.session.token != session.owner.previous_session_token.?) and
+                    driver.session.hasCoherentState() and std.mem.eql(u8, &identity.board_id, &watch.expected.board_id) and
+                    std.mem.eql(u8, &identity.profile_id, &watch.expected.profile_id) and std.mem.eql(u8, &identity.digest, &watch.expected.digest)) {
+                    _ = session.reconnected(driver.session.token, true, watch.expected, now_us / 1000) catch |err| { flash_failure = err; view.report(err); };
+                }
+            };
+        }
         if (source) |*active| if (active.refresh()) {
             revision = try std.math.add(u64, revision, 1);
             applyPractice(&draft_runtime, &practice, practice.pause(now_us), built_runner, &model, &view, now_us);
@@ -917,7 +1206,7 @@ pub fn main(init: std.process.Init) !void {
         }
         const document = model.document();
         const can_build = if (build_plan) |plan| !jobs.busy() and std.mem.eql(u8, &plan.config.board_id, &model.board.id) and std.mem.eql(u8, plan.config.build_board, board.entry.selector) else false;
-        const build_status: []const u8 = if (jobs.build != null) "Building" else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id()))) "Built snapshot" else "Build outdated") else if (build_plan != null) "Prepared inputs selected" else "Build environment not selected";
+        const build_status: []const u8 = if (jobs.build != null) (if (view.toolbar.full_provenance_audit) "Building (deep audit)" else "Building (prepared inputs)") else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id())) and artifactMatchesAudit(artifact, view.toolbar.full_provenance_audit)) "Built snapshot" else "Build outdated") else if (build_plan != null) "Prepared inputs selected" else "Build environment not selected";
         view.callback.busy = jobs.busy();
         var leave_practice = false;
         var practice_action: ?desktop.practice_controller.Action = null;
@@ -951,7 +1240,7 @@ pub fn main(init: std.process.Init) !void {
                 .stale => "Keyboard state stale",
                 .disconnected => "Keyboard disconnected",
                 .incompatible => "Keyboard layout mismatch",
-            }, .can_build = can_build, .can_flash = true, .build_status = build_status, .profiles = if (std.mem.eql(u8, &model.board.id, &project.profiles.board.id)) &.{ .{ .id = "danish\x00\x00".*, .name = project.profiles.names[0] }, .{ .id = "qwerty\x00\x00".*, .name = project.profiles.names[1] }, .{ .id = "eurkey\x00\x00".*, .name = project.profiles.names[2] }, .{ .id = "eurmac\x00\x00".*, .name = project.profiles.names[3] } } else &.{} },
+            }, .can_build = can_build, .can_flash = flash_tools != null and build_plan != null and can_build and frame_limit == null, .flash_active = flash != null and switch (flash.?.owner.phase) { .ready, .failed, .cancelled, .reconnect_timeout, .stale => false, else => true }, .flash_status = if (flash) |session| session.view(null).status else if (pending_flash != null) "Building for Flash" else if (flash_failure != null) "Flash failed" else "", .build_status = build_status, .profiles = if (std.mem.eql(u8, &model.board.id, &project.profiles.board.id)) &.{ .{ .id = "danish\x00\x00".*, .name = project.profiles.names[0] }, .{ .id = "qwerty\x00\x00".*, .name = project.profiles.names[1] }, .{ .id = "eurkey\x00\x00".*, .name = project.profiles.names[2] }, .{ .id = "eurmac\x00\x00".*, .name = project.profiles.names[3] } } else &.{} },
             .keyboard = .{ .snapshot = try model.id(), .board_id = document.board_id, .physical_layout = document.physical_layout, .geometry = board.entry.geometry, .labels = &captions.labels, .board_name = board.entry.selector, .fidelity = "Catalog geometry · physical acceptance pending" },
             .host = &captions.host,
             .paths = .{ .exported = exported, .can_choose = frame_limit == null and !dialog.active(), .busy = jobs.busy() },
@@ -959,8 +1248,27 @@ pub fn main(init: std.process.Init) !void {
             view.report(err);
             break :failed editor.Result{ .effect = .none };
         };
-        flash.observe(.{ .snapshot = try model.id(), .build_key = if (built) |manifest| manifest.build_key else @splat(0) });
-        if (life.editor_visible and !practicing) flash.draw();
+        var flash_intent: ?desktop.flash_controller.Intent = null;
+        var flash_rendered: ?desktop.flash_presenter.View = null;
+        var close_flash_panel = false;
+        if (flash_panel and life.editor_visible and !practicing) {
+            if (flash) |*session| {
+                const live_token: ?u32 = if (live) |*driver| (if (driver.connected and driver.session.hasCoherentState()) driver.session.token else null) else null;
+                flash_rendered = session.view(live_token);
+                flash_intent = flash_ui.draw(&session.owner, .{ .session_token = live_token, .failure = flash_failure, .close_requested = &close_flash_panel, .details_open = &flash_details_open, .diagnostics = if (session.completion) |result| (if (result.completion) |completed| desktop.flash_presenter.Diagnostics.fromResult(completed) else null) else null }) catch |err| failed: {
+                    view.report(err);
+                    break :failed null;
+                };
+            } else if (pending_flash != null or flash_failure != null) {
+                flash_ui.drawPending(flash_failure, jobs.build != null, &close_flash_panel);
+            }
+        }
+        if (physical_flash and trial_start == null) {
+            if (!can_build or jobs.busy() or flash != null) return error.PhysicalFlashStartupNotIdle;
+            trial_start = native.nanoTime();
+            std.log.info("Physical flash click dispatched (prepared inputs; cache-only status determined by build)", .{});
+            rendered.effect = try dispatchFlash(&owner, &model);
+        }
         if (build_fixture and count == 2) {
             if (!can_build or built != null or jobs.busy()) return error.ManagedEditorStartupNotIdle;
             rendered = .{ .effect = try owner.request(&model, try desktop.editor_dispatch.Request.capture(&model, .build)) };
@@ -1042,6 +1350,100 @@ pub fn main(init: std.process.Init) !void {
             };
             applyPractice(&draft_runtime, &practice, effect, built_runner, &model, &view, now_us);
         }
+        // Dismissal only hides the panel. The session remains available from
+        // the toolbar and cannot implicitly transfer or reset a selected UF2.
+        if (close_flash_panel) flash_panel = false;
+        if (pending_flash) |pending| {
+            if (owner_generation != pending.generation or pending.full_provenance_audit != view.toolbar.full_provenance_audit or !std.mem.eql(u8, &pending.snapshot, &(try model.id()))) {
+                pending_flash = null;
+                advance_flash = false;
+            }
+        }
+        if (advance_flash and built != null and pending_flash != null and flash == null and !jobs.busy() and artifactMatchesAudit(built.?, pending_flash.?.full_provenance_audit)) {
+            advance_flash = false;
+            const pending = pending_flash.?;
+            pending_flash = null;
+            if (flash_tools) |tools| admit: {
+                const plan = build_plan orelse break :admit;
+                var request = desktop.build_worker.Request.capture(&model, auditConfig(plan.config, pending.full_provenance_audit), init.environ_map, built_generation) catch |err| { view.report(err); break :admit; };
+                var cloned = jobs_api.flash_inputs.Tools.clone(gpa, tools.record) catch |err| { request.deinit(); view.report(err); break :admit; };
+                const session = flash_session.Session.init(gpa, init.io, pending.snapshot, built_generation, built.?, request, built_tree, cloned) catch |err| {
+                    request.deinit(); cloned.deinit(); view.report(err); break :admit;
+                };
+                flash = session;
+                flash_panel = true;
+                flash_failure = null;
+                advance_flash = true;
+            }
+        }
+        if (flash) |*session| {
+            if (advance_flash and try session.matchesModel(&model, built_generation)) {
+                advance_flash = false;
+                const stamp = now_us / 1000;
+                session.prepare(stamp) catch |err| { flash_failure = err; view.report(err); };
+                if (flash_failure == null) session.built(built.?, stamp) catch |err| { flash_failure = err; view.report(err); };
+                if (flash_failure == null) freeze: {
+                    const base = if (user_paths) |owned| owned.paths.cache else std.fs.path.dirname(built.?.uf2_path) orelse break :freeze;
+                    var cache = std.Io.Dir.cwd().createDirPathOpen(init.io, base, .{}) catch |err| { flash_failure = err; view.report(err); break :freeze; };
+                    defer cache.close(init.io);
+                    var directory = cache.createDirPathOpen(init.io, "flash", .{}) catch |err| { flash_failure = err; view.report(err); break :freeze; };
+                    defer directory.close(init.io);
+                    const path = directory.realPathFileAlloc(init.io, ".", gpa) catch |err| { flash_failure = err; view.report(err); break :freeze; };
+                    defer gpa.free(path);
+                    session.freeze(built.?, directory, path, stamp) catch |err| { flash_failure = err; view.report(err); };
+                }
+                if (flash_failure == null) session.selectUniqueBootsel() catch |err| { flash_failure = err; view.report(err); };
+                if (flash_failure == null) {
+                    // The initial Flash click is the sole user authorization. The
+                    // internal selection and frozen hash are bound before HID or
+                    // picotool can run; no further panel button is required.
+                    const shown = session.view(if (live) |*driver| (if (driver.connected and driver.session.hasCoherentState()) driver.session.token else null) else null);
+                    const bound = flashSnapshot(session, shown, built_generation);
+                    if (!shown.can_confirm or !flash_gate.confirm(bound, bound)) {
+                        flash_failure = error.StaleFlashRequest;
+                        view.report(error.StaleFlashRequest);
+                    } else retained_flash_view = shown;
+                }
+            }
+        }
+        // All admission and frozen UF2 copying happen only after the displayed frame.
+        if (flash_intent) |intent| if (flash) |*session| {
+            const action = std.meta.activeTag(intent);
+            switch (action) {
+                .prepare => session.prepare(now_us / 1000) catch |err| { flash_failure = err; view.report(err); },
+                .build => session.built(built.?, now_us / 1000) catch |err| { flash_failure = err; view.report(err); },
+                .freeze => freeze: {
+                    const base = if (user_paths) |owned| owned.paths.cache else std.fs.path.dirname(built.?.uf2_path) orelse return error.FlashCacheUnavailable;
+                    var cache = std.Io.Dir.cwd().createDirPathOpen(init.io, base, .{}) catch |err| { flash_failure = err; view.report(err); break :freeze; };
+                    defer cache.close(init.io);
+                    var flash_cache = cache.createDirPathOpen(init.io, "flash", .{}) catch |err| { flash_failure = err; view.report(err); break :freeze; };
+                    defer flash_cache.close(init.io);
+                    const flash_cache_path = flash_cache.realPathFileAlloc(init.io, ".", gpa) catch |err| { flash_failure = err; view.report(err); break :freeze; };
+                    defer gpa.free(flash_cache_path);
+                    session.freeze(built.?, flash_cache, flash_cache_path, now_us / 1000) catch |err| { flash_failure = err; view.report(err); };
+                },
+                .select => session.selectUniqueBootsel() catch |err| { flash_failure = err; view.report(err); },
+                .confirm => confirm: {
+                    const shown = flash_rendered orelse return error.FlashViewMissing;
+                    const current_view = session.view(shown.previous_session_token);
+                    const rendered_snapshot = flashSnapshot(session, shown, built_generation);
+                    const current_snapshot = flashSnapshot(session, current_view, built_generation);
+                    if (!shown.can_confirm or !current_view.can_confirm or !try session.matchesModel(&model, built_generation) or
+                        !flash_gate.confirm(rendered_snapshot, current_snapshot)) {
+                        flash_gate.cancel();
+                        view.report(error.StaleFlashRequest);
+                        break :confirm;
+                    }
+                    retained_flash_view = shown;
+                },
+                .cancel => {
+                    flash_gate.cancel();
+                    retained_flash_view = null;
+                    _ = session.cancel() catch |err| { flash_failure = err; view.report(err); };
+                },
+                .reset => { flash_gate.cancel(); retained_flash_view = null; session.deinit(); flash = null; flash_panel = false; },
+            }
+        };
         // Filesystem replacement and native chooser starts run after retained draw.
         switch (rendered) {
             .paths => |action| switch (action.kind) {
@@ -1173,7 +1575,7 @@ pub fn main(init: std.process.Init) !void {
                         continue;
                     };
                     const next_job = try std.math.add(u64, job_generation, 1);
-                    const job = startBuild(gpa, init.io, &model, plan.config, init.environ_map, next_job, owner_generation) catch |err| {
+                    const job = startBuild(gpa, init.io, &model, plan.config, view.toolbar.full_provenance_audit, init.environ_map, next_job, owner_generation) catch |err| {
                         view.report(err);
                         continue;
                     };
@@ -1182,7 +1584,63 @@ pub fn main(init: std.process.Init) !void {
                     build_scheduler.manual(try model.id());
                     view.diagnostic = @splat(0);
                 },
-                .flash => flash.show(),
+                .flash => |captured| {
+                    try acceptFlashEffect(&model, captured);
+                    if (flash_failure != null and flash == null) {
+                        flash_failure = null;
+                        flash_panel = false;
+                    }
+                    if (flash) |*previous| {
+                        // The second click authorizes a new operation only after a
+                        // terminal outcome; an active transfer is never restarted.
+                        switch (previous.owner.phase) {
+                            .ready, .failed, .cancelled, .reconnect_timeout, .stale => {
+                                previous.deinit();
+                                flash = null;
+                                flash_gate.cancel();
+                                retained_flash_view = null;
+                                flash_failure = null;
+                                flash_details_open = false;
+                            },
+                            else => {
+                                flash_panel = true;
+                                continue;
+                            },
+                        }
+                    }
+                    // The accepted build manifest alone is not a flash-tools receipt.
+                    // Do not open a panel that could imply a verified target or offer
+                    // confirmation until the application can capture and retain the
+                    // wrapper/picotool provenance and a genuine selected device.
+                    if (built == null or !std.mem.eql(u8, &built.?.inputs.project_digest, &(try model.id())) or !artifactMatchesAudit(built.?, view.toolbar.full_provenance_audit)) {
+                        if (jobs.busy() or !can_build or build_plan == null or flash_tools == null) { view.report(error.FreshFirmwareBuildRequired); continue; }
+                        const next_job = try std.math.add(u64, job_generation, 1);
+                        jobs.build = startBuild(gpa, init.io, &model, build_plan.?.config, view.toolbar.full_provenance_audit, init.environ_map, next_job, owner_generation) catch |err| { view.report(err); continue; };
+                        job_generation = next_job;
+                        pending_flash = .{ .snapshot = try model.id(), .generation = owner_generation, .full_provenance_audit = view.toolbar.full_provenance_audit };
+                        build_scheduler.manual(try model.id());
+                        flash_panel = true;
+                    } else if (build_plan == null or
+                        !std.mem.eql(u8, &build_plan.?.config.board_id, &model.board.id) or
+                        !std.mem.eql(u8, build_plan.?.config.build_board, board.entry.selector)) {
+                        view.report(error.FlashBuildConfigurationChanged);
+                    } else if (flash_tools) |tools| {
+                        if (built_generation == 0 or jobs.busy()) { view.report(error.FlashAlreadyInProgress); continue; }
+                        var request = desktop.build_worker.Request.capture(&model, auditConfig(build_plan.?.config, view.toolbar.full_provenance_audit), init.environ_map, built_generation) catch |err| { view.report(err); continue; };
+                        var cloned = jobs_api.flash_inputs.Tools.clone(gpa, tools.record) catch |err| { request.deinit(); view.report(err); continue; };
+                        const session = flash_session.Session.init(gpa, init.io, try model.id(), built_generation, built.?, request, built_tree, cloned) catch |err| {
+                            request.deinit(); cloned.deinit(); view.report(err); continue;
+                        };
+                        if (flash) |*old| old.deinit();
+                        flash = session;
+                        flash_panel = true;
+                        flash_failure = null;
+                        advance_flash = true;
+                        view.diagnostic = @splat(0);
+                    } else {
+                        view.report(error.FlashToolsReceiptRequired);
+                    }
+                },
                 else => {},
             },
         }
@@ -1216,9 +1674,9 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         build_scheduler.observe(try model.id(), now_us / 1000);
-        if (build_scheduler.take(now_us / 1000, build_plan == null or !can_build or jobs.busy() or practicing or view.modal != .none or owner.closed or owner.close_requested != null or owner.pending != null or owner.inspector.dirty())) {
+        if (build_scheduler.take(now_us / 1000, !view.toolbar.auto_build or build_plan == null or !can_build or jobs.busy() or flash_panel or practicing or view.modal != .none or owner.closed or owner.close_requested != null or owner.pending != null or owner.inspector.dirty())) {
             const next_job = try std.math.add(u64, job_generation, 1);
-            jobs.build = startBuild(gpa, init.io, &model, build_plan.?.config, init.environ_map, next_job, owner_generation) catch |err| failed: {
+            jobs.build = startBuild(gpa, init.io, &model, build_plan.?.config, view.toolbar.full_provenance_audit, init.environ_map, next_job, owner_generation) catch |err| failed: {
                 view.report(err);
                 break :failed null;
             };

@@ -44,8 +44,8 @@ pub const Command = struct {
     uf2_path: []const u8,
     build_key: Digest,
 
-    /// Every path is an absolute literal argument. There is no shell, flash
-    /// step, device discovery or bootloader dispatch in this command.
+    /// Input paths are absolute literals; --fork is a canonical relative path
+    /// resolved from the canonical cwd. No shell, flash or device discovery.
     pub fn init(gpa: std.mem.Allocator, input: Inputs, compiler: []const u8, repository: []const u8, export_directory: []const u8, install_directory: []const u8, development_firmware: ?[]const u8) !Command {
         try validateInputs(input);
         if ((input.lock.source_kind == .development) != (development_firmware != null)) return error.FirmwareOverrideMismatch;
@@ -59,6 +59,7 @@ pub const Command = struct {
         errdefer arena.deinit();
         const a = arena.allocator();
         const args = try a.alloc([]const u8, if (development_firmware != null) 13 else 11);
+        var owned_cwd: []const u8 = try a.dupe(u8, repository);
         args[0] = try a.dupe(u8, compiler);
         args[1] = "build";
         args[2] = "--build-file";
@@ -71,10 +72,19 @@ pub const Command = struct {
         args[9] = "-p";
         args[10] = try a.dupe(u8, install_directory);
         if (development_firmware) |path| {
+            // Zig 0.17 needs a relative --fork for local package dependencies.
+            // Canonicalize both paths so symlinked checkout spellings agree with
+            // the process cwd. Source ownership is checked by the caller.
+            var threaded = std.Io.Threaded.init(gpa, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+            owned_cwd = try std.Io.Dir.realPathFileAbsoluteAlloc(io, repository, a);
+            const canonical_firmware = try std.Io.Dir.realPathFileAbsoluteAlloc(io, path, a);
+            const relative = try std.fs.path.relativeAlloc(a, owned_cwd, null, owned_cwd, canonical_firmware);
+            if (std.fs.path.isAbsolute(relative)) return error.InvalidBuildPath;
             args[11] = "--fork";
-            args[12] = try a.dupe(u8, path);
+            args[12] = relative;
         }
-        const owned_cwd = try a.dupe(u8, repository);
         const owned_path = try std.fs.path.join(a, &.{ install_directory, "firmware", "project.uf2" });
         return .{ .arena = arena, .argv = args, .cwd = owned_cwd, .uf2_path = owned_path, .build_key = key(input) };
     }
@@ -86,13 +96,15 @@ pub const Command = struct {
 };
 
 pub const Completion = enum { succeeded, failed, cancelled };
-pub const Record = struct { version: u32, inputs: Inputs, build_key: Digest, uf2_path: []const u8, uf2_size: usize, uf2_hash: Digest };
+pub const AuditMode = enum { deep, fast_prepared_inputs_no_fresh_full_provenance_audit };
+pub const Record = struct { version: u32, audit_mode: ?AuditMode = null, inputs: Inputs, build_key: Digest, uf2_path: []const u8, uf2_size: usize, uf2_hash: Digest };
 
 /// An owned frozen value: it never aliases editable input strings. A failed or
 /// cancelled job cannot manufacture a manifest around an earlier UF2 file.
 pub const Manifest = struct {
     arena: std.heap.ArenaAllocator,
     version: u32 = 2,
+    audit_mode: AuditMode = .deep,
     inputs: Inputs,
     build_key: Digest,
     uf2_path: []const u8,
@@ -134,6 +146,7 @@ pub const Manifest = struct {
         errdefer out.deinit();
         try std.zon.stringify.serializeMaxDepth(.{
             .version = self.version,
+            .audit_mode = self.audit_mode,
             .inputs = self.inputs,
             .build_key = self.build_key,
             .uf2_path = self.uf2_path,
@@ -152,11 +165,12 @@ pub const Manifest = struct {
         const text = try a.dupeSentinel(u8, bytes, 0);
         const record = try @import("owned-zon").parse(Record, a, text);
         if (record.version != 2) return error.UnsupportedManifestVersion;
+        // Legacy v2 records without this field were produced by deep audits.
         try validateInputs(record.inputs);
         if (!std.mem.eql(u8, &record.build_key, &key(record.inputs))) return error.ManifestKeyMismatch;
         if (!std.fs.path.isAbsolute(record.uf2_path) or std.mem.indexOfScalar(u8, record.uf2_path, 0) != null) return error.InvalidArtifactPath;
         if (record.uf2_size == 0 or record.uf2_size % 512 != 0 or record.uf2_size > 4 * 1024 * 1024) return error.InvalidUf2Length;
-        return .{ .arena = arena, .inputs = record.inputs, .build_key = record.build_key, .uf2_path = record.uf2_path, .uf2_size = record.uf2_size, .uf2_hash = record.uf2_hash };
+        return .{ .arena = arena, .version = record.version, .audit_mode = record.audit_mode orelse .deep, .inputs = record.inputs, .build_key = record.build_key, .uf2_path = record.uf2_path, .uf2_size = record.uf2_size, .uf2_hash = record.uf2_hash };
     }
 
     /// Re-read the exact recorded path through the caller's filesystem adapter
@@ -183,14 +197,46 @@ fn inputs() Inputs {
     return .{ .project_digest = @splat(1), .source_digest = @splat(2), .build_inputs_digest = @splat(3), .lock = target_lock.fixture(), .profile_id = @splat(5), .identity_digest = @splat(6) };
 }
 
+fn publishedInputs() Inputs {
+    var result = inputs();
+    result.lock.source_kind = .published;
+    return result;
+}
+
 test "firmware argv preserves literal metacharacters and selects build only" {
-    var command = try Command.init(std.testing.allocator, inputs(), "/compiler with spaces/zig", "/repo", "/export ; $(touch nope)", "/cache ; output", "/firmware");
+    var command = try Command.init(std.testing.allocator, publishedInputs(), "/compiler with spaces/zig", "/repo", "/export ; $(touch nope)", "/cache ; output", null);
     defer command.deinit();
     try std.testing.expectEqualStrings("-Dproject-export=/export ; $(touch nope)", command.argv[6]);
     try std.testing.expectEqualStrings("/cache ; output", command.argv[10]);
     try std.testing.expectEqualStrings("/cache ; output/firmware/project.uf2", command.uf2_path);
+    try std.testing.expectEqual(@as(usize, 11), command.argv.len);
     try std.testing.expectError(error.InvalidBuildPath, Command.init(std.testing.allocator, inputs(), "zig", "/repo", "/export", "/cache", "/firmware"));
     try std.testing.expectError(error.FirmwareOverrideMismatch, Command.init(std.testing.allocator, inputs(), "/zig", "/repo", "/export", "/cache", null));
+}
+
+test "development fork canonicalizes symlinked cwd and sibling with spaces" {
+    const a = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    try temp.dir.createDir(io, "companion checkout", .default_dir);
+    try temp.dir.createDir(io, "firmware checkout", .default_dir);
+    try temp.dir.symLink(io, "companion checkout", "companion link", .{});
+    const root = try temp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    const repo = try std.fs.path.join(a, &.{ root, "companion link" });
+    defer a.free(repo);
+    const firmware = try std.fs.path.join(a, &.{ root, "firmware checkout" });
+    defer a.free(firmware);
+    var command = try Command.init(a, inputs(), "/zig", repo, "/export", "/cache", firmware);
+    defer command.deinit();
+    const canonical_repo = try std.Io.Dir.realPathFileAbsoluteAlloc(io, repo, a);
+    defer a.free(canonical_repo);
+    try std.testing.expectEqualStrings(canonical_repo, command.cwd);
+    try std.testing.expectEqualStrings("--fork", command.argv[11]);
+    try std.testing.expectEqualStrings("../firmware checkout", command.argv[12]);
 }
 
 test "manifest rejects failures cancellation stale input and corrupt artifact" {

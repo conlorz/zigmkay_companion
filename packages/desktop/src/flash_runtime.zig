@@ -21,6 +21,7 @@ pub fn preflight(owner: *const controller.Controller, effect: Start, actual: Art
     const selected = owner.selected orelse return error.InvalidSelection;
     if (std.meta.activeTag(selected) != std.meta.activeTag(effect.selection)) return error.InvalidSelection;
     switch (selected) {
+        .unique_bootsel => {},
         .serial => |serial| if (!std.mem.eql(u8, serial, effect.selection.serial)) return error.InvalidSelection,
         .bus_address => |address| if (!std.meta.eql(address, effect.selection.bus_address)) return error.InvalidSelection,
     }
@@ -125,7 +126,7 @@ test "preflight binds current identity artifact operation and owned serial witho
     var serial = "chosen".*;
     _ = try owner.dispatch(.{ .select = .{ .serial = &serial } });
     serial[0] = 'x';
-    const effect = (try owner.dispatch(.{ .confirm = .{ .operation_id = owner.operation_id, .uf2_hash = @splat(6) } })).start_managed;
+    const effect = (try owner.dispatch(.{ .confirm = .{ .operation_id = owner.operation_id, .uf2_hash = @splat(6), .selection_revision = owner.selection_revision } })).start_managed;
     try t.expectEqualStrings("chosen", effect.selection.serial);
     const view: ArtifactView = .{ .path = effect.frozen.path, .build_key = owner.current.build_key, .uf2_hash = effect.frozen.uf2_hash };
     try preflight(&owner, effect, view, input, "board_v1".*);

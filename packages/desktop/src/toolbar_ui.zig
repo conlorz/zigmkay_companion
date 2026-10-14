@@ -11,8 +11,16 @@ pub const Frame = struct {
     build_status: []const u8 = "",
     can_build: bool = false,
     can_flash: bool = false,
+    flash_status: []const u8 = "",
+    flash_active: bool = false,
 };
-pub const View = struct { light: bool = false };
+pub const View = struct {
+    light: bool = false,
+    auto_build: bool = false,
+    /// Session-only setting; the caller reads this when scheduling build/flash jobs.
+    full_provenance_audit: bool = false,
+    debug_menu_open: bool = false,
+};
 pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame) !?desktop.editor_dispatch.Request {
     const theme = ui.Theme.get(view.light);
     const box = ui.panel(theme, .toolbar);
@@ -45,8 +53,32 @@ pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame) !?desk
     if (ui.buttonEnabled(theme, "Redo", "edit.redo", .{ .x = 996, .y = 16, .w = 68, .h = 36 }, model.redo_stack.items.len != 0) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .redo);
     if (ui.button(theme, "Save", "file.save", .{ .x = 1078, .y = 16, .w = 76, .h = 36 }) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .save);
     if (ui.buttonEnabled(theme, "Build", "firmware.build", .{ .x = 1166, .y = 16, .w = 110, .h = 36 }, frame.can_build) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .build);
-    if (ui.buttonEnabled(theme, "Flash info", "firmware.inspect", .{ .x = 1288, .y = 16, .w = 110, .h = 36 }, frame.can_flash) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .flash);
-    if (frame.build_status.len != 0) ui.label(theme, frame.build_status, .{ .x = 1166, .y = 52, .w = 230, .h = 14 }, 10);
-    if (ui.button(theme, if (view.light) "Dark" else "Light", "theme.toggle", .{ .x = 1410, .y = 16, .w = 100, .h = 36 })) view.light = !view.light;
+    if (ui.buttonEnabled(theme, if (frame.flash_active) "Flash details" else "Flash", "firmware.inspect", .{ .x = 1288, .y = 16, .w = 110, .h = 36 }, frame.can_flash or frame.flash_active) and result == null) result = try desktop.editor_dispatch.Request.capture(model, .flash);
+    if (frame.flash_status.len != 0) {
+        ui.label(theme, frame.flash_status, .{ .x = 1166, .y = 52, .w = 232, .h = 14 }, 10);
+    } else if (frame.build_status.len != 0) ui.label(theme, frame.build_status, .{ .x = 1166, .y = 52, .w = 230, .h = 14 }, 10);
+    _ = dvui.checkbox(@src(), &view.auto_build, "Auto-build", .{ .rect = .{ .x = 1058, .y = 52, .w = 104, .h = 17 }, .tag = "firmware.auto_build" });
+    if (ui.button(theme, if (view.light) "Dark" else "Light", "theme.toggle", .{ .x = 1408, .y = 16, .w = 62, .h = 36 })) view.light = !view.light;
+    if (ui.button(theme, "Debug", "debug.menu", .{ .x = 1474, .y = 16, .w = 54, .h = 36 })) view.debug_menu_open = !view.debug_menu_open;
+    if (view.debug_menu_open) drawDebugMenu(view, theme);
     return result;
+}
+
+fn drawDebugMenu(view: *View, theme: ui.Theme) void {
+    const menu = dvui.floatingWindow(@src(), .{ .modal = false }, .{
+        .rect = .{ .x = 1112, .y = 72, .w = 414, .h = 150 },
+        .padding = .all(14),
+        .background = true,
+        .color_fill = .{ .color = theme.panel },
+        .color_border = .{ .color = theme.border },
+        .border = .all(1),
+    });
+    defer menu.deinit();
+    dvui.labelNoFmt(@src(), "Debug settings", .{}, .{ .color_text = .{ .color = theme.text } });
+    _ = dvui.checkbox(@src(), &view.full_provenance_audit, "Full provenance audit (slow)", .{
+        .tag = "debug.full_provenance_audit",
+        .color_text = .{ .color = theme.text },
+    });
+    dvui.labelNoFmt(@src(), "Recheck all build inputs. Off for normal builds and Flash.", .{}, .{ .color_text = .{ .color = theme.muted } });
+    if (dvui.button(@src(), "Close", .{}, .{ .tag = "debug.close" })) view.debug_menu_open = false;
 }

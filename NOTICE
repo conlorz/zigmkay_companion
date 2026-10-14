@@ -22,7 +22,7 @@ licenses must accompany their eventual imports; this file is not a complete
 release attribution inventory.
 
 The selected firmware dependency is the published EuroZig/zigmkay_firmware
-PR #1 head at ba67fda557e2dffb4b86fba797ce2d2bd57fa9a4, pinned with an
+PR #1 head at e122f7502df4ad58e831f0b37439085774b670cb, pinned with an
 immutable package hash in build.zig.zon. It supports all 14 firmware selectors
 as source; this is not a native release or an accepted stable contract.
 

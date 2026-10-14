@@ -1,154 +1,249 @@
-//! Offline editor flash surface. A controller may only be advanced by an
-//! accepted preparation/build/freeze adapter; this application has none yet.
+//! Owned offline flash admission and explicitly confirmed managed transfer.
+//! The caller retains responsibility for rendering the presenter view and for
+//! providing a fresh model/generation at every boundary.
 const std = @import("std");
-const dvui = @import("dvui");
+const project = @import("project");
+const preparation = desktop.flash_preparation;
 const desktop = @import("desktop-core");
 const jobs = @import("companion-jobs");
 
 pub const Session = struct {
-    controller: desktop.flash_controller.Controller,
-    open: bool = false,
-    tools: ?jobs.flash_inputs.Tools = null,
-    tools_snapshot: ?desktop.flash_controller.Digest = null,
+    tools: jobs.flash_inputs.Tools,
+    request: desktop.build_worker.Request,
+    expected_export_tree: jobs.firmware.Digest,
+    admitted: desktop.build_worker.Request.CurrentInputs,
+    snapshot: [32]u8,
+    generation: u64,
+    owner: desktop.flash_controller.Controller,
+    runtime: desktop.flash_runtime.Runtime,
+    prepared: ?preparation.Prepared = null,
+    completion: ?desktop.flash_runtime.PollResult = null,
+    reconnect: ?@FieldType(desktop.flash_controller.Effect, "watch_reconnect") = null,
 
-    pub fn init(gpa: std.mem.Allocator, context: desktop.flash_controller.Context) Session {
-        return .{ .controller = desktop.flash_controller.Controller.init(gpa, context) };
-    }
-
-    fn clearTools(self: *Session) void {
-        if (self.tools) |*tools| tools.deinit();
-        self.tools = null;
-        self.tools_snapshot = null;
+    /// Takes ownership of tools and request on success ONLY; on error the caller
+    /// still owns both by-value inputs and must deinit them. Do not deinit copies
+    /// after success. The accepted manifest remains owned by the caller.
+    /// Admission uses the configured audit mode to recapture disk provenance.
+    /// The current caller runs this synchronously on a UI frame.
+    pub fn init(gpa: std.mem.Allocator, io: std.Io, snapshot: [32]u8, generation: u64, manifest: jobs.firmware.Manifest, request: desktop.build_worker.Request, expected_export_tree: jobs.firmware.Digest, tools: jobs.flash_inputs.Tools) !Session {
+        if (generation == 0 or generation != request.generation) return error.StaleFlashRequest;
+        if (!std.mem.eql(u8, &snapshot, &request.captured) or !std.mem.eql(u8, &request.file.board.id, &request.config.board_id)) return error.StaleFlashRequest;
+        {
+            const verify_start = std.Io.Clock.awake.now(io);
+            defer std.log.info("flash session init tool_verify_ms={d}", .{verify_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds()});
+            try tools.verify(gpa, io);
+        }
+        const capture_start = std.Io.Clock.awake.now(io);
+        var inputs = request.captureCurrentInputsMode(gpa, io, expected_export_tree, request.config.request.audit_mode) catch |err| {
+            std.log.info("flash session init capture_ms={d}", .{capture_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds()});
+            return err;
+        };
+        std.log.info("flash session init capture_ms={d}", .{capture_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds()});
+        errdefer inputs.deinit();
+        if (!std.mem.eql(u8, &manifest.build_key, &jobs.firmware.key(inputs.captured.inputs))) return error.StaleBuild;
+        const context: desktop.flash_controller.Context = .{ .snapshot = snapshot, .build_key = manifest.build_key };
+        return .{ .tools = tools, .request = request, .expected_export_tree = expected_export_tree, .admitted = inputs, .snapshot = snapshot, .generation = generation, .owner = desktop.flash_controller.Controller.init(gpa, context), .runtime = desktop.flash_runtime.Runtime.init(gpa, io) };
     }
 
     pub fn deinit(self: *Session) void {
-        self.clearTools();
-        self.controller.deinit();
+        self.runtime.deinit(); // Cancels and joins an active managed job.
+        if (self.completion) |*result| result.deinit(self.owner.gpa);
+        if (self.prepared) |*value| value.deinit();
+        self.owner.deinit();
+        self.admitted.deinit();
+        self.tools.deinit();
+        self.request.deinit();
+        self.* = undefined;
     }
 
-    /// Only an explicit caller-provided receipt is accepted; this reads files,
-    /// but never starts a job, probes hardware, or authorizes a transfer.
-    pub fn prepareTools(self: *Session, receipt_path: []const u8, io: std.Io, manifest: jobs.firmware.Manifest, snapshot: desktop.flash_controller.Digest) !void {
-        self.clearTools();
-        if (!std.fs.path.isAbsolute(receipt_path) or std.mem.indexOfScalar(u8, receipt_path, 0) != null) return error.InvalidFlashPath;
-        if (!std.mem.eql(u8, &snapshot, &self.controller.current.snapshot)) return error.StaleFlashRequest;
-        if (!std.mem.eql(u8, &manifest.build_key, &jobs.firmware.key(manifest.inputs)) or
-            !std.mem.eql(u8, &manifest.build_key, &self.controller.current.build_key)) return error.StaleBuild;
-        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, receipt_path, self.controller.gpa, .limited(16 * 1024));
-        defer self.controller.gpa.free(bytes);
-        var parsed = try jobs.flash_inputs.Tools.parse(self.controller.gpa, bytes);
-        errdefer parsed.deinit();
-        if (!std.mem.eql(u8, parsed.record.firmware_revision, manifest.inputs.lock.firmware_revision)) return error.ToolsRevisionMismatch;
-        if (parsed.record.source_kind != manifest.inputs.lock.source_kind or !std.mem.eql(u8, &parsed.record.firmware_source_digest, &manifest.inputs.lock.firmware_source_digest)) return error.ToolsSourceMismatch;
-        try parsed.verify(self.controller.gpa, io);
-        self.tools = parsed;
-        self.tools_snapshot = self.controller.current.snapshot;
+    /// Offline disk verification uses the configured audit mode; callers should
+    /// run it off the frame thread. It does not touch a device.
+    /// The returned capture belongs to the caller.
+    pub fn recapture(self: *const Session, gpa: std.mem.Allocator, io: std.Io) !desktop.build_worker.Request.CurrentInputs {
+        try self.tools.verify(gpa, io);
+        return self.request.captureCurrentInputsMode(gpa, io, self.expected_export_tree, self.request.config.request.audit_mode);
     }
 
-    pub fn show(self: *Session) void {
-        self.open = true;
+    fn current(self: *const Session) !jobs.firmware.Inputs {
+        if (!std.mem.eql(u8, &self.admitted.board_id, &self.request.file.board.id) or !std.mem.eql(u8, &self.admitted.profile_id, &self.request.file.loaded.snapshot.document.profile_id)) return error.StaleFlashRequest;
+        const inputs = self.admitted.captured.inputs;
+        const context: desktop.flash_controller.Context = .{ .snapshot = self.snapshot, .build_key = jobs.firmware.key(inputs) };
+        if (!std.meta.eql(context, self.owner.current)) return error.StaleBuild;
+        return inputs;
     }
 
-    /// Never substitute a toolbar build result for the accepted flash artifact.
-    /// Changes invalidate any future frozen artifact and device selection.
-    pub fn observe(self: *Session, context: desktop.flash_controller.Context) void {
-        if (!std.meta.eql(context, self.controller.current)) self.clearTools();
-        _ = self.controller.observe(context);
+    pub fn matchesModel(self: *const Session, model: *const desktop.model.Model, generation: u64) !bool {
+        const snapshot = try model.id();
+        return generation == self.generation and std.mem.eql(u8, &snapshot, &self.snapshot) and std.mem.eql(u8, &model.board.id, &self.request.config.board_id);
     }
 
-    pub fn draw(self: *Session) void {
-        if (!self.open) return;
-        var panel = dvui.box(@src(), .{ .dir = .vertical }, .{});
-        defer panel.deinit();
-        dvui.label(@src(), "Flash information · transfer unavailable", .{}, .{});
-        dvui.label(@src(), "This panel is read-only. Opening it does not search for or change a device.", .{}, .{});
-        dvui.label(@src(), "Flashing requires verified tools, a matching frozen UF2, and an explicitly selected device.", .{}, .{});
-        dvui.label(@src(), "The editor cannot prepare those steps here yet. Building firmware does not enable transfer.", .{}, .{});
-        if (dvui.button(@src(), "Close flash panel", .{}, .{})) self.open = false;
+    /// Cheap frame-thread invalidation. Does not recapture disk inputs; callers
+    /// still must run admission before subsequent stages.
+    pub fn observe(self: *Session, model: *const desktop.model.Model, generation: u64) !desktop.flash_controller.Effect {
+        const snapshot = try model.id();
+        const changed = generation != self.generation or !std.mem.eql(u8, &snapshot, &self.snapshot) or !std.mem.eql(u8, &model.board.id, &self.request.config.board_id);
+        var context = self.owner.current;
+        if (changed) {
+            context.snapshot = snapshot;
+            // Generation/board changes can retain the same digest: force a
+            // distinct context so the old artifact is never confirmable.
+            if (std.mem.eql(u8, &context.snapshot, &self.owner.current.snapshot)) context.build_key[0] ^= 1;
+        }
+        const effect = self.owner.observe(context);
+        if (effect == .cancel_managed) _ = self.runtime.cancel(effect.cancel_managed);
+        if (effect == .stop_reconnect) self.reconnect = null;
+        return effect;
+    }
+
+    pub fn view(self: *const Session, session_token: ?u32) desktop.flash_presenter.View {
+        return desktop.flash_presenter.view(&self.owner, session_token);
+    }
+
+    pub fn prepare(self: *Session, now: u64) !void {
+        _ = try self.current();
+        const effect = try self.owner.dispatch(.prepare);
+        if (self.prepared) |*old| old.deinit();
+        self.prepared = null;
+        self.reconnect = null;
+        if (self.completion) |*old| old.deinit(self.owner.gpa);
+        self.completion = null;
+        _ = try self.owner.receive(.{ .prepared = effect.prepare_tools.id }, now);
+    }
+
+    /// The accepted build is supplied by the caller; this bridge never starts a
+    /// compiler as a side effect of rendering or selecting a target.
+    pub fn built(self: *Session, manifest: jobs.firmware.Manifest, now: u64) !void {
+        const inputs = try self.current();
+        if (!std.mem.eql(u8, &manifest.build_key, &jobs.firmware.key(inputs))) return error.StaleBuild;
+        const effect = try self.owner.dispatch(.build);
+        _ = try self.owner.receive(.{ .built = .{ .operation_id = effect.build.id, .build_key = manifest.build_key } }, now);
+    }
+
+    pub fn freeze(self: *Session, manifest: jobs.firmware.Manifest, cache: std.Io.Dir, cache_path: []const u8, now: u64) !void {
+        const phase_start = std.Io.Clock.awake.now(self.runtime.io);
+        defer std.log.info("flash session freeze_ms={d}", .{phase_start.durationTo(std.Io.Clock.awake.now(self.runtime.io)).toMilliseconds()});
+        const inputs = try self.current();
+        const canonical = try project.snapshot.identity(self.owner.gpa, self.request.file.loaded.snapshot, self.request.file.board);
+        const identity: desktop.flash_controller.Identity = .{ .board_id = self.request.file.board.id, .profile_id = self.request.file.loaded.snapshot.document.profile_id, .digest = canonical.digest };
+        const context: desktop.flash_controller.Context = .{ .snapshot = self.snapshot, .build_key = jobs.firmware.key(inputs) };
+        const effect = try self.owner.dispatch(.freeze);
+        var value = preparation.compose(self.owner.gpa, self.runtime.io, cache, cache_path, manifest, inputs, effect.freeze.context, context, self.request.file.board.id, identity, self.tools) catch |err| {
+            _ = try self.owner.receive(.{ .failed = .{ .operation_id = effect.freeze.id, .stage = .freeze } }, now);
+            return err;
+        };
+        errdefer value.deinit();
+        _ = try self.owner.receive(.{ .frozen = .{ .operation_id = effect.freeze.id, .artifact = value.artifact } }, now);
+        if (self.prepared) |*old| old.deinit();
+        self.prepared = value;
+    }
+
+    /// Manual BOOTSEL is deliberately not inferred from a connected HID device.
+    pub fn selectUniqueBootsel(self: *Session) !void {
+        _ = try self.owner.dispatch(try self.view(null).intent(.select, .unique_bootsel));
+    }
+
+    /// `rendered` must be the view actually displayed to the user. This method
+    /// is the sole transfer start; no preparation or selection can start it.
+    pub fn confirm(self: *Session, rendered: desktop.flash_presenter.View, model: *const desktop.model.Model, generation: u64, now: u64) !void {
+        const phase_start = std.Io.Clock.awake.now(self.runtime.io);
+        const preflight = blk: {
+            defer std.log.info("flash session confirm_preflight_ms={d}", .{phase_start.durationTo(std.Io.Clock.awake.now(self.runtime.io)).toMilliseconds()});
+            if (!try self.matchesModel(model, generation)) return error.StaleFlashRequest;
+            const inputs = try self.current();
+            const value = if (self.prepared) |*owned| owned else return error.ArtifactRequired;
+            const intent = try rendered.intent(.confirm, null);
+            const effect = try self.owner.dispatch(intent);
+            break :blk .{ .inputs = inputs, .value = value, .effect = effect };
+        };
+        _ = try self.runtime.start(&self.owner, preflight.effect.start_managed, &preflight.value.frozen, preflight.inputs, model.board.id, now);
+        if (self.runtime.last_error) |err| return err;
+    }
+
+    /// Retain completed diagnostics until a new preparation or session teardown.
+    /// Cancellation stays joined: the controller settles only after job exit.
+    pub fn poll(self: *Session, now: u64) !desktop.flash_controller.Effect {
+        if (try self.runtime.poll(&self.owner, now)) |result| {
+            if (self.completion) |*old| old.deinit(self.owner.gpa);
+            self.completion = result;
+            self.applyEffect(result.effect);
+            return result.effect;
+        }
+        const effect = self.owner.tick(now);
+        self.applyEffect(effect);
+        return effect;
+    }
+
+    fn applyEffect(self: *Session, effect: desktop.flash_controller.Effect) void {
+        switch (effect) {
+            .watch_reconnect => |watch| self.reconnect = watch,
+            .stop_reconnect => self.reconnect = null,
+            else => {},
+        }
+    }
+
+    /// A coherent newly negotiated live session must be supplied by the caller;
+    /// this bridge does not poll or probe HID devices.
+    pub fn reconnected(self: *Session, token: u32, coherent: bool, identity: desktop.flash_controller.Identity, now: u64) !desktop.flash_controller.Effect {
+        const watch = self.reconnect orelse return error.NotWatchingReconnect;
+        const effect = try self.owner.receive(.{ .reconnected = .{ .operation_id = watch.operation.id, .session_token = token, .coherent = coherent, .identity = identity } }, now);
+        self.applyEffect(effect);
+        return effect;
+    }
+
+    pub fn cancel(self: *Session) !desktop.flash_controller.Effect {
+        const effect = try self.owner.dispatch(.cancel);
+        if (effect == .cancel_managed) _ = self.runtime.cancel(effect.cancel_managed);
+        self.applyEffect(effect);
+        return effect;
     }
 };
 
-test "explicit tools receipt validates paths provenance bytes and stale context offline" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const base = try tmp.dir.realPathFileAlloc(io, ".", gpa);
-    defer gpa.free(base);
-    const wrapper = try std.fs.path.join(gpa, &.{ base, "wrapper" });
-    defer gpa.free(wrapper);
-    const picotool = try std.fs.path.join(gpa, &.{ base, "picotool" });
-    defer gpa.free(picotool);
-    const receipt = try std.fs.path.join(gpa, &.{ base, jobs.flash_inputs.tools_name });
-    defer gpa.free(receipt);
-    try tmp.dir.writeFile(io, .{ .sub_path = "wrapper", .data = "wrapper bytes" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "picotool", .data = "picotool bytes" });
-    const lock = jobs.target_lock.fixture();
-    var captured = try jobs.flash_inputs.Tools.capture(gpa, io, lock.firmware_revision, lock.firmware_source_digest, lock.source_kind, wrapper, picotool);
-    defer captured.deinit();
-    const encoded = try captured.serialize(gpa);
-    defer gpa.free(encoded);
-    try tmp.dir.writeFile(io, .{ .sub_path = jobs.flash_inputs.tools_name, .data = encoded });
-    const inputs: jobs.firmware.Inputs = .{ .project_digest = @splat(1), .source_digest = @splat(2), .build_inputs_digest = @splat(3), .profile_id = @splat(4), .identity_digest = @splat(5), .lock = lock };
-    // This manifest is metadata-only: no UF2 is read or transferred by preparation.
-    const manifest: jobs.firmware.Manifest = .{ .arena = .init(gpa), .inputs = inputs, .build_key = jobs.firmware.key(inputs), .uf2_path = "/unused.uf2", .uf2_size = 0, .uf2_hash = @splat(0) };
-    const snapshot: desktop.flash_controller.Digest = @splat(9);
-    var session = Session.init(gpa, .{ .snapshot = snapshot, .build_key = manifest.build_key });
-    defer session.deinit();
-    try std.testing.expectError(error.InvalidFlashPath, session.prepareTools("flash-tools.zon", io, manifest, snapshot));
-    try std.testing.expectError(error.InvalidFlashPath, session.prepareTools("/bad\x00path", io, manifest, snapshot));
-    try std.testing.expectError(error.StaleFlashRequest, session.prepareTools(receipt, io, manifest, @splat(8)));
-    var wrong_manifest = manifest;
-    wrong_manifest.build_key[0] ^= 1;
-    try std.testing.expectError(error.StaleBuild, session.prepareTools(receipt, io, wrong_manifest, snapshot));
-    var wrong_context = session.controller.current;
-    wrong_context.build_key[0] ^= 1;
-    session.observe(wrong_context);
-    try std.testing.expectError(error.StaleBuild, session.prepareTools(receipt, io, manifest, snapshot));
-    session.observe(.{ .snapshot = snapshot, .build_key = manifest.build_key });
-    wrong_manifest = manifest;
-    wrong_manifest.inputs.lock.firmware_revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    wrong_manifest.build_key = jobs.firmware.key(wrong_manifest.inputs);
-    session.observe(.{ .snapshot = snapshot, .build_key = wrong_manifest.build_key });
-    try std.testing.expectError(error.ToolsRevisionMismatch, session.prepareTools(receipt, io, wrong_manifest, snapshot));
-    wrong_manifest = manifest;
-    wrong_manifest.inputs.lock.source_kind = .published;
-    wrong_manifest.build_key = jobs.firmware.key(wrong_manifest.inputs);
-    session.observe(.{ .snapshot = snapshot, .build_key = wrong_manifest.build_key });
-    try std.testing.expectError(error.ToolsSourceMismatch, session.prepareTools(receipt, io, wrong_manifest, snapshot));
-    wrong_manifest = manifest;
-    wrong_manifest.inputs.lock.firmware_source_digest[0] ^= 1;
-    wrong_manifest.build_key = jobs.firmware.key(wrong_manifest.inputs);
-    session.observe(.{ .snapshot = snapshot, .build_key = wrong_manifest.build_key });
-    try std.testing.expectError(error.ToolsSourceMismatch, session.prepareTools(receipt, io, wrong_manifest, snapshot));
-    session.observe(.{ .snapshot = snapshot, .build_key = manifest.build_key });
-    try session.prepareTools(receipt, io, manifest, snapshot);
-    try std.testing.expect(session.tools != null);
-    try std.testing.expectEqual(snapshot, session.tools_snapshot.?);
-    session.observe(session.controller.current);
-    try std.testing.expect(session.tools != null);
-    session.observe(.{ .snapshot = @splat(7), .build_key = manifest.build_key });
-    try std.testing.expect(session.tools == null);
-    try std.testing.expect(session.tools_snapshot == null);
-    session.observe(.{ .snapshot = snapshot, .build_key = manifest.build_key });
-    try tmp.dir.writeFile(io, .{ .sub_path = "wrapper", .data = "tampered wrapper" });
-    try std.testing.expectError(error.WrapperChanged, session.prepareTools(receipt, io, manifest, snapshot));
-    try std.testing.expect(session.tools == null);
-    try tmp.dir.writeFile(io, .{ .sub_path = "wrapper", .data = "wrapper bytes" });
-    try tmp.dir.writeFile(io, .{ .sub_path = jobs.flash_inputs.tools_name, .data = "invalid zon" });
-    if (session.prepareTools(receipt, io, manifest, snapshot)) |_| return error.ExpectedInvalidReceipt else |_| {}
-    try std.testing.expect(session.tools == null);
-    try std.testing.expectEqual(desktop.flash_controller.Phase.idle, session.controller.phase);
-    try std.testing.expect(!desktop.flash_presenter.view(&session.controller, null).can_confirm);
+pub fn readTools(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !jobs.flash_inputs.Tools {
+    if (!std.fs.path.isAbsolute(path)) return error.AbsoluteFlashToolsRequired;
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 * 1024));
+    defer gpa.free(bytes);
+    return jobs.flash_inputs.Tools.parse(gpa, bytes);
 }
 
-test "offline flash panel cannot advance controller or authorize transfer" {
-    var session = Session.init(std.testing.allocator, .{ .snapshot = @splat(1), .build_key = @splat(3) });
-    defer session.deinit();
-    session.show();
-    try std.testing.expect(session.open);
-    try std.testing.expect(!desktop.flash_presenter.view(&session.controller, null).can_confirm);
-    session.observe(.{ .snapshot = @splat(2), .build_key = @splat(3) });
-    try std.testing.expectEqual(desktop.flash_controller.Phase.idle, session.controller.phase);
-    try std.testing.expectError(error.DisabledAction, desktop.flash_presenter.view(&session.controller, null).intent(.confirm, null));
+test "offline controller state needs selection and rendered confirmation" {
+    var owner = desktop.flash_controller.Controller.init(std.testing.allocator, .{ .snapshot = @splat(1), .build_key = @splat(2) });
+    defer owner.deinit();
+    try std.testing.expectError(error.DisabledAction, desktop.flash_presenter.view(&owner, null).intent(.confirm, null));
+    const preparing = try owner.dispatch(.prepare);
+    _ = try owner.receive(.{ .prepared = preparing.prepare_tools.id }, 0);
+    const building = try owner.dispatch(.build);
+    _ = try owner.receive(.{ .built = .{ .operation_id = building.build.id, .build_key = owner.current.build_key } }, 0);
+    const freezing = try owner.dispatch(.freeze);
+    _ = try owner.receive(.{ .frozen = .{ .operation_id = freezing.freeze.id, .artifact = .{
+        .context = owner.current, .path = "/cache/offline.uf2", .uf2_hash = @splat(3),
+        .expected_identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(4) },
+    } } }, 0);
+    try std.testing.expect(!desktop.flash_presenter.view(&owner, null).can_confirm);
+    _ = try owner.dispatch(try desktop.flash_presenter.view(&owner, null).intent(.select, .unique_bootsel));
+    const rendered = desktop.flash_presenter.view(&owner, null);
+    try std.testing.expect(rendered.can_confirm);
+    const stale = owner.observe(.{ .snapshot = @splat(9), .build_key = @splat(2) });
+    try std.testing.expectEqual(.none, std.meta.activeTag(stale));
+    try std.testing.expectError(error.DisabledAction, desktop.flash_presenter.view(&owner, null).intent(.confirm, null));
+    try std.testing.expectError(error.InvalidIntent, owner.dispatch(try rendered.intent(.confirm, null)));
+}
+
+test "failed or pending build cannot confirm and accepted rendered intent starts once" {
+    var owner = desktop.flash_controller.Controller.init(std.testing.allocator, .{ .snapshot = @splat(1), .build_key = @splat(2) });
+    defer owner.deinit();
+    const preparing = try owner.dispatch(.prepare);
+    _ = try owner.receive(.{ .prepared = preparing.prepare_tools.id }, 0);
+    const building = try owner.dispatch(.build);
+    try std.testing.expectError(error.DisabledAction, desktop.flash_presenter.view(&owner, null).intent(.confirm, null));
+    _ = try owner.receive(.{ .failed = .{ .operation_id = building.build.id, .stage = .build } }, 1);
+    try std.testing.expectError(error.DisabledAction, desktop.flash_presenter.view(&owner, null).intent(.confirm, null));
+}
+
+test "empty runtime polling never starts a managed transfer" {
+    var runtime = desktop.flash_runtime.Runtime.init(std.testing.allocator, std.testing.io);
+    defer runtime.deinit();
+    var owner = desktop.flash_controller.Controller.init(std.testing.allocator, .{ .snapshot = @splat(1), .build_key = @splat(2) });
+    defer owner.deinit();
+    try std.testing.expect(try runtime.poll(&owner, 0) == null);
+    try std.testing.expect(runtime.job == null);
 }
