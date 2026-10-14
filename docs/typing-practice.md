@@ -64,6 +64,53 @@ from the prepared real processor, with the existing cancellation and snapshot
 guards. Detected layout/input-source changes invalidate a run's comparability and require
 a fresh exercise. Loss of verified live state shows an unavailable keyboard.
 
+## Guided difficulty
+
+Open **Guided difficulty** to choose a lesson without changing exercise length
+or assistance. The six stages are Find keys, Build fluency, Add Shift, Change
+layers, Combine modifiers, and Real text. Start the selected lesson explicitly;
+**Free exercises** returns to the existing unrestricted generator.
+
+![Native guided difficulty](screenshots/typing-practice/curriculum-wide.png)
+
+Find keys begins with six reachable base-layer letters in the useful order
+`enaritoslcdumpghbyfvkwzxjq`, skipping letters unavailable on that layout. It
+uses readable vocabulary words and space, with no speed gate. Build fluency
+keeps familiar letters while adding one character at a time. Short, Normal and
+Long generate 8, 20 or 40 familiar words in these introductory lessons; later
+key-family lessons add one target between every pair of words.
+
+Shift introduces one capital or shifted punctuation output at a time. Layers
+selects one output on a chosen layer with a proven hold provider. Modifiers
+separates Option/left Alt, AltGr/right Alt and their Shift combinations. The
+guide prefers the lesson's requested route for that target. It still cannot
+prove that the learner used that physical route: text scoring measures output,
+not execution of the hold sequence. Unsupported providers/outputs explain why
+a lesson cannot start. Real text uses complete English sentences or the existing
+Zig lessons and checks every character's reachability.
+
+![Native introductory exercise](screenshots/typing-practice/curriculum-exercise.png)
+
+The evidence checklist initially asks for 20 opportunities per target at 97%
+first-pass success over at least three completed matching runs. After Find keys,
+the newest three matching runs also need at least 97% attempt accuracy, positive
+duration, five clean timing intervals and no truncation. These are initial tutor
+policy thresholds for human validation, not validated learning science. Timing
+calibration establishes repeated clean evidence; it does not impose a universal
+WPM target. **Suggested next step** proposes one letter/output/family at a time.
+Manual selection remains available, and no poor run automatically demotes a
+selected lesson. Guided practice remains separate from hidden-assistance evidence.
+
+Curriculum/generation context is frozen with every run. **Resume saved curriculum**
+restores the last scored completed normal lesson for this layout, mapping and
+input source, including its length, preset and assistance. Export/import carries
+that context between PCs/worktrees. In-progress selections persist after a run
+is completed, rather than being written as separate mutable learning state.
+Progress titles identify the selected curriculum stage and alphabet. Small
+windows scroll to keep stage choices and controls accessible.
+
+![Small-window lesson selection](screenshots/typing-practice/curriculum-small.png)
+
 ## Progress and daily activity
 
 Open **Progress** for history charts without expanding the immediate rundown.

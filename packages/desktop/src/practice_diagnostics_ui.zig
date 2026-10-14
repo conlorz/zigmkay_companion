@@ -101,7 +101,7 @@ pub fn draw(view: *View, selected: ?u21, owner: *desktop.practice_controller.Con
                 config.targets[0] = stat.cp;
                 config.target_count = 1;
                 var output: [8192]u8 = undefined;
-                _ = desktop.practice_generator.generate(&output, .{ .seed = owner.seed +% 1, .preset = config.preset, .length = @intCast(config.level) }, config.targets[0..1]) catch {
+                _ = owner.preview(&output, config) catch {
                     view.message = "This target needs a different preset or is outside the English corpus.";
                     return .none;
                 };

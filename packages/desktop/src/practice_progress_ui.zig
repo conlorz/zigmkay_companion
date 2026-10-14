@@ -51,7 +51,7 @@ fn chart(data: *const desktop.practice_progress.Summary, theme: ui.Theme, rect: 
         previous = .{ .x = x, .y = smooth, .timestamp = point.timestamp };
     }
 }
-pub fn draw(view: *View, history: ?*const desktop.practice_history.Query, failure: ?anyerror, saving: bool, theme: ui.Theme, bounds: dvui.Rect) !bool {
+pub fn draw(view: *View, history: ?*const desktop.practice_history.Query, cohort: desktop.practice_results.Cohort, failure: ?anyerror, saving: bool, theme: ui.Theme, bounds: dvui.Rect) !bool {
     const area = dvui.scrollArea(@src(), .{}, .{ .rect = bounds, .tag = "practice.progress" });
     defer area.deinit();
     const body = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = bounds.w - 20, .h = if (view.tab == 0) 850 else 500 }, .padding = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
@@ -62,7 +62,9 @@ pub fn draw(view: *View, history: ?*const desktop.practice_history.Query, failur
     presentation.caption(status, .{ .y = if (view.tab == 0) 795 else 400, .w = width - 100, .h = 38 }, 15, theme.muted, null);
     if (failure != null and ui.button(theme, "Retry", "practice.progress.retry", .{ .x = width - 95, .y = if (view.tab == 0) 795 else 400, .w = 90, .h = 32 })) view.retry = true;
     if (ui.button(theme, "Back to practice", "practice.progress.back", .{ .w = 180, .h = 38 })) return true;
-    presentation.caption("Progress · exact comparison cohort · UTC dates", .{ .x = 190, .w = width - 190, .h = 38 }, 20, theme.text, null);
+    const assistance = ([_][]const u8{ "Guided", "Layout only", "Hidden" })[@backingInt(cohort.assistance)];
+    const context = if (cohort.curriculum.version != 0) try std.fmt.allocPrint(arena, "Progress · {s} · {d} letters · {s}", .{ desktop.practice_curriculum.names[@backingInt(cohort.curriculum.stage)], cohort.curriculum.alphabet, assistance }) else try std.fmt.allocPrint(arena, "Progress · {t} · {s} · {t} · UTC dates", .{ cohort.preset, assistance, cohort.mode });
+    presentation.caption(context, .{ .x = 190, .w = width - 190, .h = 38 }, 20, theme.text, null);
     _ = dvui.dropdown(@src(), &.{ "Trends", "Activity" }, .{ .choice = &view.tab }, .{}, .{ .rect = .{ .y = 44, .w = 160, .h = 32 } });
     _ = dvui.dropdown(@src(), &.{ "Newest 60", "Today (UTC)", "Last 7 days" }, .{ .choice = &view.range }, .{}, .{ .rect = .{ .x = 170, .y = 44, .w = 170, .h = 32 } });
     if (history == null) {

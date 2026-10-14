@@ -23,6 +23,7 @@ pub const Query = struct {
     progress: ?*progress.Summary = null,
     progress_allocator: std.mem.Allocator = std.heap.page_allocator,
     requested_record: ?Record = null,
+    latest_curriculum: ?Record = null,
     timing: ?timing.Owned = null,
     analysis: ?*analysis.Summary = null,
     database_runs: usize = 0,
@@ -267,6 +268,16 @@ pub const Request = struct {
             }
         };
         output.database_events = try db.eventCount();
+        var curriculum_rows = try db.rowsForPractice(self.cohort);
+        defer curriculum_rows.deinit();
+        while (try curriculum_rows.step()) {
+            const candidate = parse(gpa, try curriculum_rows.blob(1)) catch continue;
+            if (!std.mem.eql(u8, &candidate.id, try curriculum_rows.blob(0)) or !std.meta.eql(database.practiceKey(candidate.cohort), database.practiceKey(self.cohort))) continue;
+            if (candidate.cohort.curriculum.version == 1 and candidate.scored and candidate.status == .completed and candidate.cohort.mode == .normal) {
+                output.latest_curriculum = candidate;
+                break;
+            }
+        }
         if (output.requested_record) |record| if (record.timing_available) {
             output.timing = try db.timingFor(record.id, gpa);
             if (output.timing) |owned| output.analysis = try analysis.analyze(gpa, owned.payload);

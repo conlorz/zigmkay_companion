@@ -1,6 +1,6 @@
 # Typing practice: timing, implementation packages and UI studies
 
-Date: 2026-10-14. Packages A–D are implemented in PR #2; E–F remain the design and tracking sequence. The mockups use illustrative data and are not native DVUI screenshots. See [package A implementation evidence](../implementation/practice-data.md), [package B review](../implementation/practice-rundown.md), [package C review](../implementation/practice-progress.md), [package D review](../implementation/practice-diagnostics.md) and the tutor documentation for current behavior.
+Date: 2026-10-14. Packages A–E are implemented in PR #2; F remains the design and tracking sequence. The mockups use illustrative data and are not native DVUI screenshots. See [package A implementation evidence](../implementation/practice-data.md), [package B review](../implementation/practice-rundown.md), [package C review](../implementation/practice-progress.md), [package D review](../implementation/practice-diagnostics.md), [package E review](../implementation/practice-curriculum.md) and the tutor documentation for current behavior.
 
 ## Current storage and the database gap
 

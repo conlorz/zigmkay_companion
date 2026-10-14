@@ -259,7 +259,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         }
         if (config.target_count == 0) view.message = "Not enough evidence yet (5 opportunities and 2 misses). Start a fresh exercise." else if (config.mode != .english) view.message = "Personalized drills currently use the English corpus." else {
             var buffer: [8192]u8 = undefined;
-            _ = desktop.practice_generator.generate(&buffer, .{ .seed = owner.seed +% 0x9e3779b97f4a7c15, .preset = config.preset, .length = @intCast(config.level) }, config.targets[0..config.target_count]) catch |err| {
+            _ = owner.preview(&buffer, config) catch |err| {
                 view.message = if (err == error.HarderPresetRequired) "Choose Mixed case or Punctuation to practice these targets." else "The corpus cannot cover all selected targets with this preset.";
                 config.target_count = 0;
             };

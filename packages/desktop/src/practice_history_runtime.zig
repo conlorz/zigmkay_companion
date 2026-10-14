@@ -288,3 +288,42 @@ test "queued timing is frozen across new exercises; migration and clear do not r
     legacy.timestamp = 1;
     try t.expectError(error.PracticeRunCollision, history.save(t.allocator, t.io, directory, &legacy));
 }
+test "curriculum resumes across reopen without merging stage or assistance cohorts" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{ .iterate = true });
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    var runtime = try Runtime.init(t.allocator, t.io, root);
+    defer runtime.deinit();
+    var record: results.Record = .{ .id = @splat(3), .cohort = .{ .curriculum = .{ .version = 1 } } };
+    try runtime.enqueue(record);
+    try runtime.request(.{}, null, false, false, null);
+    while (runtime.worker != null) {
+        runtime.poll();
+        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
+    }
+    try t.expect(runtime.error_value == null);
+    try t.expectEqual(@as(usize, 0), runtime.data.total);
+    try t.expectEqual(record.id, runtime.data.latest_curriculum.?.id);
+    var reopened = try Runtime.init(t.allocator, t.io, root);
+    defer reopened.deinit();
+    try reopened.request(record.cohort, null, false, false, null);
+    while (reopened.worker != null) {
+        reopened.poll();
+        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
+    }
+    try t.expect(reopened.error_value == null);
+    try t.expectEqual(@as(usize, 1), reopened.data.total);
+    record.cohort.assistance = .hidden;
+    record.id = @splat(4);
+    record.timestamp = 1;
+    try reopened.enqueue(record);
+    try reopened.request(record.cohort, null, false, false, null);
+    while (reopened.worker != null) {
+        reopened.poll();
+        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
+    }
+    try t.expectEqual(@as(usize, 1), reopened.data.total);
+    try t.expectEqual(record.id, reopened.data.latest_curriculum.?.id);
+}

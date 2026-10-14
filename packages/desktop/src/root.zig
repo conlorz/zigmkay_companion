@@ -55,3 +55,4 @@ pub const practice_context = @import("practice_context.zig");
 pub const practice_timing = @import("practice_timing.zig");
 pub const practice_progress = @import("practice_progress.zig");
 pub const practice_analysis = @import("practice_analysis.zig");
+pub const practice_curriculum = @import("practice_curriculum.zig");

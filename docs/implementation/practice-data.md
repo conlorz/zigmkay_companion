@@ -12,7 +12,9 @@ first-party capture, persistence, validation, import/export and UI logic is Zig.
 - Immutable Zig package hash is recorded in `build.zig.zon`. The dependency
   strips the archive's `sqlite-autoconf-3540000` root directory. Clean CI
   fetching verifies the same package hash on macOS, Linux and Windows.
-- Database application ID `0x5a4d5052`, schema version 1. Counts record version 1
+- Database application ID `0x5a4d5052`; package A introduced schema version 1,
+  and package E upgrades it transactionally to version 2 with a practice-scope
+  index. Old raw record bytes remain unchanged. Counts record version 1
   retains backward-compatible default fields; raw timing payload version 1 is
   independent of existing metric/cohort versions.
 - `runs` contains frozen summary/reference-event payloads, with chronological

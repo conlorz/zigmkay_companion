@@ -10,9 +10,32 @@ pub fn caption(text: []const u8, bounds: dvui.Rect, size: f32, color: dvui.Color
     dvui.labelNoFmt(@src(), text, .{ .align_x = 0.5, .align_y = 0.5 }, .{ .rect = bounds, .font = dvui.Font.theme(.body).withSize(size), .color_text = .{ .color = color }, .padding = .{}, .tag = tag, .id_extra = std.hash.Wyhash.hash(0, std.mem.asBytes(&bounds)) });
 }
 pub fn paragraph(text: []const u8, bounds: dvui.Rect, size: f32, color: dvui.Color) void {
-    const layout = dvui.textLayout(@src(), .{ .break_lines = true }, .{ .rect = bounds, .font = dvui.Font.theme(.body).withSize(size), .color_text = .{ .color = color }, .padding = .{}, .id_extra = std.hash.Wyhash.hash(0, std.mem.asBytes(&bounds)) });
-    layout.addText(text, .{});
-    layout.deinit();
+    // Render borrowed UTF-8 through measured labels. The pinned TextLayout's
+    // offscreen wrapping path can attempt to free an advanced borrowed slice.
+    const font = dvui.Font.theme(.body).withSize(size);
+    const height = font.lineHeight();
+    var start: usize = 0;
+    var y = bounds.y;
+    while (start < text.len and y + height <= bounds.y + bounds.h + 1) {
+        if (text[start] == '\n') {
+            start += 1;
+            y += height;
+            continue;
+        }
+        var fit: usize = 0;
+        _ = font.textSizeEx(text[start..], .{ .max_width = @max(0, bounds.w), .end_idx = &fit });
+        if (fit == 0) fit = std.unicode.utf8ByteSequenceLength(text[start]) catch 1;
+        var end = @min(text.len, start + fit);
+        if (end < text.len and text[end] != '\n') if (std.mem.lastIndexOfScalar(u8, text[start..end], ' ')) |space| if (space > 0) {
+            end = start + space;
+        };
+        const rect: dvui.Rect = .{ .x = bounds.x, .y = y, .w = bounds.w, .h = height };
+        dvui.labelNoFmt(@src(), text[start..end], .{ .align_x = 0, .align_y = 0 }, .{ .rect = rect, .font = font, .color_text = .{ .color = color }, .padding = .{}, .id_extra = std.hash.Wyhash.hash(0, std.mem.asBytes(&rect)) });
+        start = end;
+        while (start < text.len and text[start] == ' ') start += 1;
+        if (start < text.len and text[start] == '\n') start += 1;
+        y += height;
+    }
 }
 fn letter(s: *const practice.Session, index: usize, focus: usize, bounds: dvui.Rect, size: f32, t: ui.Theme, hero: bool) void {
     const current = index == focus and s.state != .complete;

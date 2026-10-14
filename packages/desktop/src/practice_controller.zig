@@ -5,6 +5,7 @@ const std = @import("std");
 const practice = @import("practice.zig");
 const generator = @import("practice_generator.zig");
 const results = @import("practice_results.zig");
+const curriculum = @import("practice_curriculum.zig");
 pub const Digest = [32]u8;
 pub const Mode = enum { english, zig };
 pub const Config = struct {
@@ -16,7 +17,11 @@ pub const Config = struct {
     challenge: ?u64 = null,
     targets: [5]u21 = @splat(0),
     target_count: u8 = 0,
+    curriculum: curriculum.Context = .{},
     pub fn validate(self: Config) !void {
+        try self.curriculum.validate();
+        if (self.curriculum.version != 0 and self.challenge != null) return error.CurriculumCannotUseChallenge;
+        if (self.curriculum.version != 0 and self.mode == .zig and self.curriculum.stage != .real_text) return error.CurriculumCodeNeedsRealText;
         if (self.mode == .zig and self.challenge != null) return error.ChallengeOnlyEnglish;
         if (self.mode == .zig and self.target_count > 0) return error.UnsupportedDrillFamily;
         if (self.challenge != null and self.target_count > 0) return error.ChallengeCannotUseHistory;
@@ -42,6 +47,7 @@ pub const Controller = struct {
     seed: u64 = 1,
     exercise_seed: u64 = 1,
     normal_coverage: ?generator.HandCoverage = null,
+    curriculum_labels: ?practice.Labels = null,
     cohort: results.Cohort = .{},
     captured_cohort: results.Cohort = .{},
     completed: ?results.Record = null,
@@ -60,14 +66,18 @@ pub const Controller = struct {
         return .{ .current = snapshot };
     }
     pub fn configCohort(self: *const Controller) results.Cohort {
+        return self.cohortFor(self.config);
+    }
+    pub fn cohortFor(self: *const Controller, config: Config) results.Cohort {
         var cohort = self.cohort;
-        cohort.source = self.config.source;
-        cohort.family = @fromBackingInt(@backingInt(self.config.mode));
-        cohort.preset = if (self.config.mode == .zig) .words else self.config.preset;
-        cohort.length = if (self.config.mode == .zig) 1 else @intCast(self.config.level);
-        cohort.lesson = if (self.config.mode == .zig) @intCast(self.config.level) else 0;
-        cohort.assistance = self.config.assistance;
-        cohort.mode = if (self.config.target_count > 0) .drill else if (self.config.challenge != null) .challenge else .normal;
+        cohort.source = config.source;
+        cohort.family = @fromBackingInt(@backingInt(config.mode));
+        cohort.preset = if (config.mode == .zig or (config.curriculum.version != 0 and config.curriculum.stage != .real_text)) .words else config.preset;
+        cohort.length = if (config.mode == .zig) 1 else @intCast(config.level);
+        cohort.lesson = if (config.mode == .zig) @intCast(config.level) else 0;
+        cohort.assistance = config.assistance;
+        cohort.mode = if (config.target_count > 0) .drill else if (config.challenge != null) .challenge else .normal;
+        cohort.curriculum = config.curriculum.effective();
         return cohort;
     }
     pub fn operation(self: *const Controller) Operation {
@@ -126,17 +136,14 @@ pub const Controller = struct {
         var buffer: [8192]u8 = undefined;
         self.seed +%= 0x9e3779b97f4a7c15;
         self.exercise_seed = self.config.challenge orelse self.seed;
-        var reference = if (self.config.mode == .english)
-            try generator.generateWithCoverage(&buffer, .{ .seed = self.exercise_seed, .preset = self.config.preset, .length = @intCast(self.config.level) }, self.config.targets[0..self.config.target_count], if (self.config.challenge == null and self.config.target_count == 0) self.normal_coverage else null)
-        else
-            practice.lessons[self.config.level];
+        var reference = try self.generateReference(&buffer);
         if (self.config.mode == .english and self.config.challenge == null and self.session.reference_len > 0) {
             var retries: usize = 0;
             while (sameOpening(&self.session, reference)) : (retries += 1) {
                 if (retries == 4) return error.ExerciseFreshnessUnavailable;
                 self.seed +%= 0x9e3779b97f4a7c15;
                 self.exercise_seed = self.seed;
-                reference = try generator.generateWithCoverage(&buffer, .{ .seed = self.exercise_seed, .preset = self.config.preset, .length = @intCast(self.config.level) }, self.config.targets[0..self.config.target_count], if (self.config.target_count == 0) self.normal_coverage else null);
+                reference = try self.generateReference(&buffer);
             }
         }
         try self.session.load(reference, self.config.source);
@@ -163,6 +170,22 @@ pub const Controller = struct {
         if (!already_prepared) self.session.pause(now);
         const replacement: Replacement = .{ .previous = previous, .operation = self.operation() };
         return .{ .runner = if (already_prepared) .{ .stop_then_start = replacement } else .{ .stop_then_prepare = replacement }, .reset_text = true };
+    }
+    fn generateReference(self: *const Controller, buffer: []u8) ![]const u8 {
+        return self.referenceForConfig(buffer, self.config, self.exercise_seed);
+    }
+    fn referenceForConfig(self: *const Controller, buffer: []u8, config: Config, seed: u64) ![]const u8 {
+        if (config.mode == .zig) {
+            const text = practice.lessons[config.level];
+            if (config.curriculum.version != 0) try curriculum.validateText(self.curriculum_labels orelse return error.CurriculumLayoutUnavailable, text);
+            return text;
+        }
+        if (config.curriculum.version != 0) return curriculum.generate(buffer, config.curriculum, seed, @intCast(config.level), config.preset, config.targets[0..config.target_count], self.curriculum_labels orelse return error.CurriculumLayoutUnavailable);
+        return generator.generateWithCoverage(buffer, .{ .seed = seed, .preset = config.preset, .length = @intCast(config.level) }, config.targets[0..config.target_count], if (config.challenge == null and config.target_count == 0) self.normal_coverage else null);
+    }
+    pub fn preview(self: *const Controller, buffer: []u8, config: Config) ![]const u8 {
+        try config.validate();
+        return self.referenceForConfig(buffer, config, self.seed +% 0x9e3779b97f4a7c15);
     }
     pub fn prepared(self: *Controller, op: Operation, success: bool) bool {
         if (!self.accepts(op) or self.runner_state != .preparing) return false;

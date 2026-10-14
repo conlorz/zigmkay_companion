@@ -2,6 +2,7 @@
 const std = @import("std");
 const practice = @import("practice.zig");
 const generator = @import("practice_generator.zig");
+const curriculum = @import("practice_curriculum.zig");
 pub const Assistance = enum { guided, layout_only, hidden };
 pub const RunMode = enum { normal, challenge, drill };
 pub const Scope = enum { this_run, last_ten, all_history };
@@ -38,6 +39,7 @@ pub const Cohort = struct {
     metric_version: u16 = 1,
     generation_version: u16 = generator.version,
     lesson: u8 = 0,
+    curriculum: curriculum.Context = .{},
 };
 pub const Record = struct {
     version: u16 = 1,
@@ -68,6 +70,8 @@ pub const Record = struct {
     target_count: u8 = 0,
     drill_policy: u16 = 1,
     pub fn validate(self: *const Record) !void {
+        self.cohort.curriculum.validate() catch |err| return if (err == error.UnsupportedCurriculum) error.UnsupportedPracticeHistory else error.InvalidPracticeHistory;
+        if (self.cohort.curriculum.version != 0 and (self.cohort.mode == .challenge or (self.cohort.family == .zig and self.cohort.curriculum.stage != .real_text) or (self.cohort.curriculum.stage != .real_text and self.cohort.preset != .words))) return error.InvalidPracticeHistory;
         if ((self.status == .stopped and self.scored) or (self.timing_truncated and !self.timing_available)) return error.InvalidPracticeHistory;
         if (self.version != 1 or self.cohort.metric_version != 1 or self.cohort.generation_version != 1 or self.drill_policy != 1) return error.UnsupportedPracticeHistory;
         if (self.stat_count > 256 or self.substitution_count > 256 or self.target_count > 5 or self.correct_attempts > self.attempts) return error.InvalidPracticeHistory;

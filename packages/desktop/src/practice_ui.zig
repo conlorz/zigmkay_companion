@@ -10,6 +10,7 @@ const control = desktop.practice_controller;
 const rundown = @import("practice_rundown.zig");
 const progress_ui = @import("practice_progress_ui.zig");
 const diagnostics_ui = @import("practice_diagnostics_ui.zig");
+const curriculum_ui = @import("practice_curriculum_ui.zig");
 pub const Frame = struct {
     /// Live frames must come from the coherent identity-checked session adapter.
     /// Native text and an editable draft never establish a live frame.
@@ -59,6 +60,8 @@ pub const View = struct {
     progress: progress_ui.View = .{},
     diagnostics_open: bool = false,
     diagnostics: diagnostics_ui.View = .{},
+    curriculum_open: bool = false,
+    curriculum: curriculum_ui.View = .{},
     data_path: [4096]u8 = @splat(0),
     transfer: enum { none, export_database, import_database } = .none,
 };
@@ -133,7 +136,7 @@ fn keyboard(owner: *const control.Controller, frame: Frame, theme: ui.Theme, bou
     var active = frame.active_layers;
     var mods = frame.modifiers;
     const guided = owner.config.assistance == .guided;
-    const next = if (guided and owner.active and owner.session.state != .complete and focus < owner.session.reference_len) try desktop.practice.hint(labels.practiceLabels(), layer, mods.toByte(), owner.session.reference[focus], active) else null;
+    const next = if (guided and owner.active and owner.session.state != .complete and focus < owner.session.reference_len) desktop.practice_curriculum.hintFor(labels.practiceLabels(), owner.config.curriculum, owner.session.reference[focus]) orelse try desktop.practice.hint(labels.practiceLabels(), layer, mods.toByte(), owner.session.reference[focus], active) else null;
     const arena = dvui.currentWindow().arena();
     const tap = try arena.alloc(bool, labels.key_count);
     const hold = try arena.alloc(bool, labels.key_count);
@@ -241,7 +244,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
                 view.progress.message = "This saved run is no longer available.";
             };
             const progress_cohort = if (view.rundown.reviewed) |record| record.cohort else if (owner.completed) |record| record.cohort else owner.configCohort();
-            if (try progress_ui.draw(&view.progress, if (std.meta.eql(progress_cohort, input.history_cohort)) input.history else null, input.history_failure, input.history_saving, theme, .{ .w = width, .h = height })) view.progress_open = false;
+            if (try progress_ui.draw(&view.progress, if (std.meta.eql(progress_cohort, input.history_cohort)) input.history else null, progress_cohort, input.history_failure, input.history_saving, theme, .{ .w = width, .h = height })) view.progress_open = false;
             if (view.progress.retry) {
                 view.rundown.retry = true;
                 view.progress.retry = false;
@@ -277,6 +280,23 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         }
         return .{ .input_effect = focus_effect };
     }
+    if (view.curriculum_open) {
+        const action = try curriculum_ui.draw(&view.curriculum, owner, input.history, input.history_cohort, theme, .{ .w = width, .h = height });
+        switch (action) {
+            .none => {},
+            .back => view.curriculum_open = false,
+            .start => |config| {
+                view.curriculum_open = false;
+                view.rundown.reviewed = null;
+                return .{ .input_effect = focus_effect, .action = owner.action(.{ .drill = config }) };
+            },
+            .free => |config| {
+                view.curriculum_open = false;
+                return .{ .input_effect = focus_effect, .action = owner.action(.{ .choose = config }) };
+            },
+        }
+        return .{ .input_effect = focus_effect };
+    }
     // Exercise input precedes controls so Space cannot toggle a focused checkbox.
     var input_effect = try consumeInput(owner, window.data(), input);
     if (focus_effect.runner != .none or focus_effect.reset_text) input_effect = focus_effect;
@@ -292,8 +312,10 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .rect = .{ .w = width, .h = 38 } });
         defer row.deinit();
         changed = dvui.dropdown(@src(), &.{ "English", "Zig" }, .{ .choice = &mode }, .{}, .{ .min_size_content = .{ .w = 110 } });
-        if (mode == 0) changed = dvui.dropdown(@src(), &.{ "Words", "Mixed case", "Punctuation" }, .{ .choice = &preset }, .{}, .{ .tag = "practice.preset" }) or changed;
-        changed = dvui.dropdown(@src(), if (mode == 0) &.{ "Short · 2 units", "Normal · 5 units", "Long · 10 units" } else &desktop.practice.lesson_names, .{ .choice = &level }, .{}, .{ .tag = "practice.length" }) or changed;
+        if (mode == 0) {
+            if (owner.config.curriculum.version != 0 and owner.config.curriculum.stage != .real_text) dvui.labelNoFmt(@src(), desktop.practice_curriculum.names[@backingInt(owner.config.curriculum.stage)], .{}, .{}) else changed = dvui.dropdown(@src(), &.{ "Words", "Mixed case", "Punctuation" }, .{ .choice = &preset }, .{}, .{ .tag = "practice.preset" }) or changed;
+        }
+        changed = dvui.dropdown(@src(), if (mode != 0) &desktop.practice.lesson_names else if (owner.config.curriculum.version != 0) &.{ "Short", "Normal", "Long" } else &.{ "Short · 2 units", "Normal · 5 units", "Long · 10 units" }, .{ .choice = &level }, .{}, .{ .tag = "practice.length" }) or changed;
     }
     {
         const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .rect = .{ .y = 42, .w = width, .h = 38 } });
@@ -307,7 +329,7 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
                 view.rundown.reviewed = saved.page[0];
             };
         }
-        if (mode == 0 and dvui.button(@src(), "Challenge seed…", .{}, .{ .tag = "practice.challenge.toggle" })) {
+        if (mode == 0 and owner.config.curriculum.version == 0 and dvui.button(@src(), "Challenge seed…", .{}, .{ .tag = "practice.challenge.toggle" })) {
             view.challenge_open = !view.challenge_open;
             if (view.challenge_open and owner.active and owner.session.state != .complete) pending = .pause;
         }
@@ -325,6 +347,21 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
             view.rundown.refresh = true;
             if (owner.active and owner.session.state != .complete) pending = .pause;
         }
+        if (dvui.button(@src(), "Guided difficulty", .{}, .{ .tag = "practice.curriculum.open" })) {
+            view.curriculum_open = true;
+            view.curriculum.config = owner.config;
+            view.curriculum.config.challenge = null;
+            view.curriculum.config.target_count = 0;
+            if (view.curriculum.config.curriculum.version == 0) {
+                view.curriculum.config.curriculum.version = 1;
+                view.curriculum.config.mode = .english;
+                view.curriculum.config.preset = .words;
+            }
+            view.challenge_open = false;
+            view.challenge_enabled = false;
+            view.rundown.refresh = true;
+            if (owner.active and owner.session.state != .complete) pending = .pause;
+        }
     }
     if (view.challenge_open and mode == 0) {
         const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .rect = .{ .y = 84, .w = width, .h = 38 } });
@@ -336,11 +373,12 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
     if (changed) {
         var config = owner.config;
         config.mode = @fromBackingInt(@intCast(mode));
+        if (config.curriculum.version != 0 and config.mode == .zig) config.curriculum.stage = .real_text;
         config.level = level;
         config.source = @fromBackingInt(@intCast(source));
         config.preset = @fromBackingInt(@intCast(preset));
         config.assistance = @fromBackingInt(@intCast(assistance));
-        config.challenge = if (mode == 0 and view.challenge_enabled) view.challenge_seed else null;
+        config.challenge = if (mode == 0 and view.challenge_enabled and config.curriculum.version == 0) view.challenge_seed else null;
         config.target_count = 0;
         pending = .{ .choose = config };
     }

@@ -76,6 +76,25 @@ pub fn encode(gpa: std.mem.Allocator, value: anytype) ![]u8 {
     if (out.written().len > max_payload_bytes) return error.PracticeRecordTooLarge;
     return gpa.dupe(u8, out.written());
 }
+// Preserve the original indexed key for count-only and pre-curriculum records.
+// Adding defaulted fields to the public model must not hide historical cohorts.
+pub fn cohortKey(gpa: std.mem.Allocator, cohort: results.Cohort) ![]u8 {
+    const base = .{ .behavior = cohort.behavior, .mapping = cohort.mapping, .verified = cohort.verified, .source = cohort.source, .family = cohort.family, .preset = cohort.preset, .length = cohort.length, .assistance = cohort.assistance, .mode = cohort.mode, .metric_version = cohort.metric_version, .generation_version = cohort.generation_version, .lesson = cohort.lesson };
+    if (cohort.curriculum.version == 0) return encode(gpa, base);
+    return encode(gpa, .{ .version = @as(u16, 2), .base = base, .curriculum = cohort.curriculum });
+}
+pub fn practiceKey(cohort: results.Cohort) [32]u8 {
+    var hash = std.crypto.hash.sha2.Sha256.init(.{});
+    hash.update(&cohort.behavior);
+    hash.update(&cohort.mapping);
+    hash.update(&.{ @backingInt(cohort.source), @backingInt(cohort.family) });
+    return hash.finalResult();
+}
+fn sameRecord(gpa: std.mem.Allocator, bytes: []const u8, record: *const results.Record) !bool {
+    const old = try decode(results.Record, gpa, bytes);
+    try old.validate();
+    return std.meta.eql(old, record.*);
+}
 pub fn decode(comptime T: type, gpa: std.mem.Allocator, bytes: []const u8) !T {
     if (bytes.len > max_payload_bytes) return error.PracticeRecordTooLarge;
     const text = try gpa.dupeSentinel(u8, bytes, 0);
@@ -84,6 +103,67 @@ pub fn decode(comptime T: type, gpa: std.mem.Allocator, bytes: []const u8) !T {
     const value = try std.zon.parse.fromSlice(T, .{ .gpa = gpa, .arena = gpa, .source = text, .diagnostics = &diagnostics });
     try value.validate();
     return value;
+}
+test "schema one migration preserves old record bytes and default-field identity" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    const path = try std.fs.path.join(t.allocator, &.{ root, "old.sqlite3" });
+    defer t.allocator.free(path);
+    const record: results.Record = .{ .id = @splat(1) };
+    const id = try encode(t.allocator, record.id);
+    defer t.allocator.free(id);
+    const old_bytes = try std.fmt.allocPrint(t.allocator, ".{{ .id = {s}, .cohort = .{{}} }}", .{id});
+    defer t.allocator.free(old_bytes);
+    {
+        var db = try Database.open(t.allocator, path, false);
+        defer db.deinit();
+        try db.save(&record, null);
+        var update = try db.prepare("UPDATE runs SET record=?1 WHERE id=?2");
+        defer update.deinit();
+        try update.bindBlob(1, old_bytes);
+        try update.bindBlob(2, &record.id);
+        _ = try update.step();
+        try db.exec("DROP INDEX runs_practice_chronological; ALTER TABLE runs DROP COLUMN practice_scope; PRAGMA user_version=1");
+    }
+    var migrated = try Database.open(t.allocator, path, false);
+    defer migrated.deinit();
+    try t.expectEqual(@as(i64, 2), try migrated.number("PRAGMA user_version"));
+    try migrated.save(&record, null);
+    var rows = try migrated.rowsFor(.{});
+    defer rows.deinit();
+    try t.expect(try rows.step());
+    try t.expectEqualStrings(old_bytes, try rows.blob(1));
+    var scoped = try migrated.rowsForPractice(.{});
+    defer scoped.deinit();
+    try t.expect(try scoped.step());
+}
+test "invalid legacy payload rolls back the complete scope migration" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    const path = try std.fs.path.join(t.allocator, &.{ root, "invalid-old.sqlite3" });
+    defer t.allocator.free(path);
+    {
+        var db = try Database.open(t.allocator, path, false);
+        defer db.deinit();
+        const record: results.Record = .{ .id = @splat(1) };
+        try db.save(&record, null);
+        try db.exec("UPDATE runs SET record=CAST('.{ .version=999 }' AS BLOB); DROP INDEX runs_practice_chronological; ALTER TABLE runs DROP COLUMN practice_scope; PRAGMA user_version=1");
+    }
+    try t.expectError(error.UnsupportedPracticeHistory, Database.open(t.allocator, path, false));
+    var preserved = try Database.open(t.allocator, path, true);
+    defer preserved.deinit();
+    try t.expectEqual(@as(i64, 1), try preserved.number("PRAGMA user_version"));
+    try t.expectEqual(@as(i64, 0), try preserved.number("SELECT count(*) FROM pragma_table_info('runs') WHERE name='practice_scope'"));
+    var rows = try preserved.rows();
+    defer rows.deinit();
+    try t.expect(try rows.step());
+    try t.expectEqualStrings(".{ .version=999 }", try rows.blob(1));
 }
 pub const Database = struct {
     handle: *Handle,
@@ -102,11 +182,15 @@ pub const Database = struct {
         errdefer self.deinit();
         try check(sqlite3_busy_timeout(self.handle, 1500));
         try self.exec("PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON;");
+        if (!readonly) try self.exec("BEGIN IMMEDIATE");
+        errdefer if (!readonly) self.exec("ROLLBACK") catch {};
         const version = try self.number("PRAGMA user_version");
         const app = try self.number("PRAGMA application_id");
         if (!readonly and version == 0 and app == 0 and try self.number("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'") == 0) {
-            try self.exec("BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS runs(id BLOB PRIMARY KEY CHECK(length(id)=16), timestamp INTEGER NOT NULL, record BLOB NOT NULL, timing BLOB, cohort BLOB NOT NULL) STRICT; CREATE INDEX IF NOT EXISTS runs_chronological ON runs(timestamp,id); CREATE INDEX IF NOT EXISTS runs_cohort_chronological ON runs(cohort,timestamp,id); CREATE TABLE IF NOT EXISTS events(run_id BLOB NOT NULL REFERENCES runs(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, elapsed_us INTEGER NOT NULL, active_us INTEGER NOT NULL, kind INTEGER NOT NULL, position INTEGER NOT NULL, expected INTEGER, typed INTEGER, batch INTEGER NOT NULL, input INTEGER NOT NULL, eligibility INTEGER NOT NULL, interval_us INTEGER, correct INTEGER NOT NULL, assistance INTEGER NOT NULL, observed_us INTEGER NOT NULL, clock INTEGER NOT NULL, PRIMARY KEY(run_id,ordinal)) STRICT; CREATE TABLE IF NOT EXISTS legacy_imports(id BLOB PRIMARY KEY, record BLOB NOT NULL) STRICT; PRAGMA application_id=0x5a4d5052; PRAGMA user_version=1; COMMIT;");
-        } else if (version != 1 or app != application_id) return error.UnsupportedPracticeDatabase;
+            try self.exec("CREATE TABLE IF NOT EXISTS runs(id BLOB PRIMARY KEY CHECK(length(id)=16), timestamp INTEGER NOT NULL, record BLOB NOT NULL, timing BLOB, cohort BLOB NOT NULL) STRICT; CREATE INDEX IF NOT EXISTS runs_chronological ON runs(timestamp,id); CREATE INDEX IF NOT EXISTS runs_cohort_chronological ON runs(cohort,timestamp,id); CREATE TABLE IF NOT EXISTS events(run_id BLOB NOT NULL REFERENCES runs(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, elapsed_us INTEGER NOT NULL, active_us INTEGER NOT NULL, kind INTEGER NOT NULL, position INTEGER NOT NULL, expected INTEGER, typed INTEGER, batch INTEGER NOT NULL, input INTEGER NOT NULL, eligibility INTEGER NOT NULL, interval_us INTEGER, correct INTEGER NOT NULL, assistance INTEGER NOT NULL, observed_us INTEGER NOT NULL, clock INTEGER NOT NULL, PRIMARY KEY(run_id,ordinal)) STRICT; CREATE TABLE IF NOT EXISTS legacy_imports(id BLOB PRIMARY KEY, record BLOB NOT NULL) STRICT; PRAGMA application_id=0x5a4d5052; PRAGMA user_version=1;");
+        } else if ((version != 1 and version != 2) or app != application_id) return error.UnsupportedPracticeDatabase;
+        if (!readonly and version != 2) try self.migrateScope();
+        if (!readonly) try self.exec("COMMIT");
         if (!readonly) try self.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
         return self;
     }
@@ -137,9 +221,40 @@ pub const Database = struct {
         return std.math.cast(usize, try self.number("SELECT count(*) FROM runs")) orelse error.InvalidPracticeDatabase;
     }
     pub fn rowsFor(self: *Database, cohort: results.Cohort) !Statement {
-        const bytes = try encode(self.gpa, cohort);
+        const bytes = try cohortKey(self.gpa, cohort);
         errdefer self.gpa.free(bytes);
         var stmt = try self.prepare("SELECT id,record,timing FROM runs WHERE cohort=?1 ORDER BY timestamp DESC,id DESC");
+        errdefer stmt.deinit();
+        try stmt.bindBlob(1, bytes);
+        stmt.retained = bytes;
+        stmt.gpa = self.gpa;
+        return stmt;
+    }
+    fn migrateScope(self: *Database) !void {
+        try self.exec("ALTER TABLE runs ADD COLUMN practice_scope BLOB; CREATE INDEX runs_practice_chronological ON runs(practice_scope,timestamp,id)");
+        var cursor = try self.rows();
+        defer cursor.deinit();
+        while (try cursor.step()) {
+            const record = try decode(results.Record, self.gpa, try cursor.blob(1));
+            try record.validate();
+            if (!std.mem.eql(u8, &record.id, try cursor.blob(0))) return error.InvalidPracticeDatabase;
+            const key = practiceKey(record.cohort);
+            const cohort = try cohortKey(self.gpa, record.cohort);
+            defer self.gpa.free(cohort);
+            var update = try self.prepare("UPDATE runs SET practice_scope=?1,cohort=?2 WHERE id=?3");
+            defer update.deinit();
+            try update.bindBlob(1, &key);
+            try update.bindBlob(2, cohort);
+            try update.bindBlob(3, &record.id);
+            _ = try update.step();
+        }
+        try self.exec("PRAGMA user_version=2");
+    }
+    pub fn rowsForPractice(self: *Database, cohort: results.Cohort) !Statement {
+        const key = practiceKey(cohort);
+        const bytes = try self.gpa.dupe(u8, &key);
+        errdefer self.gpa.free(bytes);
+        var stmt = try self.prepare("SELECT id,record,timing FROM runs WHERE practice_scope=?1 ORDER BY timestamp DESC,id DESC");
         errdefer stmt.deinit();
         try stmt.bindBlob(1, bytes);
         stmt.retained = bytes;
@@ -168,21 +283,23 @@ pub const Database = struct {
         defer found.deinit();
         try found.bindBlob(1, &record.id);
         if (try found.step()) {
-            if (!std.mem.eql(u8, bytes, try found.blob(0))) return error.PracticeRunCollision;
+            if (!try sameRecord(self.gpa, try found.blob(0), record)) return error.PracticeRunCollision;
             if (samples) |b| {
                 if (sqlite3_column_type(found.raw, 1) == 5 or !std.mem.eql(u8, b, try found.blob(1))) return error.PracticeRunCollision;
             }
             return;
         }
-        const cohort = try encode(self.gpa, record.cohort);
+        const cohort = try cohortKey(self.gpa, record.cohort);
         defer self.gpa.free(cohort);
-        var stmt = try self.prepare("INSERT INTO runs(id,timestamp,record,timing,cohort) VALUES(?1,?2,?3,?4,?5)");
+        const scope = practiceKey(record.cohort);
+        var stmt = try self.prepare("INSERT INTO runs(id,timestamp,record,timing,cohort,practice_scope) VALUES(?1,?2,?3,?4,?5,?6)");
         defer stmt.deinit();
         try stmt.bindBlob(1, &record.id);
         try stmt.integer(2, record.timestamp);
         try stmt.bindBlob(3, bytes);
         if (samples) |b| try stmt.bindBlob(4, b) else try check(sqlite3_bind_null(stmt.raw, 4));
         try stmt.bindBlob(5, cohort);
+        try stmt.bindBlob(6, &scope);
         _ = try stmt.step();
         if (payload) |p| for (p.events, 0..) |event, index| {
             var e = try self.prepare("INSERT INTO events VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)");
@@ -213,6 +330,7 @@ pub const Database = struct {
         try self.exec("COMMIT");
     }
     pub fn importLegacy(self: *Database, record: *const results.Record) !void {
+        try record.validate();
         const bytes = try encode(self.gpa, record.*);
         defer self.gpa.free(bytes);
         try self.exec("BEGIN IMMEDIATE");
@@ -221,7 +339,7 @@ pub const Database = struct {
         defer old.deinit();
         try old.bindBlob(1, &record.id);
         if (try old.step()) {
-            if (!std.mem.eql(u8, bytes, try old.blob(0))) return error.PracticeRunCollision;
+            if (!try sameRecord(self.gpa, try old.blob(0), record)) return error.PracticeRunCollision;
         } else {
             try self.put(record, null);
             var receipt = try self.prepare("INSERT INTO legacy_imports VALUES(?1,?2)");
