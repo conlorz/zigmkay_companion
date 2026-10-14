@@ -8,7 +8,9 @@ pub fn pump(backend: *Backend, window: *dvui.Window, context: anytype) !void {
     while (sdl.SDL_PollEvent(&event)) {
         if (try context.raw(event)) continue;
         const id = windowId(event);
+        const before = window.events.items.len;
         _ = try dispatch(backend, window, event, id);
+        if (@hasDecl(@TypeOf(context.*), "forwarded")) context.forwarded(event, window.events.items[before..]);
     }
 }
 pub fn windowId(event: sdl.SDL_Event) u32 {

@@ -50,6 +50,9 @@ pub const Record = struct {
     layer_count: u8 = 1,
     key_count: u16 = 0,
     scored: bool = true,
+    status: enum { completed, stopped } = .completed,
+    timing_available: bool = false,
+    timing_truncated: bool = false,
     active_us: u64 = 0,
     matched: u64 = 0,
     attempts: u64 = 0,
@@ -65,6 +68,7 @@ pub const Record = struct {
     target_count: u8 = 0,
     drill_policy: u16 = 1,
     pub fn validate(self: *const Record) !void {
+        if ((self.status == .stopped and self.scored) or (self.timing_truncated and !self.timing_available)) return error.InvalidPracticeHistory;
         if (self.version != 1 or self.cohort.metric_version != 1 or self.cohort.generation_version != 1 or self.drill_policy != 1) return error.UnsupportedPracticeHistory;
         if (self.stat_count > 256 or self.substitution_count > 256 or self.target_count > 5 or self.correct_attempts > self.attempts) return error.InvalidPracticeHistory;
         for (self.targets[0..self.target_count]) |cp| if (cp > 0x10ffff or (cp >= 0xd800 and cp <= 0xdfff)) return error.InvalidPracticeHistory;
@@ -91,11 +95,18 @@ pub const Record = struct {
 };
 pub fn capture(session: *const practice.Session, cohort: Cohort, labels: ?practice.Labels) !Record {
     if (session.state != .complete) return error.IncompletePractice;
-    var result: Record = .{ .cohort = cohort, .scored = session.scored, .active_us = session.active_us, .matched = session.reference_len, .attempts = session.attempts, .correct_attempts = session.correct_attempts, .corrections = session.corrected, .outside_errors = session.outside_errors };
+    return captureMode(session, cohort, labels, false, session.active_us);
+}
+pub fn captureStopped(session: *const practice.Session, cohort: Cohort, labels: ?practice.Labels, now: u64) !Record {
+    return captureMode(session, cohort, labels, true, session.duration(now));
+}
+fn captureMode(session: *const practice.Session, cohort: Cohort, labels: ?practice.Labels, stopped: bool, active_us: u64) !Record {
+    const count = if (stopped) session.observed else session.reference_len;
+    var result: Record = .{ .cohort = cohort, .scored = !stopped and session.scored, .status = if (stopped) .stopped else .completed, .timing_available = session.recorder != null, .timing_truncated = if (session.recorder) |recorder| recorder.dropped != 0 else false, .active_us = active_us, .matched = count, .attempts = session.attempts, .correct_attempts = session.correct_attempts, .corrections = session.corrected, .outside_errors = session.outside_errors };
     result.substitution_count = session.substitution_count;
     result.substitutions_truncated = session.substitutions_truncated;
     for (session.substitutions[0..session.substitution_count], 0..) |substitution, index| result.substitutions[index] = .{ .expected = substitution.expected, .typed = substitution.typed, .count = substitution.count };
-    for (session.reference[0..session.reference_len], 0..) |cp, position| {
+    for (session.reference[0..count], 0..) |cp, position| {
         var index: usize = 0;
         while (index < result.stat_count and result.stats[index].cp != cp) : (index += 1) {}
         if (index == result.stat_count) {

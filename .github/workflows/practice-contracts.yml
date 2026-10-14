@@ -22,8 +22,4 @@ jobs:
         shell: bash
         run: |
           test "$(zig version)" = 0.17.0
-          zig test packages/desktop/src/practice_generator.zig
-          zig test packages/desktop/src/practice_results.zig
-          zig test packages/desktop/src/practice_history.zig
-          zig test packages/desktop/src/practice_history_runtime.zig
-          zig test packages/platform/src/app_paths.zig
+          zig build test-practice-data test-app-paths -Dpractice-data-only=true -j4 --test-timeout 45s

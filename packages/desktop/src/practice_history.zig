@@ -2,6 +2,8 @@
 //! All-history is streamed from bounded records; ten newest records form a page.
 const std = @import("std");
 const results = @import("practice_results.zig");
+const database = @import("practice_database.zig");
+const timing = @import("practice_timing.zig");
 pub const Record = results.Record;
 pub const max_record_bytes = 512 * 1024;
 pub const Query = struct {
@@ -14,6 +16,10 @@ pub const Query = struct {
     requested_id: ?[16]u8 = null,
     contains_requested: bool = false,
     oldest_recent: ?Record = null,
+    database_runs: usize = 0,
+    database_events: usize = 0,
+    exported: bool = false,
+    imported: ?usize = null,
     pub fn deinit(_: *Query) void {}
 };
 pub fn newer(a: Record, b: Record) bool {
@@ -129,6 +135,9 @@ pub const Request = struct {
     before: ?Record = null,
     clearing: bool = false,
     current_id: ?[16]u8 = null,
+    timing: ?timing.Payload = null,
+    transfer: enum { none, export_database, import_database } = .none,
+    transfer_path: []const u8 = "",
     pub fn init(gpa: std.mem.Allocator, path: []const u8, cohort: results.Cohort) !Request {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         errdefer arena.deinit();
@@ -140,14 +149,85 @@ pub const Request = struct {
     }
     pub fn prepare(self: *Request, gpa: std.mem.Allocator, io: std.Io) !Query {
         // A missing read-only history is ordinary. Only a completed save creates it.
-        const directory = if (self.record != null) try std.Io.Dir.cwd().createDirPathOpen(io, self.path, .{ .open_options = .{ .iterate = true } }) else std.Io.Dir.cwd().openDir(io, self.path, .{ .iterate = true }) catch |err| {
+        const directory = if (self.record != null or self.transfer != .none) try std.Io.Dir.cwd().createDirPathOpen(io, self.path, .{ .open_options = .{ .iterate = true } }) else std.Io.Dir.cwd().openDir(io, self.path, .{ .iterate = true }) catch |err| {
             if (err == error.FileNotFound) return .{};
             return err;
         };
         defer directory.close(io);
-        if (self.clearing) try clear(gpa, io, directory);
-        if (self.record) |*record| try save(gpa, io, directory, record);
-        return queryTracked(gpa, io, directory, self.cohort, self.before, self.current_id);
+        const root = try directory.realPathFileAlloc(io, ".", gpa);
+        defer gpa.free(root);
+        const path = try std.fs.path.join(gpa, &.{ root, database.filename });
+        defer gpa.free(path);
+        var db = try database.Database.open(gpa, path, false);
+        defer db.deinit();
+        var rejected: usize = 0;
+        var iterator = directory.iterate();
+        while (try iterator.next(io)) |entry| {
+            if (entry.kind != .file or entry.name.len != 36 or !std.mem.endsWith(u8, entry.name, ".zon")) continue;
+            const bytes = directory.readFileAlloc(io, entry.name, gpa, .limited(max_record_bytes)) catch {
+                rejected += 1;
+                continue;
+            };
+            defer gpa.free(bytes);
+            const legacy = parse(gpa, bytes) catch {
+                rejected += 1;
+                continue;
+            };
+            var name: [36]u8 = undefined;
+            if (!std.mem.eql(u8, entry.name, filename(legacy.id, &name))) {
+                rejected += 1;
+                continue;
+            }
+            db.importLegacy(&legacy) catch |err| {
+                if (err == error.PracticeRunCollision) {
+                    rejected += 1;
+                    continue;
+                }
+                return err;
+            };
+        }
+        if (self.clearing) {
+            if (rejected != 0) return error.InvalidPracticeHistory;
+            try db.clear();
+        }
+        if (self.record) |*record| try db.save(record, self.timing);
+        var output: Query = .{ .requested_id = self.current_id, .rejected = rejected };
+        switch (self.transfer) {
+            .none => {},
+            .export_database => {
+                try db.exportDatabase(io, self.transfer_path);
+                output.exported = true;
+            },
+            .import_database => output.imported = try db.importDatabase(self.transfer_path),
+        }
+        output.database_runs = try db.runCount();
+        var rows = try db.rowsFor(self.cohort);
+        defer rows.deinit();
+        var newest: [10]Record = @splat(.{});
+        var newest_count: usize = 0;
+        while (try rows.step()) {
+            const record = parse(gpa, try rows.blob(1)) catch {
+                output.rejected += 1;
+                continue;
+            };
+            if (!std.mem.eql(u8, try rows.blob(0), &record.id)) {
+                output.rejected += 1;
+                continue;
+            }
+            if (!std.meta.eql(record.cohort, self.cohort)) continue;
+            output.total += 1;
+            if (self.current_id) |id| if (std.mem.eql(u8, &id, &record.id)) {
+                output.contains_requested = true;
+            };
+            try output.all.add(&record);
+            if (record.scored) insert(&newest, &newest_count, record);
+            if (self.before) |boundary| if (!newer(boundary, record)) continue;
+            insert(&output.page, &output.page_count, record);
+        }
+        for (newest[0..newest_count]) |*record| try output.recent.add(record);
+        if (newest_count == 10) output.oldest_recent = newest[9];
+        output.database_events = try db.eventCount();
+        return output;
     }
 };
 pub const Worker = @import("owned_worker.zig").Owner(Request, Query, error.InvalidPracticeGeneration);

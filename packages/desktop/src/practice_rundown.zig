@@ -71,7 +71,7 @@ pub fn draw(owner: *desktop.practice_controller.Controller, view: *View, record:
         }
     }
     const aggregate = if (view.scope == 0) &current else &historical;
-    presentation.caption(try std.fmt.allocPrint(arena, "{s} · {d:.0} WPM · {d:.1}% accuracy · {d:.1}s · {d} corrections · {s}", .{ if (view.reviewed != null) "Saved run" else "Exercise complete", record.wpm(), record.accuracy(), @as(f64, @floatFromInt(record.active_us)) / 1_000_000, record.corrections, if (record.scored) "scored" else "unscored preview" }), .{ .w = width, .h = 32 }, 20, theme.text, "practice.rundown.metrics");
+    presentation.caption(try std.fmt.allocPrint(arena, "{s} · {d:.0} WPM · {d:.1}% accuracy · {d:.1}s · {d} corrections · {s}", .{ if (record.status == .stopped) "Stopped exercise" else if (view.reviewed != null) "Saved run" else "Exercise complete", record.wpm(), record.accuracy(), @as(f64, @floatFromInt(record.active_us)) / 1_000_000, record.corrections, if (record.scored) "scored" else "unscored" }), .{ .w = width, .h = 32 }, 20, theme.text, "practice.rundown.metrics");
     _ = dvui.dropdown(@src(), &.{ "This run", "Last 10 runs", "All history" }, .{ .choice = &view.scope }, .{}, .{ .rect = .{ .y = 40, .w = 160, .h = 38 }, .tag = "practice.scope" });
     presentation.caption(try std.fmt.allocPrint(arena, "{d} included · {s} / {s} · {t} / {t} / {t} · {s}", .{ aggregate.runs, std.mem.sliceTo(&record.profile, 0), std.mem.sliceTo(&record.input_source, 0), record.cohort.preset, record.cohort.assistance, record.cohort.mode, if (record.cohort.verified) "verified mapping" else "unverified OS layout / draft reference" }), .{ .x = 170, .y = 40, .w = width - 170, .h = 38 }, 14, theme.muted, null);
     const variants = desktop.practice.route_modifiers;

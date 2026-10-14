@@ -39,4 +39,4 @@ run = "zig build test-desktop-launch test-desktop-practice test-desktop-rundown 
 
 [tasks."typing-practice:test"]
 description = "Check practice generation, metrics, native storage and path policy without devices"
-run = "zig build test-desktop-core test-app-paths"
+run = "zig build test-practice-data test-app-paths -Dpractice-data-only=true -j4 --test-timeout 45s"

@@ -60,6 +60,7 @@ const Fixture = struct {
     }
 };
 const Events = struct {
+    io: std.Io,
     root: u32,
     close: bool = false,
     quit: bool = false,
@@ -69,6 +70,23 @@ const Events = struct {
     model: ?*desktop.model.Model = null,
     view: ?*editor.View = null,
     now_us: u64 = 0,
+    times: [512]desktop.practice_timing.EventTime = undefined,
+    time_count: usize = 0,
+    fn timestamp(self: *Events, event: Backend.c.SDL_Event) u64 {
+        const now: u64 = @intCast(@max(0, std.Io.Clock.awake.now(self.io).toNanoseconds()) / 1000);
+        const age = Backend.c.SDL_GetTicksNS() -| event.common.timestamp;
+        return now -| (age / 1000);
+    }
+    pub fn forwarded(self: *Events, event: Backend.c.SDL_Event, added: []const dvui.Event) void {
+        if (@import("native-events").windowId(event) != self.root or event.common.timestamp == 0) return;
+        const at = self.timestamp(event);
+        for (added) |item| {
+            if (item.evt != .text and item.evt != .key) continue;
+            if (self.time_count == self.times.len) break;
+            self.times[self.time_count] = .{ .number = item.num, .now_us = at };
+            self.time_count += 1;
+        }
+    }
     pub fn raw(self: *Events, event: Backend.c.SDL_Event) !bool {
         if (event.type == Backend.c.SDL_EVENT_QUIT) {
             self.quit = true;
@@ -80,7 +98,8 @@ const Events = struct {
         }
         if (event.type == Backend.c.SDL_EVENT_WINDOW_FOCUS_LOST and event.window.windowID == self.root) self.lost_focus = true;
         if (self.draft) |runtime| if (self.practice) |practice| if (self.model) |model| if (@import("native-draft-input").convert(&event)) |converted| {
-            const consumed = runtime.route(practice, model, converted, self.now_us) catch |err| failed: {
+            const at = if (event.common.timestamp != 0) self.timestamp(event) else self.now_us;
+            const consumed = runtime.route(practice, model, converted, at) catch |err| failed: {
                 runtime.fail(practice, err, self.now_us);
                 if (self.view) |view| view.report(err);
                 break :failed false;
@@ -259,7 +278,8 @@ pub fn main(init: std.process.Init) !void {
     const light = args.len == 2 and (std.mem.eql(u8, args[1], "--light") or preview_tutor or preview_companion);
     var practice_fixture = false;
     var rundown_fixture = false;
-    const native_rundown = args.len == 3 and std.mem.eql(u8, args[1], "--native-rundown-frames");
+    const data_preview = args.len == 3 and std.mem.eql(u8, args[1], "--native-data-frames");
+    const native_rundown = data_preview or (args.len == 3 and std.mem.eql(u8, args[1], "--native-rundown-frames"));
     var draft_fixture = false;
     var build_fixture = false;
     var companion_fixture = false;
@@ -419,17 +439,26 @@ pub fn main(init: std.process.Init) !void {
     var live_frame = desktop.live_keyboard.Frame{};
     var last_live_status: ?desktop.tray_lifecycle.Status = null;
     var retained_fixture: ?[32]u8 = null;
-    var events = Events{ .root = Backend.c.SDL_GetWindowID(native.window) };
+    var events = Events{ .io = init.io, .root = Backend.c.SDL_GetWindowID(native.window) };
     var chooser: desktop.folder_selection.State = .{};
     var exported: ?[32]u8 = null;
     var count: usize = 0;
     var practicing = practice_fixture or rundown_fixture or draft_fixture or preview_tutor;
     var practice = desktop.practice_controller.Controller.init(try model.id());
+    var practice_timing = desktop.practice_timing.Recorder.init(gpa);
+    practice_timing.clock = .frame;
+    defer practice_timing.deinit();
+    practice.session.recorder = &practice_timing;
     if (practice_fixture) _ = try practice.dispatch(practice.action(.{ .start = true }), null, 0);
     var practice_view: tutor.View = .{};
     if (frame_limit == null) try std.Io.randomSecure(init.io, std.mem.asBytes(&practice.seed));
     var practice_history = try desktop.practice_history_runtime.Runtime.init(gpa, init.io, if (user_paths) |owned| owned.paths.data else null);
     defer practice_history.deinit();
+    if (data_preview) {
+        const root = try std.Io.Dir.cwd().realPathFileAlloc(init.io, ".", gpa);
+        defer gpa.free(root);
+        practice_history.path = try std.fs.path.join(gpa, &.{ root, ".zig-cache", "native-data-verification" });
+    }
     var practice_history_loaded = false;
 
     var interrupted = false;
@@ -881,7 +910,7 @@ pub fn main(init: std.process.Init) !void {
             if (practice.session.len > 1) return error.DraftRepeatRoutingFailed;
         }
         events.now_us = now_us;
-        draft_runtime.router.owns_practice_input = practicing;
+        draft_runtime.router.owns_practice_input = practicing and !practice_view.data_open;
         draft_runtime.router.focused = frame_limit != null or Backend.c.SDL_GetWindowFlags(native.window) & Backend.c.SDL_WINDOW_INPUT_FOCUS != 0;
         if (captions.revision != revision or !std.mem.eql(u8, &captions.snapshot, &(try model.id()))) {
             const replacement = if (source) |*active| try Captions.init(gpa, &model, active, active.id(), revision) else try Captions.init(gpa, &model, &fixture, "Offline launch fixture", revision);
@@ -947,6 +976,7 @@ pub fn main(init: std.process.Init) !void {
             if (!Backend.c.SDL_PushEvent(&lost)) return error.FixtureEventRejected;
             draft_phase = .paused;
         }
+        events.time_count = 0;
         try @import("native-events").pump(&native, &window, &events);
         if (practice_fixture and count == 2) {
             var text: [4]u8 = undefined;
@@ -962,6 +992,12 @@ pub fn main(init: std.process.Init) !void {
         const build_status: []const u8 = if (jobs.build != null) "Building" else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id()))) "Built snapshot" else "Build outdated") else if (build_plan != null) "Prepared inputs selected" else "Build environment not selected";
         view.callback.busy = jobs.busy();
         practice_history.poll();
+        if (practice_view.transfer != .none) {
+            practice_history.transfer(practice.configCohort(), std.mem.sliceTo(&practice_view.data_path, 0), practice_view.transfer == .import_database) catch |err| {
+                practice_history.error_value = err;
+            };
+            practice_view.transfer = .none;
+        }
         const use_practice_live = practice.config.source == .os and live_frame.labels != null and !live_frame.stale;
         const practice_labels = if (use_practice_live) &running_captions.labels else &captions.labels;
         const practice_geometry = if (use_practice_live) running_board.entry.geometry else board.entry.geometry;
@@ -1082,10 +1118,19 @@ pub fn main(init: std.process.Init) !void {
                 _ = try practice.start(true, null, now_us);
                 try practice.session.load("a;A", .os);
                 try practice.session.insert("a;A", now_us + 1_000_000, false);
+            } else if (data_preview and scene == 11) {
+                practice_view.data_open = true;
+                practice_view.rundown.refresh = true;
+                if (!Backend.c.SDL_SetWindowSize(native.window, 1440, 960)) return error.PracticeFixtureResize;
+                const path = try std.fs.path.join(window.arena(), &.{ practice_history.path.?, "portable.sqlite3" });
+                @memcpy(practice_view.data_path[0..path.len], path);
+            } else if (data_preview and scene == 12) {
+                if (!Backend.c.SDL_SetWindowSize(native.window, 820, 700)) return error.PracticeFixtureResize;
             }
         }
-        if (practice.session.state == .complete and practice.completed == null) {
-            var record = try desktop.practice_results.capture(&practice.session, practice.captured_cohort, if (std.mem.eql(u8, &practice.cohort.mapping, &practice.captured_cohort.mapping)) practice_labels.practiceLabels() else null);
+        if ((practice.session.state == .complete or practice.stopped_result_pending) and practice.completed == null) {
+            const result_labels = if (std.mem.eql(u8, &practice.cohort.mapping, &practice.captured_cohort.mapping)) practice_labels.practiceLabels() else null;
+            var record = if (practice.stopped_result_pending) try desktop.practice_results.captureStopped(&practice.session, practice.captured_cohort, result_labels, now_us) else try desktop.practice_results.capture(&practice.session, practice.captured_cohort, result_labels);
             try std.Io.randomSecure(init.io, &record.id);
             record.timestamp = @intCast(std.Io.Clock.real.now(init.io).toNanoseconds());
             record.seed = practice.exercise_seed;
@@ -1094,11 +1139,11 @@ pub fn main(init: std.process.Init) !void {
             record.profile = practice.captured_profile;
             record.input_source = practice.captured_source;
             practice.completed = record;
-            practice.completed_enqueued = rundown_fixture;
+            practice.completed_enqueued = rundown_fixture and !data_preview;
         }
         if (practice_view.rundown.cleared) practice.completed_enqueued = true;
         if (practice.completed) |record| if (!practice.completed_enqueued and practice_history.queued < practice_history.queue.len) {
-            if (practice_history.enqueue(record)) |_| {
+            if (practice_history.enqueueWithTiming(record, practice_timing.payload())) |_| {
                 practice.completed_enqueued = true;
             } else |err| practice_history.error_value = err;
         };
@@ -1134,6 +1179,9 @@ pub fn main(init: std.process.Init) !void {
                 .history_cohort = practice_history.cohort,
                 .history_saving = practice_history.worker != null,
                 .history_failure = practice_history.error_value,
+                .history_path = practice_history.path orelse "",
+                .history_pending = practice_history.queued,
+                .event_times = events.times[0..events.time_count],
             };
             const drawn = tutor.draw(&practice, &practice_view, theme, .{ .x = 24, .y = 64, .w = @max(300, window.data().rect.w - 48), .h = @max(300, window.data().rect.h - 88) }, input) catch |err| failed: {
                 view.report(err);
@@ -1247,7 +1295,7 @@ pub fn main(init: std.process.Init) !void {
         tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = life.companion_visible });
         if (rundown_fixture) {
             if (!practice_view.drawn_panel) return error.PracticePanelNotDrawn;
-            if (dvui.tagGet(if (practice.completed != null) "practice.rundown" else "practice.word") == null) return error.PracticeRundownNotDrawn;
+            if (dvui.tagGet(if (practice_view.data_open) "practice.data.title" else if (practice.completed != null) "practice.rundown" else "practice.word") == null) return error.PracticeRundownNotDrawn;
             if (practice.config.assistance == .hidden and practice_view.drawn_keyboard) return error.HiddenPracticeKeyboardVisible;
         }
         if (rundown_fixture) {

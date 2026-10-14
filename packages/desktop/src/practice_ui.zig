@@ -35,6 +35,9 @@ pub const Input = struct {
     history_cohort: desktop.practice_results.Cohort = .{},
     history_saving: bool = false,
     history_failure: ?anyerror = null,
+    history_path: []const u8 = "",
+    history_pending: usize = 0,
+    event_times: []const desktop.practice_timing.EventTime = &.{},
 };
 pub const View = struct {
     scroll: presentation.Scroll = .{},
@@ -46,6 +49,12 @@ pub const View = struct {
     challenge_open: bool = false,
     challenge_enabled: bool = false,
     challenge_seed: u64 = 1,
+    was_focused: ?bool = null,
+    hint_generation: u64 = 0,
+    hint_position: ?usize = null,
+    data_open: bool = false,
+    data_path: [4096]u8 = @splat(0),
+    transfer: enum { none, export_database, import_database } = .none,
 };
 pub const DrawResult = struct { input_effect: control.Effect = .{}, action: ?control.Action = null };
 /// Free typing observes only the verified live presenter. Ordinary native text
@@ -75,20 +84,29 @@ fn consumeInput(owner: *control.Controller, data: *dvui.WidgetData, input: Input
     dvui.wantTextInput(data.borderRectScale().r.toNatural());
     for (dvui.events()) |*event| {
         if (event.handled) continue;
+        var at = input.now_us;
+        var native_time = false;
+        for (input.event_times) |time| if (time.number == event.num) {
+            at = time.now_us;
+            native_time = true;
+            break;
+        };
+        if (owner.session.recorder) |recorder| recorder.clock = if (native_time) .native_event else .frame;
         switch (event.evt) {
             .text => |text| {
-                if (accepting and text.action == .value and !text.action.value.selected) effect.reset_text = (try owner.insertOs(true, text.action.value.txt, input.now_us, false)).reset_text or effect.reset_text;
+                if (accepting and text.action == .value and !text.action.value.selected) effect.reset_text = (try owner.insertOs(true, text.action.value.txt, at, false)).reset_text or effect.reset_text;
                 event.handle(@src(), data);
             },
             .key => |key| {
                 if (key.action != .up and accepting) {
-                    if (key.matchBind("paste")) effect.reset_text = (try owner.insertOs(true, dvui.clipboardText(), input.now_us, true)).reset_text or effect.reset_text else if (!key.mod.control() and !key.mod.command()) switch (key.code) {
-                        .backspace => owner.session.backspace(),
-                        .tab => effect.reset_text = (try owner.insertOs(true, "    ", input.now_us, false)).reset_text or effect.reset_text,
-                        .enter => effect.reset_text = (try owner.insertOs(true, "\n", input.now_us, false)).reset_text or effect.reset_text,
-                        .escape => effect.reset_text = owner.pause(input.now_us).reset_text or effect.reset_text,
+                    if (key.matchBind("paste")) effect.reset_text = (try owner.insertOs(true, dvui.clipboardText(), at, true)).reset_text or effect.reset_text else if (!key.mod.control() and !key.mod.command()) switch (key.code) {
+                        .backspace => owner.session.backspaceAt(at),
+                        .tab => effect.reset_text = (try owner.insertOs(true, "    ", at, false)).reset_text or effect.reset_text,
+                        .enter => effect.reset_text = (try owner.insertOs(true, "\n", at, false)).reset_text or effect.reset_text,
+                        .escape => effect.reset_text = owner.pause(at).reset_text or effect.reset_text,
                         else => {},
                     };
+                    owner.session.input_repeat = key.action == .repeat;
                 }
                 event.handle(@src(), data);
             },
@@ -164,8 +182,42 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         return .{};
     }
     view.drawn_panel = true;
+    var focus_effect: control.Effect = .{};
+    if (owner.active and owner.session.state != .complete) {
+        if (view.was_focused) |previous| if (previous != input.window_focused) {
+            if (!input.window_focused) focus_effect = owner.pause(input.now_us);
+            if (owner.session.recorder) |recorder| recorder.record(if (input.window_focused) .focus_gained else .focus_lost, input.now_us, owner.session.duration(input.now_us), owner.session.len, null, .ordinary);
+        };
+    }
+    view.was_focused = input.window_focused;
+    if (view.data_open) {
+        presentation.caption("Practice data", .{ .w = width, .h = 42 }, 28, theme.text, "practice.data.title");
+        presentation.caption("Timing datapoints are saved locally during practice. Older runs keep their original counts.", .{ .y = 52, .w = width, .h = 48 }, 17, theme.muted, null);
+        presentation.caption(try std.fmt.allocPrint(dvui.currentWindow().arena(), "{d} saved runs · {d} timing events · {d} pending saves", .{ if (input.history) |data| data.database_runs else 0, if (input.history) |data| data.database_events else 0, input.history_pending }), .{ .y = 110, .w = width, .h = 34 }, 20, theme.text, "practice.data.counts");
+        presentation.caption("History folder", .{ .y = 158, .w = width, .h = 28 }, 17, theme.muted, null);
+        presentation.caption(input.history_path, .{ .y = 189, .w = width, .h = 50 }, 14, theme.text, null);
+        presentation.caption("Database file to export or import (absolute path)", .{ .y = 254, .w = width, .h = 28 }, 17, theme.text, null);
+        const entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &view.data_path } }, .{ .rect = .{ .y = 288, .w = width, .h = 44 }, .tag = "practice.data.path" });
+        entry.deinit();
+        const available = !input.history_saving and input.history_pending == 0;
+        if (ui.buttonEnabled(theme, "Export database", "practice.data.export", .{ .y = 350, .w = 180, .h = 42 }, available)) view.transfer = .export_database;
+        if (ui.buttonEnabled(theme, "Import database", "practice.data.import", .{ .x = 195, .y = 350, .w = 180, .h = 42 }, available)) view.transfer = .import_database;
+        presentation.caption("Export creates a standalone snapshot. Import merges runs without duplicating or replacing them.", .{ .y = 410, .w = width, .h = 48 }, 16, theme.muted, null);
+        const message = if (input.history_failure) |err| switch (err) {
+            error.PathAlreadyExists => "Export destination already exists. Choose another filename.",
+            error.PracticeRunCollision => "Import conflict: the same run ID has different data. No runs were imported.",
+            error.UnsupportedPracticeDatabase => "This file is not a supported practice database.",
+            error.PracticeDatabaseBusy => "Database busy. Wait for other writes and retry.",
+            else => @errorName(err),
+        } else if (input.history_saving) "Working on practice data…" else if (input.history) |data| (if (data.exported) "Database exported successfully." else if (data.imported != null) "Database imported successfully. Existing matching runs were kept." else "") else "";
+        presentation.caption(message, .{ .y = 479, .w = width, .h = 54 }, 17, theme.text, "practice.data.status");
+        if (input.history_failure != null and ui.button(theme, "Retry pending saves", "practice.data.retry", .{ .y = 545, .w = 215, .h = 42 })) view.rundown.retry = true;
+        if (ui.button(theme, "Back to practice", "practice.data.back", .{ .y = @min(height - 62, 620), .w = 180, .h = 42 })) view.data_open = false;
+        return .{ .input_effect = focus_effect };
+    }
     // Exercise input precedes controls so Space cannot toggle a focused checkbox.
-    const input_effect = try consumeInput(owner, window.data(), input);
+    var input_effect = try consumeInput(owner, window.data(), input);
+    if (focus_effect.runner != .none or focus_effect.reset_text) input_effect = focus_effect;
     var pending: ?control.Intent = null;
     const controls_height: f32 = if (view.challenge_open and owner.config.mode == .english) 126 else 84;
     var mode: usize = @backingInt(owner.config.mode);
@@ -196,6 +248,15 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
         if (mode == 0 and dvui.button(@src(), "Challenge seed…", .{}, .{ .tag = "practice.challenge.toggle" })) {
             view.challenge_open = !view.challenge_open;
             if (view.challenge_open and owner.active and owner.session.state != .complete) pending = .pause;
+        }
+        if (dvui.button(@src(), "Practice data", .{}, .{ .tag = "practice.data.open" })) {
+            view.data_open = true;
+            view.rundown.refresh = true;
+            if (owner.active and owner.session.state != .complete) pending = .pause;
+            if (view.data_path[0] == 0 and input.history_path.len != 0) {
+                const default_path = try std.fs.path.join(dvui.currentWindow().arena(), &.{ input.history_path, "practice-export.sqlite3" });
+                if (default_path.len < view.data_path.len) @memcpy(view.data_path[0..default_path.len], default_path);
+            }
         }
     }
     if (view.challenge_open and mode == 0) {
@@ -250,6 +311,13 @@ pub fn draw(owner: *control.Controller, view: *View, theme: ui.Theme, bounds: dv
     if (focus_text.written().len > 0) presentation.caption(focus_text.written(), .{ .y = height - 24, .w = width, .h = 22 }, 14, theme.muted, "practice.focus");
     presentation.caption(try std.fmt.allocPrint(dvui.currentWindow().arena(), "{d:.0} WPM     {d:.1}% accuracy     {d:.1}s     {s}", .{ session.wpm(input.now_us), session.accuracy(), @as(f64, @floatFromInt(session.duration(input.now_us))) / 1_000_000, if (!owner.active) "Ready" else @tagName(session.state) }), .{ .x = 0, .y = controls_height + 2, .w = width, .h = 26 }, 18, theme.muted, "practice.metrics");
     const focus = desktop.practice_view.focus(session);
+    if (owner.active and session.state != .complete and owner.config.assistance == .guided and input.frame != null and (view.hint_generation != owner.generation or view.hint_position == null or view.hint_position.? != focus)) {
+        if (try desktop.practice.hint(input.frame.?.labels.practiceLabels(), input.frame.?.layer, input.frame.?.modifiers.toByte(), if (focus < session.reference_len) session.reference[focus] else 0, input.frame.?.active_layers)) |_| {
+            if (session.recorder) |recorder| recorder.record(.hint_shown, input.now_us, session.duration(input.now_us), focus, null, .ordinary);
+            view.hint_generation = owner.generation;
+            view.hint_position = focus;
+        }
+    }
     const work_y = controls_height + 34;
     const work_height = @max(0, height - 112 - work_y - 24);
     const hero_height = @min(125, work_height * 0.23);

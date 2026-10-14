@@ -155,21 +155,62 @@ Completed sessions save automatically outside projects:
 | Windows | `%LOCALAPPDATA%/zigmkay/data/typing-practice/` |
 | Linux | `$XDG_DATA_HOME/zigmkay/typing-practice/`, or `~/.local/share/zigmkay/typing-practice/` |
 
-Version-1 ZON records have immutable random run IDs. Publication is atomic and
-exclusive; retries are idempotent, and separate app instances add independent
-files. Reads stream bounded records (maximum 512 KiB each); history has no silent
-retention cutoff. Pages/aggregates are rebuildable from those records. A worker
-performs file I/O outside keystroke/render processing. Failed writes retain the
-in-memory result and a pending queue (up to sixteen runs); **Retry** attempts the
-same ID. If the queue fills, the newest rundown is retained and fresh starts wait
-for Retry or deliberate clearing, instead of losing a result. Shutdown drains
-queued writes where storage remains available.
+History now lives in `practice.sqlite3` inside that directory. Runs and their
+timing events are committed together in a transaction. Stable random run IDs
+make retries and imports idempotent. Separate instances share the database with
+bounded busy retries. A background worker performs storage work outside input
+and rendering. Failed writes retain the in-memory result and a pending queue
+(up to sixteen runs); **Retry** attempts the same ID. If the queue fills, the
+newest rundown is retained and fresh starts wait for Retry or deliberate
+clearing. Shutdown drains queued writes where storage remains available.
 
-Records contain result counts, context, routes, seed and drill metadata and
-bounded substitution counts. They contain no arbitrary typed-text log or raw
-physical event stream. Tests and screenshots use owned caches, and saving a
-result never rewrites a project. **Clear history** asks for confirmation and
-removes validated run files only, preserving projects/preferences and unknown
+Existing version-1 ZON histories are imported automatically without changing
+their original counts or deleting the files. Import receipts prevent those
+retained files from resurrecting cleared history. Older runs have no timing
+samples; total duration is never used to invent them. Unknown or corrupt legacy
+records remain untouched and are reported.
+
+### Timing datapoints
+
+New completed runs and explicitly stopped exercises retain the generated
+reference and individual exercise attempts, backspaces, pauses/resumes, focus
+boundaries and shown guidance. Stopped exercises are labeled and excluded from
+scored history. Data includes expected/attempted Unicode characters, active and
+elapsed microseconds, input batches, scoring context and timing eligibility.
+It records only input routed to an active practice exercise, not background or
+free typing. It does not infer physical key/finger/Shift choices from OS text.
+
+Native text events retain their mapped native timestamps. Frame-level fallback
+and draft-runner delivery timestamps are marked separately. First input,
+corrections, explicit pauses, pasted/batched commits, repeats and nonpositive
+intervals remain inspectable without being treated as ordinary clean motor
+intervals. CRLF is normalized consistently with scoring. A per-run limit of
+32,768 events bounds memory; a retained prefix, dropped count and truncation
+flag make incomplete timing explicit. Timing is collected now for later
+analysis; the tutor does not add timing charts to the rundown yet.
+
+### Export and import
+
+Open **Practice data** in the tutor. Enter an absolute database filename and
+choose **Export database** to create a standalone snapshot, including committed
+data still in SQLite's write-ahead log. The export destination must not already
+exist. Export/import wait until pending saves finish.
+
+Copy that exported file to another PC or worktree, open **Practice data** there,
+enter its path and choose **Import database**. Import merges all valid runs;
+matching run IDs are kept once. Different data under the same ID rejects the
+whole import, leaving existing runs intact. Unknown database versions and
+malformed payloads are rejected. Layout/source comparison rules still apply to
+imported history. Worktrees normally share the same user-data directory, so
+importing the same export again is harmless.
+
+Use the app's export action rather than copying the live SQLite file alone:
+active databases can have accompanying WAL files. SQLite 3.54.0 is pinned and
+built from its verified source package; application storage logic remains in Zig.
+
+Tests and native screenshots use owned caches. Saving a result never rewrites
+a project. **Clear history** asks for confirmation and removes validated database
+runs only, preserving projects/preferences and unknown
 or future records. A completed in-memory This run remains viewable after clearing.
 Other instances can still publish new runs while clearing occurs.
 

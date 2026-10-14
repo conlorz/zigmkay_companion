@@ -143,12 +143,13 @@ pub const Text = struct {
     }
     /// Reuse native layout/dead-key translation, while scoring each insertion.
     pub fn practiceOutput(self: *Text, commands: []const core.OutputCommand, session: *@import("practice.zig").Session, now: u64) !void {
+        if (session.recorder) |recorder| recorder.clock = .frame;
         for (commands) |command| {
             if (command == .KeyCodePress) {
                 const code = command.KeyCodePress;
                 const shortcut = self.mods.left_ctrl or self.mods.right_ctrl or self.mods.left_gui or self.mods.right_gui;
                 if (!shortcut and code == 42) {
-                    session.backspace();
+                    session.backspaceAt(now);
                     continue;
                 }
                 if (!shortcut and code == 43) {

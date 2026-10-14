@@ -48,6 +48,7 @@ pub const Controller = struct {
     completion_delivered: bool = false,
     completed_enqueued: bool = false,
     save_blocked: bool = false,
+    stopped_result_pending: bool = false,
     context_profile: [96]u8 = @splat(0),
     context_source: [96]u8 = @splat(0),
     captured_profile: [96]u8 = @splat(0),
@@ -118,6 +119,7 @@ pub const Controller = struct {
     pub fn start(self: *Controller, _: bool, prepared_snapshot: ?Digest, now: u64) !Effect {
         try self.config.validate();
         if (self.save_blocked) return error.PracticeSaveQueueFull;
+        if (self.stopped_result_pending and self.completed == null) return error.PracticeResultPending;
         if (self.session.state == .complete and self.completed == null and self.completion_delivered) return error.PracticeResultPending;
         if (self.generation == std.math.maxInt(u64)) return error.OperationExhausted;
         const previous: ?Operation = if (self.generation == 0) null else self.operation();
@@ -138,7 +140,9 @@ pub const Controller = struct {
             }
         }
         try self.session.load(reference, self.config.source);
+        if (self.session.recorder) |recorder| recorder.begin(now, @intCast(@backingInt(self.config.assistance)));
         self.completed = null;
+        self.stopped_result_pending = false;
         self.completed_enqueued = false;
         self.captured_profile = self.context_profile;
         self.captured_source = self.context_source;
@@ -205,7 +209,9 @@ pub const Controller = struct {
         return .{ .reset_text = true };
     }
     pub fn stop(self: *Controller, now: u64) Effect {
+        self.stopped_result_pending = self.active and self.session.state != .complete and self.session.attempts != 0;
         const effect = self.pause(now);
+        if (self.stopped_result_pending) if (self.session.recorder) |recorder| recorder.record(.stop, now, self.session.duration(now), self.session.len, null, .ordinary);
         self.active = false;
         return effect;
     }
@@ -215,6 +221,7 @@ pub const Controller = struct {
         if (!self.active or self.session.source != .draft) return .{};
         const effect = self.pause(now);
         self.failure = error.DraftChangedRestartPractice;
+        if (self.session.recorder) |recorder| recorder.record(.context_changed, now, self.session.duration(now), self.session.len, null, .ordinary);
         return effect;
     }
     pub fn acceptingOsText(self: *const Controller, focused: bool) bool {
