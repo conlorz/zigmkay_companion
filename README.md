@@ -1,114 +1,227 @@
-# zigmkay_companion
+<div align="center">
 
-Source-only Zigmkay editor and companion application. The repository contains
-project, session, jobs, keymap, catalog, processor-runner and desktop code.
-Native acceptance is not established across all intended macOS, Windows and
-Linux targets.
+# Zigmkay Companion
 
-## Build and check
+**Make your keyboard yours. Learn it as you go.**
 
-Use exactly Zig 0.17.0 (`.zigversion` and `mise.toml`). Verify your compiler with
-`zig version` before running these commands. The normal dependency is an
-immutable, hash-pinned EuroZig firmware PR-head revision pending merge; the
-normal source build does not require a sibling firmware checkout. Fetching missing
-pinned source archives may require network access during dependency acquisition.
+A native visual editor, an on-demand keyboard companion, and a typing tutor
+for programmable keyboards running [Zigmkay firmware](https://github.com/EuroZig/zigmkay_firmware).
+Written in Zig.
 
-```sh
-zig build test
-zig build check
-```
+[Get started](#get-started-with-mise) · [Companion](#your-layout-one-hotkey-away) · [Editor](#program-your-keyboard-visually) · [Tutor](#learn-your-layout-with-the-typing-tutor) · [Development](#development)
 
-These checks do not access devices. An explicit `--fork <firmware-checkout>`
-override is available for local firmware development, but is not required for
-normal builds and is not a release dependency. `firmware-check` and
-`catalog-firmware-check` are opt-in firmware compilation checks; they do not
-flash hardware.
+</div>
 
-## Capabilities and limits
+![Zigmkay editor showing a split keyboard, four layers, a tap/hold key inspector, and Build and Flash controls](docs/screenshots/overview/editor.png)
 
-Project validation reads data without compiling callbacks. Export and firmware
-compilation require supported source and ABI bindings; callback-bearing defaults
-need an explicit source binding. Catalog fixtures and processor checks cover
-all 14 selected boards, including offline default-profile source/export checks;
-physical GPIO mapping and per-board hardware acceptance remain separate. Native layout tests can query the host desktop
-layout and are distinct from deterministic keymap tests. Compatibility and
-native platform acceptance remain incomplete; do not interpret a passing
-`zig build check` as device or cross-platform certification.
+Choose what a key does when tapped or held, see the layout while you work,
+and practice the keys that need attention. The editor and companion share a
+resident desktop application, accessible from its little keyboard tray icon.
 
-Normal editor startup monitors keyboards. Builds, tests and explicit offline
-startup do not access hardware. Flashing or other hardware mutations require a
-separate explicit hardware task. No preparation step below launches a GUI or
-flashes a device.
+*All images below are real native macOS application captures. The companion
+is shown offline; tutor exercises and history use deterministic sample data.
+[Capture details](docs/screenshots/overview/README.md).*
 
-## Editor Build and Flash
+## Get started with mise
 
-Normal source-built editor startup automatically prepares Build and Flash in
-the background. `mise run editor` only launches the application; no firmware
-configuration flags or manual receipt generation are needed. The application
-uses the exact Zig 0.17.0 compiler that built it, its owning companion source
-tree, and the immutable firmware pin. First use may download pinned packages
-and compile Flash tools; the system-message bar shows preparation status. Prepared inputs
-are cached under the application's cache directory. Preparation never accesses
-a device or flashes firmware. Failed preparation offers **Retry setup**.
+The current way to install and run Zigmkay is from source with
+[mise](https://mise.jdx.dev/getting-started). Downloadable executables are planned
+for the future. Native macOS captures are available here; Windows and Linux
+desktop acceptance is still in progress. See [compatibility status](compatibility/README.md).
 
-Once ready, **Flash** builds the current project if necessary, enters BOOTSEL,
-transfers the verified UF2, and waits for coherent reconnection. Only that
-explicit click authorizes transfer; startup and edits do not. **Auto-build** is
-optional and does not authorize flashing. Normal Flash progress stays in the
-system-message bar; a separate window opens only for errors. If BOOTSEL is not
-discovered within five seconds of the HID trigger, the bar asks the user to
-enter BOOTSEL manually and allows thirty additional seconds. That is the same
-authorized transaction, not another transfer attempt. No automatic retry occurs.
-Full provenance audits are off by
-default. Automatic setup skips companion package-tree and archive audits, while
-retaining Zig's pinned package-hash checks during acquisition. **Debug** deep
-audits require an explicitly audited developer environment; automatic inputs
-report `PackageAuditNotCaptured` rather than claiming audited provenance.
-Explicit offline startup and tests do
-not run automatic preparation. Explicit prepared-config/tool arguments remain
-developer overrides. These source-build inputs require the compiler and owning
-source tree to remain available; this is not a self-contained release bundle.
-
-## Developer preparation
-
-Optional desktop source acquisition is separate from normal checks:
+Install [mise](https://mise.jdx.dev/installing-mise.html) and Git, then:
 
 ```sh
-zig build prepare-desktop-dependencies \
-  -Ddesktop-acquisition=true -Ddesktop-source-cache=<absolute-cache-directory>
+git clone https://github.com/conlorz/zigmkay_companion.git
+cd zigmkay_companion
+mise trust
+mise install
+mise exec -- zig version    # must print 0.17.0
+mise run editor
 ```
 
-The resulting `source-inputs.zon` records verified immutable sources. Supply
-its `dvui.source_path` and `ztray.source_path` to
-`check-desktop-dependencies -Ddesktop-dependencies=true` using the
-`desktop-dvui-source` and `desktop-ztray-source` options. This compiles and links
-the native graph without launching it.
+Mise selects exactly **Zig 0.17.0** and prepares the pinned GUI dependencies.
+The first launch may take longer while packages download and compile. A separate
+firmware checkout is unnecessary; firmware sources are pinned in this repository.
+On macOS, native source builds also need the Xcode Command Line Tools
+(`xcode-select --install`).
 
-Selected toolchain preparation and verification require explicitly owned caches:
+For the companion in the background, start this instead:
 
 ```sh
-zig build prepare-toolchain-installation \
-  -Dtoolchain-compiler=<absolute-zig-executable> \
-  -Dtoolchain-distribution=<absolute-distribution-directory> \
-  -Dtoolchain-receipt-cache=<absolute-owned-cache>
-zig build verify-toolchain-receipt \
-  -Dverify-toolchain-cache=<absolute-owned-cache>
+mise run companion
 ```
 
-Preparation verifies the selected compiler distribution; receipt verification
-rechecks recorded bytes without executing the compiler. Neither downloads a
-toolchain or builds firmware.
+It starts with its windows hidden. Use the tray icon to open the editor or show
+the companion. Normal startup automatically monitors compatible keyboards.
+Firmware transfer starts only when you explicitly choose **Flash**.
 
-Package inventory, offline source import, dependency resolution and build
-environment preparation are explicit operations with caller-selected absolute
-plan and cache paths. Missing prepared sources fail resolution; network
-acquisition through these developer commands requires an explicit preparation-plan
-opt-in. Normal checks and explicit offline startup never run these operations.
-Normal editor startup instead owns automatic preparation as described above.
-A prepared environment can still be selected at application launch using
-`--prepared-build-config <absolute-file>`.
+## Your layout, one hotkey away
 
-Manual Flash-tool preparation (`prepare-picotool -Dflash-tools=true`)
-requires a compatible firmware wrapper and pinned source revision. It installs
-verified tools into a selected cache prefix, not onto a device. Physical
-picotool acceptance and desktop flash integration remain separate gates.
+Forgot where a symbol lives? Bring up a transparent, passive overlay of your
+keyboard. With a verified connection, it follows the running profile's layers,
+modifiers and pressed keys. It stays out of pointer interaction so you can keep
+working in your current application.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview/companion-dark.png">
+  <img src="docs/screenshots/overview/companion.png" alt="Transparent Zigmkay companion overlay showing the split layout, home-row modifiers and layer holds" width="880">
+</picture>
+
+Program a key's tap or hold action as **Show / hide companion** (reserved signal
+`255`). In the default mode, a quick tap toggles the overlay; a longer press
+shows it while held and restores its previous visibility on release. Dedicated
+hold-only and toggle-only modes are available for development and testing.
+
+The overlay uses the verified running layout. Losing the connection clears its
+visibility; editor changes remain a draft until built and flashed. The screenshot
+above shows the explicitly labeled offline draft view.
+
+## Program your keyboard visually
+
+The physical keyboard, layer list, OS keyboard palette and key inspector live
+in one window. Select a key, search for an action, or drag an OS keyboard chord
+into the inspector. Apply edits explicitly, with undo/redo available afterward.
+
+- **Tap, hold, tap/hold and repeat:** tune tapping terms and repeat delays;
+  combine key chords with left/right modifiers.
+- **Layers and one-shots:** add, duplicate and name layers, use layer holds,
+  and distinguish inherited assignments from keys that do nothing.
+- **More than letters:** assign media controls, mouse actions, companion signals,
+  combos and encoder actions.
+- **Your own Zig:** preserve callback source snapshots, attach external source,
+  and refresh it explicitly when it changes.
+- **Projects and profiles:** save and reopen projects, switch profiles, and
+  export source for firmware builds. The catalog contains 14 board entries;
+  individual hardware acceptance is tracked separately.
+
+### Build and Flash from the same window
+
+**Build**, **Flash** and optional **Auto-build** sit in the editor toolbar shown
+above. Normal source startup prepares the build environment and Flash tools in
+the background, with status in the system-message bar and **Retry setup** if
+preparation fails.
+
+Click **Flash** to build the current project if needed, request BOOTSEL, transfer
+the verified UF2, and wait for reconnection. If BOOTSEL is not discovered, the
+editor prompts for manual entry. Progress stays in the message bar; errors open
+details. Auto-build compiles edits without starting a transfer.
+
+Source builds currently need their compiler and checkout to remain available.
+[Build and Flash details](docs/development.md#editor-build-and-flash) explain
+preparation, supported source bindings and current limits.
+
+## A little tray icon, always within reach
+
+Close the editor window and keep the resident application available. The tray
+menu opens the editor, shows or hides the companion, reports device status,
+adjusts editor zoom, and lets you explicitly bind a saved editor project to the
+live companion. **Quit Zigmkay** exits the resident application.
+
+<p align="center">
+  <img src="docs/screenshots/overview/tray.png" alt="Native macOS keyboard tray icon and Zigmkay menu with Open Editor, Show Companion, device status, zoom and Quit" width="360">
+</p>
+
+## Learn your layout with the typing tutor
+
+Choose **Open tutor** in the editor. Practice fresh English text with Words,
+Mixed case or Punctuation presets, or use a retained Zig lesson. Choose length
+and assistance independently; reproducible challenge seeds let you share an
+exercise with a friend.
+
+![Active typing tutor highlighting the next character and the key to tap](docs/screenshots/typing-practice/tutor.png)
+
+### Learn a few keys, then build up
+
+Six guided stages take you from **Find keys** and **Build fluency** through
+**Shift**, **Layers**, **Modifiers** and **Real text**. Start with a small
+reachable alphabet and readable words, then add one letter or key family at
+a time. Suggestions use matching practice history; you choose when to advance.
+Saved lesson context can be resumed later.
+
+![Guided lesson screen with six stages, a small starting alphabet and a suggested next step](docs/screenshots/typing-practice/curriculum-wide.png)
+
+### Get help when you need it
+
+Use full guidance, delayed hints, hints on request, a layout-only reference,
+or hidden assistance. Cyan marks keys to **hold** and amber marks the key to
+**tap**. Delayed hints can adapt to your clean character timing. Optional recall
+review suggests familiar targets to revisit with help hidden.
+
+<details>
+<summary>See hint guidance and recall review</summary>
+
+![Tutor showing separate Hold and Tap guidance without moving the keyboard](docs/screenshots/typing-practice/help-wide.png)
+
+![Optional recall review showing targets and recommended review intervals](docs/screenshots/typing-practice/review-wide.png)
+
+</details>
+
+### Turn mistakes into the next exercise
+
+Each completed run separates speed, attempt accuracy and first-pass success.
+Layer and modifier heatmaps show missed characters alongside practice exposure.
+Compare this run, the last ten matching runs or all matching history, inspect
+confusions, and start fresh weak-spot drills from the result.
+
+![Completed exercise with speed and accuracy cards, a layer heatmap and targeted weak-spot practice](docs/screenshots/typing-practice/rundown-compact-wide.png)
+
+### See progress and understand hesitation
+
+Track speed and accuracy trends, character progress, daily activity and voluntary
+practice goals. Dive into character medians, slow-tail timing, transitions,
+run rhythm and individual recorded events. Comparisons keep different layouts,
+input sources and assistance settings separate.
+
+![Progress dashboard with speed and accuracy trends alongside a character progress matrix](docs/screenshots/typing-practice/progress-wide.png)
+
+<details>
+<summary>See daily activity, character timing and run rhythm</summary>
+
+![Daily activity view with practice minutes and optional daily goals](docs/screenshots/typing-practice/activity-wide.png)
+
+![Character timing analysis with median, p95, personal reference and transition timings](docs/screenshots/typing-practice/diagnostics-wide.png)
+
+![Run rhythm chart and raw event inspector](docs/screenshots/typing-practice/rhythm-wide.png)
+
+</details>
+
+### Keep your practice history
+
+History is stored locally in SQLite. Export a standalone practice database and
+merge it on another computer; saved curriculum context travels with it. Practice
+data tools include migration, transfer previews and history management.
+
+<details>
+<summary>See practice data and transfer tools</summary>
+
+![Practice data screen with local storage and database export/import controls](docs/screenshots/typing-practice/data-wide.png)
+
+</details>
+
+The [typing practice guide](docs/typing-practice.md) covers controls, metrics,
+storage and evidence rules. Text input measures output and timing; it cannot
+prove which finger or physical route you used. Lesson and recall suggestions
+are initial policies for manual validation.
+
+## Development
+
+Use this checkout and the pinned compiler; no private plans or sibling
+repositories are required. Start with the offline checks:
+
+```sh
+mise run check
+mise run test
+```
+
+The [development guide](docs/development.md) covers the package map, native GUI
+builds, explicit offline startup, test tasks, dependency preparation and further
+design/implementation docs. Builds, tests and explicit offline startup do not
+access keyboards. See [compatibility status](compatibility/README.md) for the
+remaining platform and hardware acceptance work.
+
+## License
+
+Zigmkay companion is free software under the **GNU General Public License,
+version 2**. See [LICENSE](LICENSE). Imported dependencies retain their own
+license notices.

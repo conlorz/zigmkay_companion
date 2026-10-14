@@ -4,6 +4,10 @@
     .fingerprint = 0xf34c18ab8685e700,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
+        .sqlite = .{
+            .url = "https://www.sqlite.org/2026/sqlite-autoconf-3540000.tar.gz",
+            .hash = "N-V-__8AAKEJxgAqL7tBBStLJr_SloDtRVAE49PAFiABzwky",
+        },
         .freetype = .{
             .url = "git+https://github.com/david-vanderson/freetype#4938878b58e8481bc11ac52d6fe10a7cf6c3c7d5",
             .hash = "freetype-2.14.1-alzUkceCqgDRZIP8PnxnNCd8jwfbwY0k1VhlTV2O5Ivo",

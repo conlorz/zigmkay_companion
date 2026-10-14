@@ -28,6 +28,25 @@ pub fn build(b: *std.Build) void {
     const flash_presenter = b.addModule("flash-presenter", .{ .root_source_file = b.path("packages/desktop/src/flash_presenter.zig"), .target = b.graph.host, .imports = &.{.{ .name = "flash-controller", .module = flash_controller }} });
     const desktop_geometry = b.addModule("desktop-geometry", .{ .root_source_file = b.path("packages/desktop/src/geometry.zig") });
     const desktop_tests_step = b.step("test-desktop-core", "Validate practice and explicit flash intents without GUI or devices");
+    const sqlite = b.dependency("sqlite", .{});
+    const sqlite_source = sqlite.path("sqlite3.c");
+    const practice_data_tests = b.step("test-practice-data", "Validate timing, database portability and legacy migration without firmware or devices");
+    for ([_][]const u8{ "practice_generator.zig", "practice_results.zig", "practice_history.zig", "practice_history_runtime.zig", "practice_timing.zig", "practice_database.zig", "practice_progress.zig", "practice_analysis.zig", "practice_curriculum.zig", "practice_help.zig", "practice_retention.zig" }) |name| {
+        const practice_tests = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("packages/desktop/src/{s}", .{name})),
+            .target = b.graph.host,
+        }) });
+        if (std.mem.indexOf(u8, name, "history") != null or std.mem.eql(u8, name, "practice_database.zig")) addSqlite(practice_tests.root_module, sqlite_source);
+        const run_practice = b.addRunArtifact(practice_tests);
+        desktop_tests_step.dependOn(&run_practice.step);
+        practice_data_tests.dependOn(&run_practice.step);
+        check.dependOn(&practice_tests.step);
+    }
+    if (b.option(bool, "practice-data-only", "Build only offline practice data contracts without the firmware graph") orelse false) {
+        tests.dependOn(practice_data_tests);
+        return;
+    }
+
     for ([_][]const u8{ "practice.zig", "practice_view.zig", "practice_controller.zig", "try_state.zig", "flash_controller.zig", "auto_build.zig", "geometry.zig", "encoder_state.zig" }) |file| {
         const desktop_test = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("packages/desktop/src/{s}", .{file})),
@@ -447,6 +466,7 @@ pub fn build(b: *std.Build) void {
             .target = b.graph.host,
             .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model }, .{ .name = "zkeymap", .module = input_source.module }, .{ .name = "zkeycodes", .module = keycodes }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "companion-jobs", .module = jobs } },
         });
+        addSqlite(desktop_core, sqlite_source);
         desktop_core.addImport("flash-controller", flash_controller);
         desktop_core.addImport("desktop-geometry", desktop_geometry);
         desktop_core.addImport("flash-presenter", flash_presenter);
@@ -737,6 +757,12 @@ pub fn build(b: *std.Build) void {
                 practice_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
                 practice_fixture.setEnvironmentVariable("SDL_RENDER_DRIVER", "software");
                 b.step("test-desktop-practice", "Route injected OS text through bounded dummy/software tutor frames").dependOn(&practice_fixture.step);
+                const rundown_fixture = b.addRunArtifact(app);
+                rundown_fixture.addArgs(&.{ "--offline-rundown-frames", "20" });
+                rundown_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
+                rundown_fixture.setEnvironmentVariable("SDL_RENDER_DRIVER", "software");
+                const rundown_step = b.step("test-desktop-rundown", "Exercise tutor results, scope variants and assistance; capture offline screenshots in cache");
+                rundown_step.dependOn(&rundown_fixture.step);
                 const companion_fixture = b.addRunArtifact(app);
                 companion_fixture.addArgs(&.{ "--offline-companion-frames", "9" });
                 companion_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
@@ -1080,4 +1106,14 @@ pub fn build(b: *std.Build) void {
     }
     const compatibility = b.step("check-compatibility", "Require accepted firmware and host compatibility gates");
     compatibility.dependOn(&b.addFail("Firmware PR review, physical board mapping, managed provenance and desktop/native release gates remain pending").step);
+}
+
+fn addSqlite(module: *std.Build.Module, source: std.Build.LazyPath) void {
+    module.link_libc = true;
+    module.addCSourceFile(.{ .file = source, .flags = &.{
+        "-DSQLITE_THREADSAFE=1",         "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_DQS=0",
+        "-DSQLITE_DEFAULT_MEMSTATUS=0",  "-DSQLITE_ENABLE_API_ARMOR",    "-DSQLITE_MAX_LENGTH=33554432",
+        "-DSQLITE_MAX_SQL_LENGTH=65536",
+    } });
+    if (builtin.os.tag == .windows) module.linkSystemLibrary("advapi32", .{});
 }

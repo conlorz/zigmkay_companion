@@ -302,6 +302,7 @@ pub const Session = struct {
     fn malformed(self: *Session, now: u64, err: protocol.ProtocolError) Actions {
         self.last_error = err;
         if (err == error.UnsupportedVersion and self.phase != .disconnected) {
+            @import("std").log.info("Keyboard handshake rejected: unsupported device protocol version", .{});
             self.phase = .incompatible;
             self.stale = true;
             self.state.needs_resync = true;
@@ -339,6 +340,18 @@ pub const Session = struct {
                 const identity = protocol.decodeIdentityBody(self.identity_body, self.token) catch |err| return self.malformed(now, err);
                 const board_matches = @import("std").mem.eql(u8, &identity.board_id, &self.expected.board_id) and identity.dimensions.key_count == self.expected.dimensions.key_count;
                 if (!@import("std").meta.eql(identity, self.expected) and !(self.bootloader_identity_discovery and board_matches)) {
+                    @import("std").log.info("Keyboard handshake rejected: saved project identity differs from running firmware. Expected board={s} profile={s} keys={d} layers={d} digest={s}; received board={s} profile={s} keys={d} layers={d} digest={s}", .{
+                        @import("std").mem.sliceTo(&self.expected.board_id, 0),
+                        @import("std").mem.sliceTo(&self.expected.profile_id, 0),
+                        self.expected.dimensions.key_count,
+                        self.expected.dimensions.layer_count,
+                        @import("std").fmt.bytesToHex(self.expected.digest, .lower),
+                        @import("std").mem.sliceTo(&identity.board_id, 0),
+                        @import("std").mem.sliceTo(&identity.profile_id, 0),
+                        identity.dimensions.key_count,
+                        identity.dimensions.layer_count,
+                        @import("std").fmt.bytesToHex(identity.digest, .lower),
+                    });
                     self.phase = .incompatible;
                     self.stale = true;
                     self.state.needs_resync = true;

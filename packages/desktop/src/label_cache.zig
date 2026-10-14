@@ -17,6 +17,9 @@ pub const CachedKeyContent = struct {
     hid_code: ?u8 = null,
     dead: bool = false,
     shortcut: bool = false,
+    /// Display placeholders/named keys and arbitrary callbacks are not literal output.
+    unproven: bool = false,
+    provider_unknown: bool = false,
     pub fn withIconName(self: CachedKeyContent, name: []const u8) CachedKeyContent {
         var c = self;
         c.icon_name = name;
@@ -112,7 +115,7 @@ pub const LabelCache = struct {
     fn practiceLookup(context: *const anyopaque, layer: usize, key: usize, mods: u8, active: u16) practice.Label {
         const self: *const LabelCache = @ptrCast(@alignCast(context));
         const entry = self.lookupActiveChecked(layer, key, @bitCast(mods), active) catch return .{};
-        return .{ .text = entry.label, .hid_code = entry.hid_code, .dead = entry.dead, .shortcut = entry.shortcut, .hold_layer = if (entry.hold_layer) |layer_index| @as(usize, layer_index) else null, .hold_modifiers = if (entry.hold_mods) |held| held.toByte() else null };
+        return .{ .text = if (entry.unproven) null else entry.label, .unproven = entry.unproven, .provider_unknown = entry.provider_unknown or (if (entry.hold_signal) |signal| signal < 253 else false), .hid_code = entry.hid_code, .dead = entry.dead, .shortcut = entry.shortcut, .hold_layer = if (entry.hold_layer) |layer_index| @as(usize, layer_index) else null, .hold_modifiers = if (entry.hold_mods) |held| held.toByte() else null };
     }
     pub fn deinit(self: *LabelCache) void {
         self.arena.deinit();
@@ -154,18 +157,25 @@ pub fn computeKeyContent(translator: anytype, definition: ?core.KeyDef, physical
     var fire: ?core.KeyCodeFire = null;
     switch (def) {
         .tap_only => |tap| {
+            entry.unproven = tap.custom != null;
+            entry.provider_unknown = tap.custom != null;
             if (tapIcon(tap)) |name| return entry.withIconName(name);
             if (tap.mouse_action != null) entry.label = "MS";
             fire = tap.key_press;
         },
         .tap_hold => |th| {
+            entry.unproven = th.tap.custom != null;
             // The reference adds icons only for companion custom tap holds.
             if (th.tap.custom == core.CUSTOM_ID_COMPANION_TOGGLE) entry.icon_name = "companion" else if (th.tap.custom == core.CUSTOM_ID_COMPANION_SHUTDOWN) entry.icon_name = "shutdown" else fire = th.tap.key_press;
             entry.hold_layer = th.hold.hold_layer;
             entry.hold_signal = th.hold.custom;
             entry.hold_mods = if (th.hold.hold_modifiers.has_any()) th.hold.hold_modifiers else null;
         },
-        .tap_with_autofire => |af| fire = af.tap.key_press,
+        .tap_with_autofire => |af| {
+            entry.unproven = af.tap.custom != null;
+            entry.provider_unknown = af.tap.custom != null;
+            fire = af.tap.key_press;
+        },
         .hold_only => |held| {
             entry.hold_layer = held.hold_layer;
             entry.hold_signal = held.custom;
@@ -177,7 +187,10 @@ pub fn computeKeyContent(translator: anytype, definition: ?core.KeyDef, physical
     entry.hid_code = key.tap_keycode;
     entry.dead = key.dead;
     entry.shortcut = key.tap_modifiers.left_ctrl or key.tap_modifiers.right_ctrl or key.tap_modifiers.left_gui or key.tap_modifiers.right_gui;
-    const scancode = std.enums.fromInt(zkeymap.ScanCode, key.tap_keycode) orelse return entry.withLabel("???");
+    const scancode = std.enums.fromInt(zkeymap.ScanCode, key.tap_keycode) orelse {
+        entry.unproven = true;
+        return entry.withLabel("???");
+    };
     const name: ?[]const u8 = switch (scancode) {
         .KC_BACKSPACE => "backspace",
         .KC_ENTER => "enter",
@@ -199,6 +212,7 @@ pub fn computeKeyContent(translator: anytype, definition: ?core.KeyDef, physical
         return entry;
     }
     const translated = translator.keyToText(textKey(key, physical));
+    entry.unproven = entry.unproven or translated.isLabel();
     const text = if (translated.isLabel()) translated.getLabel() else translated.slice();
     if (text.len != 0 and text.len < buffer.len and !(text.len == 1 and text[0] < 32)) {
         @memcpy(buffer[0..text.len], text);
@@ -206,7 +220,10 @@ pub fn computeKeyContent(translator: anytype, definition: ?core.KeyDef, physical
         entry.label = buffer[0..text.len];
         return entry;
     }
-    if (entry.label == null and entry.icon_name.len == 0) entry.label = "?";
+    if (entry.label == null and entry.icon_name.len == 0) {
+        entry.label = "?";
+        entry.unproven = true;
+    }
     return entry;
 }
 pub fn buildProjectCache(gpa: std.mem.Allocator, translator: anytype, document: p.Document) !LabelCache {
@@ -378,4 +395,31 @@ test "optional icon provider owns bytes and geometry maps by processing index" {
     defer t.allocator.free(metadata);
     try t.expect(metadata[0].hand == .left and metadata[1].thumb);
     try t.expectError(error.InvalidGeometry, practiceMetadata(t.allocator, 2, &.{ .{ .key_index = 0, .metadata = .{} }, .{ .key_index = 0, .metadata = .{} } }));
+}
+
+test "unknown question placeholders and arbitrary callbacks never become proven practice routes" {
+    const Empty = struct {
+        pub fn keyToText(_: *@This(), _: zkeymap.KeyCodeFire) zkeymap.TextResult {
+            return .{};
+        }
+    };
+    const Literal = struct {
+        pub fn keyToText(_: *@This(), _: zkeymap.KeyCodeFire) zkeymap.TextResult {
+            return .{ .data = .{ '?', 0, 0, 0 }, .len = 1 };
+        }
+    };
+    var empty: Empty = .{};
+    var literal: Literal = .{};
+    var buffer: [64]u8 = undefined;
+    var cache = try LabelCache.init(std.testing.allocator, 1, 1);
+    defer cache.deinit();
+    cache.entries[0] = computeKeyContent(&empty, .{ .tap_only = .{ .key_press = .{ .tap_keycode = 58 } } }, .{}, &buffer);
+    try std.testing.expectEqualStrings("?", cache.entries[0].label.?);
+    try std.testing.expect((try practice.hint(cache.practiceLabels(), 0, 0, '?', 1)) == null);
+    cache.entries[0] = computeKeyContent(&literal, .{ .tap_only = .{ .key_press = .{ .tap_keycode = 56 } } }, .{}, &buffer);
+    try std.testing.expect((try practice.hint(cache.practiceLabels(), 0, 0, '?', 1)) != null);
+    cache.entries[0] = computeKeyContent(&literal, .{ .tap_only = .{ .key_press = .{ .tap_keycode = 44 }, .custom = 42 } }, .{}, &buffer);
+    try std.testing.expect((try practice.hint(cache.practiceLabels(), 0, 0, ' ', 1)) == null);
+    cache.entries[0] = computeKeyContent(&literal, .{ .tap_only = .{ .key_press = .{ .tap_keycode = 56 }, .custom = 42 } }, .{}, &buffer);
+    try std.testing.expect((try practice.hint(cache.practiceLabels(), 0, 0, '?', 1)) == null);
 }
