@@ -1301,6 +1301,12 @@ pub fn main(init: std.process.Init) !void {
                     const n = try std.unicode.utf8Encode(cp, &bytes);
                     try practice.session.insert(bytes[0..n], now_us + index * 160_000, false);
                 }
+            } else if (help_preview and scene == 19) {
+                practice_view.help_open = true;
+                practice_view.help_config = practice.config;
+                practice_view.help_config.hints.policy = .delayed;
+                practice_view.help_config.assistance = .guided;
+                if (!Backend.c.SDL_SetWindowSize(native.window, 900, 600)) return error.PracticeFixtureResize;
             }
         }
         if ((practice.session.state == .complete or practice.stopped_result_pending) and practice.completed == null) {

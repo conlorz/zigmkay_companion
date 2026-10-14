@@ -7,7 +7,12 @@ const presentation = @import("practice_presentation.zig");
 const control = desktop.practice_controller;
 pub const Review = struct { page: usize = 0, due_only: bool = true, message: []const u8 = "", retry: bool = false };
 pub const Action = union(enum) { none, back, start: control.Config };
-pub fn settings(config: *control.Config, theme: ui.Theme, bounds: dvui.Rect) !bool {
+pub fn settings(config: *control.Config, theme: ui.Theme, viewport: dvui.Rect) !bool {
+    const area = dvui.scrollArea(@src(), .{}, .{ .rect = viewport });
+    defer area.deinit();
+    const bounds: dvui.Rect = .{ .w = viewport.w - 20, .h = 650 };
+    const body = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = bounds.w, .h = bounds.h }, .padding = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
+    defer body.deinit();
     presentation.caption("Hint settings", .{ .w = bounds.w, .h = 44 }, 26, theme.text, "practice.help.title");
     presentation.paragraph("Full guidance, delayed hints, hints on request and hidden practice stay under your control. Show hint remains available during an exercise, including hidden recall.", .{ .y = 65, .w = bounds.w, .h = 80 }, 18, theme.text);
     var choice = desktop.practice_help.choice(config.*);
@@ -18,7 +23,7 @@ pub fn settings(config: *control.Config, theme: ui.Theme, bounds: dvui.Rect) !bo
     _ = dvui.checkbox(@src(), &config.hints.adaptive, "Adapt delayed hints to my measured pace", .{ .rect = .{ .y = 222, .w = bounds.w, .h = 38 } });
     presentation.paragraph("Delayed hints count active hesitation, including time before the first key, and exclude explicit pauses. With enough matching timing evidence, the delay uses three times your character median, bounded between half and twice your chosen delay and 250 ms to 10 seconds.", .{ .y = 282, .w = bounds.w, .h = 120 }, 17, theme.muted);
     presentation.paragraph("Changing these settings pauses the current exercise. Start a fresh run after applying a different policy. Requested help during hidden recall is saved separately from fully hidden evidence.", .{ .y = 424, .w = bounds.w, .h = 80 }, 17, theme.text);
-    return ui.button(theme, "Apply and return", "practice.help.apply", .{ .y = @min(bounds.h - 55, 540), .w = 200, .h = 42 });
+    return ui.button(theme, "Apply and return", "practice.help.apply", .{ .y = 540, .w = 200, .h = 42 });
 }
 pub fn reviews(view: *Review, owner: *control.Controller, history: ?*const desktop.practice_history.Query, failure: ?anyerror, saving: bool, theme: ui.Theme, bounds: dvui.Rect) !Action {
     const area = dvui.scrollArea(@src(), .{}, .{ .rect = bounds, .tag = "practice.review" });

@@ -33,7 +33,8 @@ pages are heap-owned to avoid excessive stack frames.
 Review checked paused/idle timing, request resets, cue attribution, old evidence,
 future/stopped/truncated runs, batch-only exposure, cohort separation, migration
 and owned allocation cleanup. It corrected stale recommendations after a context
-switch and clipped review explanations at small sizes. A native CI failure also
+switch, clipped review explanations and hint settings overlapping at the minimum
+window height. Settings now scroll independently. A native CI failure also
 exposed journal-mode contention during concurrent first opens; bounded retries
 cover SQLite's immediate BUSY return without changing transaction semantics.
 Native wide/small help,
