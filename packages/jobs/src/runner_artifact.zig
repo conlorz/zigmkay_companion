@@ -117,7 +117,13 @@ pub fn freeze(gpa: std.mem.Allocator, io: std.Io, cache: std.Io.Dir, manifest: M
         var atomic = try cache.createFileAtomic(io, name, .{ .replace = false });
         defer atomic.deinit(io);
         try atomic.file.writeStreamingAll(io, bytes);
-        try atomic.file.setPermissions(io, std.Io.File.Permissions.executable_file.setReadOnly(true));
+        // Zig 0.17's Windows setReadOnly helper names a removed constant.
+        // Use the typed attribute while retaining POSIX executable permissions.
+        const permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows)
+            @fromBackingInt(@intCast(@as(std.os.windows.DWORD, @bitCast(std.os.windows.FILE.ATTRIBUTE{ .READONLY = true }))))
+        else
+            std.Io.File.Permissions.executable_file.setReadOnly(true);
+        try atomic.file.setPermissions(io, permissions);
         try atomic.link(io);
     }
     const base = try cache.realPathFileAlloc(io, ".", gpa);
