@@ -60,9 +60,17 @@ pub fn main(init: std.process.Init) !void {
     std.log.info("diagnostic: verifying frozen runner", .{});
     try frozen.verifyFile(a, io, inputs);
     std.log.info("diagnostic: checking read-only attributes and cache reuse", .{});
-    const frozen_stat = try std.Io.Dir.cwd().statFile(io, frozen.record.path, .{});
     if (@import("builtin").os.tag == .windows) {
-        if (!frozen_stat.permissions.toAttributes().READONLY) return error.RunnerNotReadOnly;
+        // Zig 0.17's Windows stat reports .default_file permissions rather
+        // than the queried attributes. Check the native information directly.
+        const windows = std.os.windows;
+        const file = try std.Io.Dir.cwd().openFile(io, frozen.record.path, .{});
+        defer file.close(io);
+        var information: windows.FILE.BASIC_INFORMATION = undefined;
+        var status_block: windows.IO_STATUS_BLOCK = undefined;
+        const status = windows.ntdll.NtQueryInformationFile(file.handle, &status_block, &information, @sizeOf(@TypeOf(information)), .Basic);
+        if (status != .SUCCESS) return windows.unexpectedStatus(status);
+        if (!information.FileAttributes.READONLY) return error.RunnerNotReadOnly;
     }
     var reused = try jobs.runner_artifact.freeze(a, io, cache, runner, inputs);
     defer reused.deinit();
