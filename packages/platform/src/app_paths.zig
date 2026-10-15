@@ -230,6 +230,27 @@ test "installed paths are independent of working directories on all platforms" {
     try std.testing.expectEqualStrings("/usr/share/zigmkay", linux.paths.resources);
 }
 
+test "Windows relocated smoke test separates installation from user storage" {
+    const env: Environment = .{
+        .home = "C:\\temp\\Zigmkay offline ü\\home",
+        .appdata = "C:\\temp\\Zigmkay offline ü\\config",
+        .localappdata = "C:\\temp\\Zigmkay offline ü\\cache",
+    };
+    try std.testing.expectError(error.StorageOverlap, resolve(std.testing.allocator, .{
+        .platform = .windows,
+        .env = env,
+        .executable_path = "C:\\temp\\Zigmkay offline ü\\Zigmkay.exe",
+    }));
+    var paths = try resolve(std.testing.allocator, .{
+        .platform = .windows,
+        .env = env,
+        .executable_path = "C:\\temp\\Zigmkay offline ü\\install\\Zigmkay.exe",
+    });
+    defer paths.deinit();
+    try std.testing.expectEqualStrings("C:\\temp\\Zigmkay offline ü\\install", paths.paths.installation_root);
+    try std.testing.expectEqualStrings("C:\\temp\\Zigmkay offline ü\\cache\\zigmkay\\cache", paths.paths.cache);
+}
+
 test "XDG values and UNC user directories are injected and validated" {
     var linux = try resolve(std.testing.allocator, .{ .platform = .linux, .env = .{ .xdg_config_home = "/settings", .xdg_data_home = "/personal", .xdg_cache_home = "/scratch" }, .executable_path = "/opt/zigmkay/zigmkay" });
     defer linux.deinit();

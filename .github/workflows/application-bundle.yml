@@ -8,7 +8,7 @@ on:
       mode:
         description: Diagnostic only, or full bundle verification (restore automatic checks before merge)
         type: choice
-        options: [diagnostic, full]
+        options: [diagnostic, gui, full]
         default: diagnostic
 
 permissions:
@@ -44,11 +44,11 @@ jobs:
             ${{ runner.temp }}/finalization ü
   bundle:
     # Temporary PR #4 diagnostic gate. Restore automatic coverage before merge.
-    if: (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/t3code/review-dependency-configuration' && github.head_ref != 't3code/review-dependency-configuration')
+    if: (github.event_name == 'workflow_dispatch' && (inputs.mode == 'full' || inputs.mode == 'gui')) || (github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/t3code/review-dependency-configuration' && github.head_ref != 't3code/review-dependency-configuration')
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.mode == 'gui' && '["windows-latest"]' || '["macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -85,8 +85,8 @@ jobs:
         shell: pwsh
         run: |
           $target = Join-Path $env:RUNNER_TEMP 'Zigmkay offline ü'
-          New-Item -ItemType Directory -Force "$target/home", "$target/config", "$target/cache" | Out-Null
-          Copy-Item zig-out/Zigmkay.exe "$target/Zigmkay.exe"
+          New-Item -ItemType Directory -Force "$target/install", "$target/home", "$target/config", "$target/cache" | Out-Null
+          Copy-Item zig-out/Zigmkay.exe "$target/install/Zigmkay.exe"
           Copy-Item zig-out/bin/check-application-bundle.exe "$target/check.exe"
           $env:HOME = "$target/home"
           $env:APPDATA = "$target/config"
@@ -95,11 +95,13 @@ jobs:
           $env:ZIG_LIB_DIR = 'C:\missing'
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           Set-Location $target
-          & ./check.exe "$target/Zigmkay.exe" "$target/cache/zigmkay/cache" all
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          & ./check.exe "$target/Zigmkay.exe" "$target/cache/zigmkay/cache" all
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ('${{ inputs.mode }}' -ne 'gui') {
+            & ./check.exe "$target/install/Zigmkay.exe" "$target/cache/zigmkay/cache" all
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            & ./check.exe "$target/install/Zigmkay.exe" "$target/cache/zigmkay/cache" all
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
           $env:SDL_VIDEODRIVER = 'dummy'
           $env:SDL_RENDER_DRIVER = 'software'
-          & ./Zigmkay.exe --offline-build-frames 30000
+          & "$target/install/Zigmkay.exe" --offline-build-frames 30000
           exit $LASTEXITCODE

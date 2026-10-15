@@ -399,6 +399,10 @@ pub fn main(init: std.process.Init) !void {
     defer if (user_paths) |*owned| owned.deinit();
     if (frame_limit == null or build_fixture) {
         user_paths = installedPaths(init) catch |err| unavailable: {
+            if (build_fixture) {
+                std.log.err("Managed editor startup path resolution failed: {s}", .{@errorName(err)});
+                return err;
+            }
             view.report(err);
             break :unavailable null;
         };
@@ -521,7 +525,13 @@ pub fn main(init: std.process.Init) !void {
     defer if (flash_tools) |*tools| tools.deinit();
     const executable = try std.process.executablePathAlloc(init.io, gpa);
     defer gpa.free(executable);
-    var resources: ?bundled.Bundle = if (user_paths) |owned| (if (@import("builtin").os.tag == .windows) bundled.Bundle.fromExecutable(gpa, init.io, executable, owned.paths.cache) else bundled.Bundle.open(gpa, init.io, owned.paths.resources)) catch null else null;
+    var resources: ?bundled.Bundle = if (user_paths) |owned| (if (@import("builtin").os.tag == .windows) bundled.Bundle.fromExecutable(gpa, init.io, executable, owned.paths.cache) else bundled.Bundle.open(gpa, init.io, owned.paths.resources)) catch |err| unavailable: {
+        if (build_fixture) {
+            std.log.err("Managed editor startup bundle loading failed: {s}", .{@errorName(err)});
+            return err;
+        }
+        break :unavailable null;
+    } else null;
     defer if (resources) |*value| value.deinit();
     if (resources) |value| {
         if (flash_tools == null) flash_tools = try bundled.tools(gpa, value);
@@ -1736,7 +1746,10 @@ pub fn main(init: std.process.Init) !void {
             rendered.effect = try dispatchFlash(&owner, &model);
         }
         if (build_fixture and count == 2) {
-            if (!can_build or built != null or jobs.busy()) return error.ManagedEditorStartupNotIdle;
+            if (!can_build or built != null or jobs.busy()) {
+                std.log.err("Managed editor startup: paths={any} resources={any} plan={any} can_build={any} built={any} busy={any}", .{ user_paths != null, resources != null, build_plan != null, can_build, built != null, jobs.busy() });
+                return error.ManagedEditorStartupNotIdle;
+            }
             rendered = .{ .effect = try owner.request(&model, try desktop.editor_dispatch.Request.capture(&model, .build)) };
         }
         if (live_enabled and (live_frame.labels == null or live_frame.stale)) life.companion_visible = false;
