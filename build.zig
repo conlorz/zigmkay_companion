@@ -26,6 +26,19 @@ pub fn build(b: *std.Build) void {
     const uf2_module = b.addModule("firmware-uf2", .{ .root_source_file = b.path("packages/artifact/src/uf2.zig") });
     const jobs_imports: []const std.Build.Module.Import = &.{ .{ .name = "owned-zon", .module = owned_zon }, .{ .name = "firmware-uf2", .module = uf2_module } };
     const jobs = b.addModule("companion-jobs", .{ .root_source_file = b.path("packages/jobs/src/root.zig"), .imports = jobs_imports });
+    const finalization_diagnostic = b.addExecutable(.{
+        .name = "diagnose-build-finalization",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/diagnose_build_finalization.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+            .strip = false,
+            .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
+        }),
+    });
+    const diagnostic_step = b.step("build-finalization-diagnostic", "Build the symbolized offline artifact publication reproduction");
+    diagnostic_step.dependOn(&b.addInstallArtifact(finalization_diagnostic, .{}).step);
+    if (b.option(bool, "finalization-diagnostic-only", "Configure only the temporary artifact publication diagnostic") orelse false) return;
     const flash_controller = b.addModule("flash-controller", .{ .root_source_file = b.path("packages/desktop/src/flash_controller.zig"), .imports = &.{.{ .name = "companion-jobs", .module = jobs }} });
     const tray_lifecycle = b.addModule("tray-lifecycle", .{ .root_source_file = b.path("packages/desktop/src/tray_lifecycle.zig"), .target = b.graph.host });
     const flash_presenter = b.addModule("flash-presenter", .{ .root_source_file = b.path("packages/desktop/src/flash_presenter.zig"), .target = b.graph.host, .imports = &.{.{ .name = "flash-controller", .module = flash_controller }} });

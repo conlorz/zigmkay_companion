@@ -3,9 +3,48 @@ name: Self-contained application
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Diagnostic only, or full bundle verification (restore automatic checks before merge)
+        type: choice
+        options: [diagnostic, full]
+        default: diagnostic
+
+permissions:
+  contents: read
 
 jobs:
+  windows-finalization:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'diagnostic'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.17.0
+          cache-size-limit: 4096
+      - name: Build only the symbolized finalization reproduction
+        run: zig build build-finalization-diagnostic -Dfinalization-diagnostic-only=true -j2 --summary all
+      - name: Reproduce artifact publication without firmware compilation or devices
+        shell: pwsh
+        run: |
+          & ./zig-out/bin/diagnose-build-finalization.exe "$env:RUNNER_TEMP/finalization ü" 2>&1 | Tee-Object -FilePath finalization.log
+          exit $LASTEXITCODE
+      - name: Preserve exact executable, PDB and diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-finalization-${{ github.sha }}
+          retention-days: 3
+          path: |
+            zig-out/bin/diagnose-build-finalization*
+            finalization.log
+            ${{ runner.temp }}/finalization ü
   bundle:
+    # Temporary PR #4 diagnostic gate. Restore automatic coverage before merge.
+    if: (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') || (github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/t3code/review-dependency-configuration' && github.head_ref != 't3code/review-dependency-configuration')
     strategy:
       fail-fast: false
       matrix:
