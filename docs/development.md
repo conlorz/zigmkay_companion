@@ -59,6 +59,8 @@ and attached source bundles.
   native screenshots, layout checks and offline gallery reproduction.
 - [README screenshot notes](screenshots/overview/README.md): native capture provenance.
 - [Compatibility status](../compatibility/README.md): remaining acceptance gates.
+- [Codebase review, October 15](code-review-2026-10-15.md): dependency history,
+  prioritized correctness findings and proposed maintenance work.
 
 ## Build and check
 
