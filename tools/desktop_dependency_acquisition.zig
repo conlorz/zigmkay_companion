@@ -2,7 +2,7 @@
 const std = @import("std");
 const jobs = @import("companion-jobs");
 pub const receipt_name = "source-inputs.zon";
-const pins = @import("desktop_dependency_pins.zig");
+const pins = @import("desktop-pins");
 pub const dvui_revision = pins.dvui_revision;
 pub const ztray_revision = pins.ztray_revision;
 pub const dvui_url = pins.dvui_url;

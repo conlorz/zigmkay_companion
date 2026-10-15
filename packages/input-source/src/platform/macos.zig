@@ -4,8 +4,8 @@ const hid = @import("../hid_to_platform.zig");
 /// Opaque handle allocated by the C implementation in platform/macos.c.
 /// Wraps TISInputSourceRef + UCKeyboardLayout* + dead-key state.
 pub const MacOsKeyMap = opaque {
-    extern fn macOsKeyMapInit() *MacOsKeyMap;
-    pub fn init() *MacOsKeyMap {
+    extern fn macOsKeyMapInit() ?*MacOsKeyMap;
+    pub fn init() ?*MacOsKeyMap {
         return macOsKeyMapInit();
     }
 

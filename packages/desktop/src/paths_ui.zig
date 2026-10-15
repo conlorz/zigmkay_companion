@@ -53,6 +53,11 @@ pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame, theme:
 pub fn validate(action: Action, view: View, model: *const desktop.model.Model) !void {
     if (!std.meta.eql(action, view.action(try model.id(), action.kind))) return error.StaleProjectAction;
 }
+/// A completed save acknowledges disk IO for the same path, independently of edits.
+pub fn validateCompletion(action: Action, view: View, model: *const desktop.model.Model) !void {
+    if (action.kind != .save) return validate(action, view, model);
+    if (!std.meta.eql(action.project, view.project)) return error.StaleProjectAction;
+}
 pub fn request(action: Action, view: View, model: *const desktop.model.Model, selected_board: ?project.Board) !desktop.project_files.Request {
     try validate(action, view, model);
     const target = std.mem.sliceTo(&action.project, 0);

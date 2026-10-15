@@ -16,45 +16,39 @@ run = "zig build check-compatibility"
 [tasks."desktop:prepare"]
 description = "Acquire missing pinned GUI sources without launching or accessing devices"
 dir = "{{config_root}}"
-sources = ["tools/desktop_dependency_acquisition.zig", "tools/desktop_dependency_pins.zig", ".zigversion"]
-outputs = [".zig-cache/desktop-acquired/source-inputs.zon", ".zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n/build.zig", ".zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY/build.zig", ".zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K/build.zig", ".zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW/build.zig.zon"]
+sources = ["tools/desktop_dependency_acquisition.zig", "packages/dvui/sources.zon", ".zigversion"]
+outputs = [".zig-cache/desktop-acquired/source-inputs.zon"]
 run = 'zig build prepare-desktop-dependencies -Ddesktop-acquisition=true -Ddesktop-vector-acquisition=true "-Ddesktop-source-cache={{config_root}}/.zig-cache/desktop-acquired" -j4'
 
 [tasks.editor]
-depends = ["desktop:prepare"]
 dir = "{{config_root}}"
 description = "Launch the editor and automatically connect to the keyboard"
-run = "zig build run-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+run = "zig build run-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true -j4"
 
 [tasks."editor:build"]
-depends = ["desktop:prepare"]
 dir = "{{config_root}}"
 description = "Compile the current native GUI without launching"
-run = "zig build build-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+run = "zig build build-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true -j4"
 
 
 [tasks."companion"]
-depends = ["desktop:prepare"]
 dir = "{{config_root}}"
 description = "Start the resident companion and automatically connect to the keyboard"
-run = "zig build run-companion -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+run = "zig build run-companion -Ddesktop-dependencies=true -Ddesktop-vectors=true -j4"
 
 [tasks."companion:build"]
-depends = ["desktop:prepare"]
 dir = "{{config_root}}"
 description = "Compile the resident companion without launching"
-run = "zig build build-companion -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+run = "zig build build-companion -Ddesktop-dependencies=true -Ddesktop-vectors=true -j4"
 
 [tasks."companion:test"]
-depends = ["desktop:prepare"]
 dir = "{{config_root}}"
 description = "Test companion visibility and placement without hardware"
-run = "zig build test-desktop-companion test-companion-placement -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+run = "zig build test-desktop-companion test-companion-placement -Ddesktop-dependencies=true -Ddesktop-vectors=true -j4"
 [tasks."editor:test"]
-depends = ["desktop:prepare"]
 dir = "{{config_root}}"
 description = "Run offline GUI launch, practice and companion fixtures"
-run = "zig build test-desktop-launch test-desktop-practice test-desktop-rundown test-desktop-source-refresh test-desktop-companion test-companion-placement -Ddesktop-dependencies=true -Ddesktop-vectors=true -Ddesktop-dvui-source={{config_root}}/.zig-cache/desktop-acquired/p/dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n -Ddesktop-ztray-source={{config_root}}/.zig-cache/desktop-acquired/p/ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY -Ddesktop-svg2tvg-source={{config_root}}/.zig-cache/desktop-acquired/p/svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K -Ddesktop-icons-source={{config_root}}/.zig-cache/desktop-acquired/p/icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW -j4"
+run = "zig build test-desktop-launch test-desktop-practice test-desktop-rundown test-desktop-source-refresh test-desktop-companion test-companion-placement -Ddesktop-dependencies=true -Ddesktop-vectors=true -j4"
 
 [tasks."typing-practice:test"]
 description = "Check practice generation, metrics, native storage and path policy without devices"

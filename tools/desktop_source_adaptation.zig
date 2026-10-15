@@ -4,9 +4,9 @@ const std = @import("std");
 const jobs = @import("companion-jobs");
 const dvui_rules = @import("dvui_adaptation_rules.zig");
 pub const Kind = enum { dvui, ztray, svg2tvg, icons };
-pub const dvui_hash = "dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n";
-pub const ztray_hash = "ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY";
-const inputs = @import("desktop_dependency_pins.zig");
+const inputs = @import("desktop-pins");
+pub const dvui_hash = inputs.dvui_hash;
+pub const ztray_hash = inputs.ztray_hash;
 pub fn adaptTinyvg(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8) !?[]u8 {
     const rules = [_]dvui_rules.Rule{
         .{ .path = "src/tinyvg/parsing.zig", .before = "std.meta.fields(T).len", .after = "@typeInfo(T).@\"struct\".field_names.len", .count = 1 },
@@ -115,7 +115,9 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(gpa);
-    if (args.len != 5) return error.Usage;
+    if (args.len != 5 and args.len != 6) return error.Usage;
+    const acquired = args.len == 6;
+    if (acquired and !std.mem.eql(u8, args[5], "--acquired")) return error.Usage;
     try absolute(args[1]);
     try absolute(args[3]);
     try absolute(args[4]);
@@ -126,7 +128,8 @@ pub fn main(init: std.process.Init) !void {
         .svg2tvg => inputs.svg2tvg_hash,
         .icons => inputs.icons_hash,
     };
-    const source_real = try std.Io.Dir.cwd().realPathFileAlloc(io, args[3], gpa);
+    const source_path = if (acquired) try std.fs.path.join(gpa, &.{ args[3], "p", expected }) else args[3];
+    const source_real = try std.Io.Dir.cwd().realPathFileAlloc(io, source_path, gpa);
     defer gpa.free(source_real);
     const output_normal = try std.fs.path.resolve(gpa, &.{args[4]});
     defer gpa.free(output_normal);

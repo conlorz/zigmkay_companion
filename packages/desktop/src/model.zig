@@ -224,7 +224,7 @@ pub const Model = struct {
         try self.commit(snapshot);
     }
     pub fn save(self: *Model, io: std.Io, dir: std.Io.Dir) !void {
-        try p.snapshot.save(self.gpa, io, dir, self.current.snapshot, self.board);
+        try p.snapshot.saveChecked(self.gpa, io, dir, self.current.snapshot, self.board, self.saved_id);
         self.saved_id = try self.id();
     }
     pub fn open(self: *Model, io: std.Io, dir: std.Io.Dir) !void {

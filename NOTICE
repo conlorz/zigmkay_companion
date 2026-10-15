@@ -10,6 +10,12 @@ macOS/Windows/Linux C bridge bytes. Window, font and folder-dialog Zig adapters
 are carried with the same GPLv2 provenance. The lazy pinned FreeType dependency
 retains its upstream license files; release bundles must include its attribution.
 
+The zqlite dependency is pinned to karlseguin/zqlite.zig revision
+865223b734a5113f731ab1eb1d7d81c8ac252913 and retains its MIT license.
+It supplies the Zig database API and bundled public-domain SQLite implementation.
+The legacy keymap API shares the input-source package's implementation and native
+bridges; duplicate bridge copies were removed without changing the retained bytes.
+
 The migration reference is conlorz/zigmkay_firmware at
 4755dac978658d10fd9b3bd13a184a1e1198b975 (local/monorepo).
 Its implementation baseline is 3ee4135d308f18f15cc51b1d73e33e1b36bf517f;

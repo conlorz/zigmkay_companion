@@ -4,9 +4,10 @@
     .fingerprint = 0xf34c18ab8685e700,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        .sqlite = .{
-            .url = "https://www.sqlite.org/2026/sqlite-autoconf-3540000.tar.gz",
-            .hash = "N-V-__8AAKEJxgAqL7tBBStLJr_SloDtRVAE49PAFiABzwky",
+        .dvui = .{ .path = "packages/dvui" },
+        .zqlite = .{
+            .url = "git+https://github.com/karlseguin/zqlite.zig#865223b734a5113f731ab1eb1d7d81c8ac252913",
+            .hash = "zqlite-0.0.1-RWLaY4Y8nADz2l5aBE-JVyDyM3sZzHjq0agNykuVZKqQ",
         },
         .freetype = .{
             .url = "git+https://github.com/david-vanderson/freetype#4938878b58e8481bc11ac52d6fe10a7cf6c3c7d5",

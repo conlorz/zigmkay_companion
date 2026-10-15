@@ -59,8 +59,6 @@ and attached source bundles.
   native screenshots, layout checks and offline gallery reproduction.
 - [README screenshot notes](screenshots/overview/README.md): native capture provenance.
 - [Compatibility status](../compatibility/README.md): remaining acceptance gates.
-- [Codebase review, October 15](code-review-2026-10-15.md): dependency history,
-  prioritized correctness findings and proposed maintenance work.
 
 ## Build and check
 
@@ -135,11 +133,45 @@ zig build prepare-desktop-dependencies \
   -Ddesktop-acquisition=true -Ddesktop-source-cache=<absolute-cache-directory>
 ```
 
-The resulting `source-inputs.zon` records verified immutable sources. Supply
-its `dvui.source_path` and `ztray.source_path` to
-`check-desktop-dependencies -Ddesktop-dependencies=true` using the
-`desktop-dvui-source` and `desktop-ztray-source` options. This compiles and links
-the native graph without launching it.
+The resulting `source-inputs.zon` records verified immutable sources for explicit
+development audits. Normal desktop builds acquire and adapt their sources
+automatically; no source-directory arguments are required:
+
+```sh
+zig build build-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true
+zig build check-desktop-dependencies -Ddesktop-dependencies=true -Ddesktop-vectors=true
+```
+
+The manifest's `dvui` dependency is a local
+[compatibility package](../packages/dvui/build.zig). Its
+[source manifest](../packages/dvui/sources.zon) is the single authority for pinned
+DVUI, ztray, SVG/TinyVG and icon revisions and hashes. Their retained upstream
+build scripts predate the required Zig 0.17 build APIs. The compatibility layer
+verifies immutable sources and applies counted Zig adaptations to generated cache
+copies, preserving the imported C and Objective-C sources. DVUI remains the UI
+toolkit; SDL3 supplies its window/rendering/input backend and FreeType supplies
+font rendering. Explicit absolute `desktop-*-source` overrides remain available
+for development audits and must match the pinned hashes.
+
+Native desktop CI compiles and links the real application on macOS, then runs
+SDL dummy/software fixtures without keyboard access. The macOS SDL config
+adjustment is scoped to that platform; full Linux and Windows desktop/tray
+acceptance remains pending. Portable storage and keymap contracts have separate
+checks. A passing portable test does not establish GUI support on those hosts.
+
+Practice persistence uses the immutable `zqlite` dependency declared in
+`build.zig.zon`, including its bundled SQLite implementation. Application code
+owns schema validation, transactions and migrations; the translated upstream
+header is used only for SQLite's online backup integration and journal-mode
+retry handling. Current-schema history queries use a read-only connection and
+one read transaction. Legacy imports and schema upgrades reopen for writing
+only when needed.
+
+Project saves retain a `.project.lock` file in the project directory. Cooperating
+instances hold its OS lock while checking the saved digest and publishing the
+document; the file must not be removed while an instance may hold it. Atomic
+source bundles remain immutable. A completed background save advances the disk
+baseline even if newer editor changes remain dirty.
 
 Selected toolchain preparation and verification require explicitly owned caches:
 

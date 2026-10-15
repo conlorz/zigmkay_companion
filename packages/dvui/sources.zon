@@ -1,0 +1,22 @@
+.{
+    .dvui = .{
+        .url = "git+https://github.com/david-vanderson/dvui.git#9b372ab0e3beca5060eb1f9ffe3e83ee61665e37",
+        .hash = "dvui-0.5.0-dev-AQFJmRbtAwHyeIDl5laSSUlHNC1I_TXiwitJOowF6z-n",
+        .lazy = true,
+    },
+    .ztray = .{
+        .url = "git+https://github.com/StaffinityAI/ztray.git#45877349ae4303a99008b86bf28411638889380e",
+        .hash = "ztray-0.1.0-dev.1-HZHL7Ia4BwBeGve2XpCeCR0cQ_5xTdupgMzOyceJ6BeY",
+        .lazy = true,
+    },
+    .svg2tvg = .{
+        .url = "git+https://github.com/nat3Github/zig-lib-svg2tvg#2c72af8ff00621b094ca70f03440405f59511fbb",
+        .hash = "svg2tvg-0.0.0-HpMZuaP8BQALdwSolfst0dPGUUn2ptqgfSxVs8RoQJ6K",
+        .lazy = true,
+    },
+    .icons = .{
+        .url = "git+https://github.com/nat3Github/zig-lib-icons.git#b7299b19fa11caa5be93ef49743d8fc31a4bf9a0",
+        .hash = "icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW",
+        .lazy = true,
+    },
+}

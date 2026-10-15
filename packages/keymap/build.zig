@@ -1,33 +1,13 @@
 const std = @import("std");
 
 pub fn module(b: *std.Build, firmware: *std.Build.Module, keycodes: *std.Build.Module, us_fixture: bool) *std.Build.Module {
-    const result = b.createModule(.{
+    _ = firmware;
+    const shared = @import("../input-source/build.zig").keymapModule(b, b.path("packages/input-source"), keycodes, b.graph.host, !us_fixture, us_fixture);
+    return b.createModule(.{
         .root_source_file = b.path("packages/keymap/src/root.zig"),
         .target = b.graph.host,
-        .imports = &.{ .{ .name = "zigmkay", .module = firmware }, .{ .name = "zkeycodes", .module = keycodes } },
+        .imports = &.{.{ .name = "input-keymap", .module = shared }},
     });
-    const options = b.addOptions();
-    options.addOption(bool, "us_fixture", us_fixture);
-    result.addOptions("keymap-options", options);
-    if (!us_fixture) switch (b.graph.host.result.os.tag) {
-        .macos => {
-            result.addCSourceFile(.{ .file = b.path("packages/keymap/src/platform/macos.c"), .flags = &.{"-std=c11"} });
-            result.linkFramework("Carbon", .{});
-            result.link_libc = true;
-        },
-        .windows => {
-            result.addCSourceFile(.{ .file = b.path("packages/keymap/src/platform/windows.c"), .flags = &.{"-std=c11"} });
-            result.linkSystemLibrary("user32", .{});
-            result.link_libc = true;
-        },
-        .linux => {
-            result.addCSourceFile(.{ .file = b.path("packages/keymap/src/platform/linux.c"), .flags = &.{"-std=c11"} });
-            result.linkSystemLibrary("xkbcommon", .{});
-            result.link_libc = true;
-        },
-        else => {},
-    };
-    return result;
 }
 
 pub fn tests(b: *std.Build, firmware: *std.Build.Module, keycodes: *std.Build.Module, tests_step: *std.Build.Step, check: *std.Build.Step) void {
@@ -40,7 +20,7 @@ pub fn tests(b: *std.Build, firmware: *std.Build.Module, keycodes: *std.Build.Mo
         b.createModule(.{
             .root_source_file = b.path("packages/keymap/src/hid_to_platform.test.zig"),
             .target = b.graph.host,
-            .imports = &.{ .{ .name = "zigmkay", .module = firmware }, .{ .name = "zkeycodes", .module = keycodes }, .{ .name = "hid_to_platform", .module = b.createModule(.{ .root_source_file = b.path("packages/keymap/src/hid_to_platform.zig"), .imports = &.{ .{ .name = "zigmkay", .module = firmware }, .{ .name = "zkeycodes", .module = keycodes } } }) } },
+            .imports = &.{ .{ .name = "zkeycodes", .module = keycodes }, .{ .name = "hid_to_platform", .module = b.createModule(.{ .root_source_file = b.path("packages/input-source/src/hid_to_platform.zig"), .imports = &.{.{ .name = "zkeycodes", .module = keycodes }} }) } },
         }),
         b.createModule(.{
             .root_source_file = b.path("packages/keymap/example/main.zig"),

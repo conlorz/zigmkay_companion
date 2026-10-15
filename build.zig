@@ -28,15 +28,21 @@ pub fn build(b: *std.Build) void {
     const flash_presenter = b.addModule("flash-presenter", .{ .root_source_file = b.path("packages/desktop/src/flash_presenter.zig"), .target = b.graph.host, .imports = &.{.{ .name = "flash-controller", .module = flash_controller }} });
     const desktop_geometry = b.addModule("desktop-geometry", .{ .root_source_file = b.path("packages/desktop/src/geometry.zig") });
     const desktop_tests_step = b.step("test-desktop-core", "Validate practice and explicit flash intents without GUI or devices");
-    const sqlite = b.dependency("sqlite", .{});
-    const sqlite_source = sqlite.path("sqlite3.c");
+    const zqlite = b.dependency("zqlite", .{
+        .target = b.graph.host,
+        .sqlite3 = @as([]const []const u8, &.{
+            "-std=c99",                     "-DSQLITE_THREADSAFE=1",     "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_DQS=0",
+            "-DSQLITE_DEFAULT_MEMSTATUS=0", "-DSQLITE_ENABLE_API_ARMOR", "-DSQLITE_MAX_LENGTH=33554432", "-DSQLITE_MAX_SQL_LENGTH=65536",
+        }),
+    }).module("zqlite");
+    if (b.graph.host.result.os.tag == .windows) zqlite.linkSystemLibrary("advapi32", .{});
     const practice_data_tests = b.step("test-practice-data", "Validate timing, database portability and legacy migration without firmware or devices");
     for ([_][]const u8{ "practice_generator.zig", "practice_results.zig", "practice_history.zig", "practice_history_runtime.zig", "practice_timing.zig", "practice_database.zig", "practice_progress.zig", "practice_analysis.zig", "practice_curriculum.zig", "practice_help.zig", "practice_retention.zig" }) |name| {
         const practice_tests = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("packages/desktop/src/{s}", .{name})),
             .target = b.graph.host,
         }) });
-        if (std.mem.indexOf(u8, name, "history") != null or std.mem.eql(u8, name, "practice_database.zig")) addSqlite(practice_tests.root_module, sqlite_source);
+        if (std.mem.indexOf(u8, name, "history") != null or std.mem.eql(u8, name, "practice_database.zig")) practice_tests.root_module.addImport("zqlite", zqlite);
         const run_practice = b.addRunArtifact(practice_tests);
         desktop_tests_step.dependOn(&run_practice.step);
         practice_data_tests.dependOn(&run_practice.step);
@@ -63,12 +69,14 @@ pub fn build(b: *std.Build) void {
     const tray_lifecycle_tests = b.addTest(.{ .root_module = tray_lifecycle });
     desktop_tests_step.dependOn(&b.addRunArtifact(tray_lifecycle_tests).step);
     check.dependOn(&tray_lifecycle_tests.step);
+    const desktop_pins = b.dependency("dvui", .{}).module("pins");
     const acquisition_imports: []const std.Build.Module.Import = &.{ .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = owned_zon } };
     const acquisition = b.addExecutable(.{ .name = "desktop-dependency-acquisition", .root_module = b.createModule(.{
         .root_source_file = b.path("tools/desktop_dependency_acquisition.zig"),
         .target = b.graph.host,
         .imports = acquisition_imports,
     }) });
+    acquisition.root_module.addImport("desktop-pins", desktop_pins);
     const acquire_step = b.step("prepare-desktop-dependencies", "Explicitly acquire immutable desktop sources; no GUI execution");
     if (b.option(bool, "desktop-acquisition", "Authorize explicit pinned desktop dependency acquisition") orelse false) {
         const cache = b.option([]const u8, "desktop-source-cache", "Absolute dedicated desktop source cache") orelse @panic("Desktop acquisition requires desktop-source-cache");
@@ -84,6 +92,7 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .imports = acquisition_imports,
     }) });
+    acquisition_tests.root_module.addImport("desktop-pins", desktop_pins);
     desktop_tests_step.dependOn(&b.addRunArtifact(acquisition_tests).step);
     check.dependOn(&acquisition_tests.step);
     const adaptation_tests = b.addTest(.{ .root_module = b.createModule(.{
@@ -91,47 +100,14 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
     }) });
+    adaptation_tests.root_module.addImport("desktop-pins", desktop_pins);
     const adaptation_tests_step = b.step("test-desktop-adaptation", "Validate exact dependency adaptations and source drift rejection offline");
     adaptation_tests_step.dependOn(&b.addRunArtifact(adaptation_tests).step);
     tests.dependOn(adaptation_tests_step);
     check.dependOn(&adaptation_tests.step);
     if (b.option(bool, "desktop-dependencies", "Prepare explicit desktop dependency compiler audit") orelse false) {
-        const adaptation = b.addExecutable(.{ .name = "desktop-source-adaptation", .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/desktop_source_adaptation.zig"),
-            .target = b.graph.host,
-            .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
-        }) });
-        const dvui_source = b.option([]const u8, "desktop-dvui-source", "Absolute pristine immutable DVUI source package for explicit development audit") orelse @panic("Desktop audit requires desktop-dvui-source");
-        const tray_source = b.option([]const u8, "desktop-ztray-source", "Absolute pristine immutable ztray source package for explicit development audit") orelse @panic("Desktop audit requires desktop-ztray-source");
-        if (!std.fs.path.isAbsolute(dvui_source) or !std.fs.path.isAbsolute(tray_source)) @panic("Desktop source inputs must be absolute");
-        const dvui_adapt = b.addRunArtifact(adaptation);
-        dvui_adapt.addFileArg2(.zig_exe, .{ .make_absolute = true });
-        dvui_adapt.addArg("dvui");
-        dvui_adapt.addDirectoryArg2(.{ .cwd_relative = dvui_source }, .{ .make_absolute = true });
-        const dvui_directory = dvui_adapt.addOutputDirectoryArg2("dvui", .{ .make_absolute = true });
-        const tray_adapt = b.addRunArtifact(adaptation);
-        tray_adapt.addFileArg2(.zig_exe, .{ .make_absolute = true });
-        tray_adapt.addArg("ztray");
-        tray_adapt.addDirectoryArg2(.{ .cwd_relative = tray_source }, .{ .make_absolute = true });
-        const tray_directory = tray_adapt.addOutputDirectoryArg2("ztray", .{ .make_absolute = true });
-        var vector_sources: ?@import("packages/platform/desktop_build.zig").VectorSources = null;
-        if (b.option(bool, "desktop-vectors", "Compile retained TinyVG/icon rendering with explicit pristine source inputs") orelse false) {
-            const vector_source = b.option([]const u8, "desktop-svg2tvg-source", "Absolute pristine SVG/TinyVG source package") orelse @panic("Vector audit requires desktop-svg2tvg-source");
-            const icons_source = b.option([]const u8, "desktop-icons-source", "Absolute pristine icons source package") orelse @panic("Vector audit requires desktop-icons-source");
-            if (!std.fs.path.isAbsolute(vector_source) or !std.fs.path.isAbsolute(icons_source)) @panic("Vector source inputs must be absolute");
-            const vector_adapt = b.addRunArtifact(adaptation);
-            vector_adapt.addFileArg2(.zig_exe, .{ .make_absolute = true });
-            vector_adapt.addArg("svg2tvg");
-            vector_adapt.addDirectoryArg2(.{ .cwd_relative = vector_source }, .{ .make_absolute = true });
-            const vector_directory = vector_adapt.addOutputDirectoryArg2("svg2tvg", .{ .make_absolute = true });
-            const icons_adapt = b.addRunArtifact(adaptation);
-            icons_adapt.addFileArg2(.zig_exe, .{ .make_absolute = true });
-            icons_adapt.addArg("icons");
-            icons_adapt.addDirectoryArg2(.{ .cwd_relative = icons_source }, .{ .make_absolute = true });
-            vector_sources = .{ .svg2tvg = vector_directory, .icons = icons_adapt.addOutputDirectoryArg2("icons", .{ .make_absolute = true }) };
-        }
-        desktop_graph = @import("packages/platform/desktop_build.zig").check(b, desktop_dependencies, dvui_directory, tray_directory, flash_presenter, tray_lifecycle, vector_sources);
-    } else desktop_dependencies.dependOn(&b.addFail("Pass desktop-dependencies=true with explicit pristine source inputs for GUI dependency preparation").step);
+        desktop_graph = @import("packages/platform/desktop_sources.zig").prepare(b, desktop_dependencies, jobs, desktop_pins, acquisition, flash_presenter, tray_lifecycle);
+    } else desktop_dependencies.dependOn(&b.addFail("Pass desktop-dependencies=true to compile the native GUI").step);
     const job_fixture = b.addExecutable(.{ .name = "job-fixture", .root_module = b.createModule(.{
         .root_source_file = b.path("packages/jobs/src/fixture.zig"),
         .target = b.graph.host,
@@ -466,7 +442,7 @@ pub fn build(b: *std.Build) void {
             .target = b.graph.host,
             .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model }, .{ .name = "zkeymap", .module = input_source.module }, .{ .name = "zkeycodes", .module = keycodes }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "companion-jobs", .module = jobs } },
         });
-        addSqlite(desktop_core, sqlite_source);
+        desktop_core.addImport("zqlite", zqlite);
         desktop_core.addImport("flash-controller", flash_controller);
         desktop_core.addImport("desktop-geometry", desktop_geometry);
         desktop_core.addImport("flash-presenter", flash_presenter);
@@ -577,7 +553,7 @@ pub fn build(b: *std.Build) void {
                 const frame_tests = b.addTest(.{ .root_module = b.createModule(.{
                     .root_source_file = b.path("tests/editor_frame.zig"),
                     .target = b.graph.host,
-                    .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog", .module = catalog }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "editor-frame-ui", .module = editor_frame }, .{ .name = "zkeymap", .module = input_source.module } },
+                    .imports = &.{ .{ .name = "paths-ui", .module = paths_ui }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog", .module = catalog }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "editor-frame-ui", .module = editor_frame }, .{ .name = "zkeymap", .module = input_source.module } },
                 }) });
                 const run_frames = b.addRunArtifact(frame_tests);
                 run_frames.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
@@ -1106,14 +1082,4 @@ pub fn build(b: *std.Build) void {
     }
     const compatibility = b.step("check-compatibility", "Require accepted firmware and host compatibility gates");
     compatibility.dependOn(&b.addFail("Firmware PR review, physical board mapping, managed provenance and desktop/native release gates remain pending").step);
-}
-
-fn addSqlite(module: *std.Build.Module, source: std.Build.LazyPath) void {
-    module.link_libc = true;
-    module.addCSourceFile(.{ .file = source, .flags = &.{
-        "-DSQLITE_THREADSAFE=1",         "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_DQS=0",
-        "-DSQLITE_DEFAULT_MEMSTATUS=0",  "-DSQLITE_ENABLE_API_ARMOR",    "-DSQLITE_MAX_LENGTH=33554432",
-        "-DSQLITE_MAX_SQL_LENGTH=65536",
-    } });
-    if (builtin.os.tag == .windows) module.linkSystemLibrary("advapi32", .{});
 }

@@ -4,7 +4,7 @@ const root = @import("root.zig");
 const KeyCodeFire = root.KeyCodeFire;
 const isLayoutDependent = root.isLayoutDependent;
 
-const OsKeyMap = if (!root.native_available) @import("platform/dummy.zig").DummyKeyMap else switch (builtin.target.os.tag) {
+const OsKeyMap = if (@import("options").us_fixture) @import("platform/test_us.zig").Fixture else if (!root.native_available) @import("platform/dummy.zig").DummyKeyMap else switch (builtin.target.os.tag) {
     .macos => @import("platform/macos.zig").MacOsKeyMap,
     .windows => @import("platform/windows.zig").WindowsKeyMap,
     .linux => @import("platform/linux.zig").LinuxKeyMap,
@@ -21,7 +21,7 @@ const OsKeyMap = if (!root.native_available) @import("platform/dummy.zig").Dummy
 ///   const result = km.keyToText(.{ .tap_keycode = @intFromEnum(ScanCode.KC_A) });
 ///   // result.slice() → "a"
 pub const KeyMap = struct {
-    os: *OsKeyMap,
+    os: ?*OsKeyMap = null,
 
     /// Initialise the context and load the current OS keyboard layout.
     pub fn init(km: *KeyMap) void {
@@ -30,13 +30,14 @@ pub const KeyMap = struct {
 
     /// Release OS resources. Must be called exactly once when done.
     pub fn deinit(km: *KeyMap) void {
-        km.os.deinit();
+        if (km.os) |os| os.deinit();
+        km.os = null;
     }
 
     /// Re-fetch the active keyboard layout from the OS.
     /// Call this when the user switches input methods at the system level.
     pub fn refresh(km: *KeyMap) void {
-        km.os.refresh();
+        if (km.os) |os| os.refresh();
     }
 
     /// Convert a single key event to a UTF-8 text result.
@@ -50,9 +51,12 @@ pub const KeyMap = struct {
     ///   is returned on the subsequent call.
     pub fn keyToText(km: *KeyMap, input: KeyCodeFire) root.TextResult {
         if (isLayoutDependent(input.tap_keycode)) {
-            return km.os.keyToText(input);
+            return if (km.os) |os| os.keyToText(input) else .{};
         }
         return textResultFromLabel(input);
+    }
+    pub fn available(km: *const KeyMap) bool {
+        return km.os != null;
     }
 };
 

@@ -7,6 +7,24 @@ const project = @import("project");
 const catalog = @import("catalog");
 const editor = @import("editor-frame-ui");
 const zkeymap = @import("zkeymap");
+test "save completion accepts newer edits and export paths but rejects a changed destination" {
+    const t = std.testing;
+    const paths = @import("paths-ui");
+    var template = try project.profiles.create(t.allocator, .qwerty);
+    defer template.deinit();
+    var model = try desktop.model.Model.init(t.allocator, project.profiles.board, template.snapshot);
+    defer model.deinit();
+    var view: paths.View = .{};
+    @memcpy(view.project[0..8], "/project");
+    const save = view.action(try model.id(), .save);
+    const open = view.action(try model.id(), .open);
+    try model.rename("Newer edit");
+    view.exported[0] = 'x';
+    try paths.validateCompletion(save, view, &model);
+    try t.expectError(error.StaleProjectAction, paths.validateCompletion(open, view, &model));
+    view.project[1] = 'x';
+    try t.expectError(error.StaleProjectAction, paths.validateCompletion(save, view, &model));
+}
 const Fixture = struct {
     pub fn keyToText(_: *@This(), input: zkeymap.KeyCodeFire) zkeymap.TextResult {
         var result: zkeymap.TextResult = .{};

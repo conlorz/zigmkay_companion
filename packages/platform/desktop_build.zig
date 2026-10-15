@@ -1,4 +1,4 @@
-//! Compile-only audit graph for the immutable retained desktop dependencies.
+//! Shared native desktop graph used by the application and offline compile checks.
 const std = @import("std");
 pub const VectorSources = struct { svg2tvg: std.Build.LazyPath, icons: std.Build.LazyPath };
 pub const Graph = struct { dvui: *std.Build.Module, backend: *std.Build.Module, fonts: *std.Build.Module, ui: *std.Build.Module, events: *std.Build.Module, folder_dialog: *std.Build.Module, tray: *std.Build.Module, icons: ?*std.Build.Module, vectors: ?*std.Build.Module };

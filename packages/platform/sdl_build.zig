@@ -4,8 +4,7 @@
 const std = @import("std");
 
 pub fn prepare(library: *std.Build.Step.Compile) void {
-    if (library.root_module.resolved_target.?.result.os.tag != .macos)
-        @panic("Native USB acceptance currently supports only macOS");
+    if (library.root_module.resolved_target.?.result.os.tag != .macos) return;
     var found = false;
     for (library.root_module.include_dirs.items) |include| {
         if (include == .config_header_step) {

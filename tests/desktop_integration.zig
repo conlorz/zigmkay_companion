@@ -126,6 +126,77 @@ test "owned file worker freezes save and joins canceled or consumed jobs" {
     try t.expect(model.dirty());
 }
 
+test "a completed older save advances the disk baseline without clearing newer edits" {
+    const t = std.testing;
+    var template = try project.profiles.create(t.allocator, .qwerty);
+    defer template.deinit();
+    var model = try desktop.model.Model.init(t.allocator, project.profiles.board, template.snapshot);
+    defer model.deinit();
+    var temp = t.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    try model.save(t.io, temp.dir);
+    try model.rename("Revision A");
+    var request = try desktop.project_files.Request.capture(&model, .save, root);
+    defer request.deinit();
+    try model.rename("Revision B");
+    var completed = try request.prepare(t.allocator, t.io);
+    defer completed.deinit();
+    try t.expectError(error.StaleProjectAction, completed.promote(&model));
+    try t.expect(model.dirty());
+    try t.expectEqual(request.captured, model.saved_id);
+    try t.expectEqualStrings("Revision B", model.document().layers[0].name);
+    var next = try desktop.project_files.Request.capture(&model, .save, root);
+    defer next.deinit();
+    var saved = try next.prepare(t.allocator, t.io);
+    defer saved.deinit();
+    try saved.promote(&model);
+    try t.expect(!model.dirty());
+    var disk = try project.snapshot.load(t.allocator, t.io, temp.dir, model.board);
+    defer disk.deinit();
+    try t.expectEqualStrings("Revision B", disk.snapshot.document.layers[0].name);
+}
+
+test "two independent project writers cannot publish over the same baseline" {
+    const t = std.testing;
+    var template = try project.profiles.create(t.allocator, .qwerty);
+    defer template.deinit();
+    var model = try desktop.model.Model.init(t.allocator, project.profiles.board, template.snapshot);
+    defer model.deinit();
+    var temp = t.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    try model.save(t.io, temp.dir);
+    try model.rename("Writer A");
+    var first = try desktop.project_files.Request.capture(&model, .save, root);
+    defer first.deinit();
+    try model.rename("Writer B");
+    var second = try desktop.project_files.Request.capture(&model, .save, root);
+    defer second.deinit();
+    const Writer = struct {
+        fn run(request: *const desktop.project_files.Request, io: std.Io) !bool {
+            var completed = request.prepare(std.heap.page_allocator, io) catch |err| {
+                if (err == error.ExternalProjectChanged) return false;
+                return err;
+            };
+            defer completed.deinit();
+            return true;
+        }
+    };
+    var a = try std.Io.concurrent(t.io, Writer.run, .{ &first, t.io });
+    defer _ = a.cancel(t.io) catch false;
+    var b = try std.Io.concurrent(t.io, Writer.run, .{ &second, t.io });
+    defer _ = b.cancel(t.io) catch false;
+    const a_saved = try a.await(t.io);
+    const b_saved = try b.await(t.io);
+    try t.expect(a_saved != b_saved);
+    var disk = try project.snapshot.load(t.allocator, t.io, temp.dir, model.board);
+    defer disk.deinit();
+    try t.expectEqualStrings(if (a_saved) "Writer A" else "Writer B", disk.snapshot.document.layers[0].name);
+}
+
 test "profile switching prepares read-only templates and preserves existing or invalid projects" {
     const t = std.testing;
     var base = try project.profiles.create(t.allocator, .qwerty);

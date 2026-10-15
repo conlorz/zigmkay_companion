@@ -49,21 +49,10 @@ pub const Request = struct {
         else
             try std.Io.Dir.cwd().openDir(io, self.path, .{});
         defer dir.close(io);
-        var result = Prepared{ .captured = self.captured, .kind = self.kind, .replace_policy = self.replace_policy };
+        var result = Prepared{ .captured = self.captured, .expected_saved = self.expected_saved, .kind = self.kind, .replace_policy = self.replace_policy };
         switch (self.kind) {
             .save => {
-                const present = dir.openFile(io, "project.zon", .{}) catch |err| switch (err) {
-                    error.FileNotFound => null,
-                    else => return err,
-                };
-                if (present) |file| {
-                    file.close(io);
-                    var previous = try p.snapshot.load(gpa, io, dir, self.board);
-                    defer previous.deinit();
-                    const digest = try p.snapshot.projectDigest(gpa, previous.snapshot, self.board);
-                    if (!std.mem.eql(u8, &digest, &self.expected_saved)) return error.ExternalProjectChanged;
-                }
-                try p.snapshot.save(gpa, io, dir, self.loaded.snapshot, self.board);
+                try p.snapshot.saveChecked(gpa, io, dir, self.loaded.snapshot, self.board, self.expected_saved);
             },
             .export_zig => {
                 const manifest = try p.exporter.write(gpa, io, dir, self.loaded.snapshot, self.board);
@@ -81,6 +70,7 @@ pub const Request = struct {
 };
 pub const Prepared = struct {
     captured: [32]u8,
+    expected_saved: [32]u8,
     kind: Kind,
     replace_policy: ReplacePolicy,
     exported: ?[32]u8 = null,
@@ -92,12 +82,20 @@ pub const Prepared = struct {
         if (self.restored) |*snapshot| snapshot.deinit();
         self.* = undefined;
     }
-    /// IO may have saved/exported the captured revision while newer edits arrived.
-    /// Those effects are never claimed as saving/replacing the newer UI document.
+    /// The caller checks document ownership and destination before delivery.
+    /// A completed save advances the disk baseline even when newer edits stay dirty.
     pub fn promote(self: *Prepared, model: *Model) !void {
-        if (self.consumed or !std.mem.eql(u8, &self.captured, &(try model.id()))) return error.StaleProjectAction;
+        if (self.consumed) return error.StaleProjectAction;
+        if (self.kind == .save) {
+            if (!std.mem.eql(u8, &model.saved_id, &self.expected_saved)) return error.StaleProjectAction;
+            model.saved_id = self.captured;
+            self.consumed = true;
+            if (!std.mem.eql(u8, &self.captured, &(try model.id()))) return error.StaleProjectAction;
+            return;
+        }
+        if (!std.mem.eql(u8, &self.captured, &(try model.id()))) return error.StaleProjectAction;
         switch (self.kind) {
-            .save => model.saved_id = self.captured,
+            .save => unreachable,
             .export_zig => {},
             .open => {
                 if (self.replace_policy == .require_clean and !std.mem.eql(u8, &model.saved_id, &self.captured)) return error.UnsavedProjectChanges;

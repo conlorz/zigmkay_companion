@@ -1069,7 +1069,7 @@ pub fn main(init: std.process.Init) !void {
                 view.report(error.StaleProjectAction);
                 continue;
             }
-            paths.validate(job.action, view.paths, &model) catch |err| {
+            paths.validateCompletion(job.action, view.paths, &model) catch |err| {
                 view.report(err);
                 continue;
             };
@@ -1744,38 +1744,12 @@ pub fn main(init: std.process.Init) !void {
                 practice_view.rundown.confirm_clear = true;
             }
         }
-        if ((practice.session.state == .complete or practice.stopped_result_pending) and practice.completed == null) {
-            const result_labels = if (std.mem.eql(u8, &practice.cohort.mapping, &practice.captured_cohort.mapping)) practice_labels.practiceLabels() else null;
-            var record = if (practice.stopped_result_pending) try desktop.practice_results.captureStopped(&practice.session, practice.captured_cohort, result_labels, now_us) else try desktop.practice_results.capture(&practice.session, practice.captured_cohort, result_labels);
-            try std.Io.randomSecure(init.io, &record.id);
-            record.timestamp = @intCast(std.Io.Clock.real.now(init.io).toNanoseconds());
-            record.seed = practice.exercise_seed;
-            record.target_count = practice.captured_config.target_count;
-            record.targets = practice.captured_config.targets;
-            record.profile = practice.captured_profile;
-            record.input_source = practice.captured_source;
-            practice.completed = record;
-            practice.completed_enqueued = rundown_fixture and !data_preview;
-        }
-        if (practice_view.rundown.cleared) practice.completed_enqueued = true;
-        if (practice.completed) |record| if (!practice.completed_enqueued and practice_history.queued < practice_history.queue.len) {
-            if (practice_history.enqueueWithTiming(record, practice_timing.payload())) |_| {
-                practice.completed_enqueued = true;
-            } else |err| practice_history.error_value = err;
-        };
-        practice.save_blocked = practice.completed != null and !practice.completed_enqueued and practice_history.queued == practice_history.queue.len;
-        if (practice.save_blocked) practice_history.error_value = error.PracticeSaveQueueFull;
-        const history_cohort = if (practice_view.curriculum_open) practice.cohortFor(practice_view.curriculum.config) else if (practice_view.review_open) practice.configCohort() else if (practice_view.rundown.reviewed) |record| record.cohort else if (practice.completed) |record| record.cohort else practice.configCohort();
-        const requested_history = practice_view.rundown.refresh or practice_view.rundown.retry or practice_view.rundown.clear;
-        if (practice_history.worker == null and (practice_history.error_value == null or practice_view.rundown.retry or practice_view.rundown.clear) and (practice_history.queued > 0 or requested_history or (practicing and !rundown_fixture and (!practice_history_loaded or !std.meta.eql(history_cohort, practice_history.cohort))))) {
-            practice_history.request(history_cohort, practice_view.rundown.before, practice_view.rundown.clear, practice_view.rundown.retry, practice_view.progress.inspect orelse (if (practice_view.rundown.reviewed) |record| record.id else if (practice.completed) |record| record.id else null)) catch |err| {
-                practice_history.error_value = err;
-            };
-            practice_history_loaded = true;
-            practice_view.rundown.refresh = false;
-            practice_view.rundown.retry = false;
-            practice_view.rundown.clear = false;
-        }
+        try @import("practice_persistence.zig").update(init.io, &practice, &practice_view, &practice_history, practice_labels, &practice_timing, &practice_history_loaded, .{
+            .now_us = now_us,
+            .practicing = practicing,
+            .rundown_fixture = rundown_fixture,
+            .data_preview = data_preview,
+        });
         var leave_practice = false;
         var practice_action: ?desktop.practice_controller.Action = null;
         var practice_input_effect: desktop.practice_controller.Effect = .{};
