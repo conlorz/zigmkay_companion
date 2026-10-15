@@ -507,7 +507,11 @@ pub fn build(b: *std.Build) void {
                 app.root_module.addImport("companion-jobs", jobs);
                 const assemble_step = b.step("bundle-application", "Assemble the complete offline application");
                 if (application_bundle) {
-                    const flash_dep = b.lazyDependency("zigmkay_firmware", .{ .@"flash-tools" = true }) orelse return;
+                    // The firmware root forwards this output before its lazy
+                    // tool dependency exists on a clean machine. Resolve the
+                    // tool package first and let Zig finish acquisition.
+                    const flash_dep = firmware.builder.dependency("zigmkay", .{ .@"flash-tools" = true });
+                    if (b.graph.needed_lazy_dependencies.count() != 0) return;
                     // Configure every supported target so Zig acquires build-time
                     // lazy inputs before the offline resource closure is copied.
                     const mz = b.lazyImport(@This(), "microzig") orelse return;
