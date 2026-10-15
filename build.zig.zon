@@ -4,19 +4,29 @@
     .fingerprint = 0xf34c18ab8685e700,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
-        .sqlite = .{
-            .url = "https://www.sqlite.org/2026/sqlite-autoconf-3540000.tar.gz",
-            .hash = "N-V-__8AAKEJxgAqL7tBBStLJr_SloDtRVAE49PAFiABzwky",
-        },
-        .freetype = .{
-            .url = "git+https://github.com/david-vanderson/freetype#4938878b58e8481bc11ac52d6fe10a7cf6c3c7d5",
-            .hash = "freetype-2.14.1-alzUkceCqgDRZIP8PnxnNCd8jwfbwY0k1VhlTV2O5Ivo",
+        .ztray = .{
+            .url = "git+https://github.com/constantin-staffinity/ztray.git#addbcbb3176d0422e4838e8f00b6ec0eac32a345",
+            .hash = "ztray-0.1.0-dev.1-HZHL7M3FBwBB79VpVOVsFOeN9LboO2mMc-Sp47wCukJP",
             .lazy = true,
         },
-        .sdl3 = .{
-            .url = "git+https://github.com/allyourcodebase/SDL#0a9d5c36488aad32fcf989d465eb879db6e356b4",
-            .hash = "sdl-1.0.3+3.4.16-i4QD0e0HqgDYP8m4T3rMJShyaDLy8ksp8qzCrCSncaPB",
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui.git#42a68b9277b1440897909f3edc7fe3f6c8cb701c",
+            .hash = "dvui-0.6.0-dev-AQFJmcYbBAEymq0cKpazU5jM0uRuxqSYcVFEYTlbxw54",
             .lazy = true,
+        },
+        .svg2tvg = .{
+            .url = "git+https://github.com/nat3Github/zig-lib-svg2tvg#b41ef1eb5b432c9026deaad31046789247a1fe29",
+            .hash = "svg2tvg-0.0.0-HpMZuXH9BQA3K8zSdy8LfbrbuWwOYyZdvQa55n2KTCbv",
+            .lazy = true,
+        },
+        .icons = .{
+            .url = "git+https://github.com/nat3Github/zig-lib-icons.git#e03de2f8da513cd603a72642f901d6128e01a495",
+            .hash = "icons-0.1.0-iJxA-ZBcLwBVzCP4wa8KwYaZw4bMrYP7eNgI-i6MrMI8",
+            .lazy = true,
+        },
+        .zqlite = .{
+            .url = "git+https://github.com/karlseguin/zqlite.zig#865223b734a5113f731ab1eb1d7d81c8ac252913",
+            .hash = "zqlite-0.0.1-RWLaY4Y8nADz2l5aBE-JVyDyM3sZzHjq0agNykuVZKqQ",
         },
         .microzig = .{
             .url = "https://github.com/ZigEmbeddedGroup/microzig/releases/download/0.17.12/microzig.tar.gz",
@@ -29,5 +39,5 @@
             .lazy = true,
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "mise.toml", "AGENTS.md", "README.md", "LICENSE", "NOTICE", "compatibility", "tests", "packages", "tools", "apps" },
+    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "mise.toml", "AGENTS.md", "README.md", "LICENSE", "NOTICE", "compatibility", "tests", "packages", "tools", "apps", "runtime" },
 }

@@ -4,8 +4,8 @@ const hid = @import("../hid_to_platform.zig");
 /// Opaque handle allocated by the C implementation in platform/windows.c.
 /// Wraps the active HKL (keyboard layout handle) and dead-key state.
 pub const WindowsKeyMap = opaque {
-    extern fn windowsKeyMapInit() *WindowsKeyMap;
-    pub fn init() *WindowsKeyMap {
+    extern fn windowsKeyMapInit() ?*WindowsKeyMap;
+    pub fn init() ?*WindowsKeyMap {
         return windowsKeyMapInit();
     }
 

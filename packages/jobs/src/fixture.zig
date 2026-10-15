@@ -54,6 +54,12 @@ pub fn main(init: std.process.Init) !void {
         try std.Io.File.stdout().writeStreamingAll(init.io, "0.17.0\n");
         return;
     }
+    if (std.mem.eql(u8, args[1], "output-hang")) {
+        try std.Io.File.stdout().writeStreamingAll(init.io, "stdout before timeout\n");
+        try std.Io.File.stderr().writeStreamingAll(init.io, "stderr before timeout\n");
+        try std.Io.sleep(init.io, .fromSeconds(10), .awake);
+        return;
+    }
     if (std.mem.eql(u8, args[1], "hang")) {
         try std.Io.sleep(init.io, .fromSeconds(10), .awake);
         return;

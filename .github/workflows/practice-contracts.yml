@@ -2,6 +2,7 @@ name: Native practice contracts
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:

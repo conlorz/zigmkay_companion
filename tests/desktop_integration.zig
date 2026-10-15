@@ -1,5 +1,18 @@
 //! Real combined module graph: document edits, cache/practice and explicit flash.
 const std = @import("std");
+test "edits and reverting during a build are scheduled after Flash has finished" {
+    const t = std.testing;
+    var scheduler: desktop.auto_build.Scheduler = .{};
+    scheduler.observe(@splat(1), 0);
+    scheduler.manual(@splat(1));
+    scheduler.observe(@splat(2), 10);
+    try t.expect(scheduler.take(1000, desktop.flash_presenter.blocksAutoBuild(.ready)));
+    // Revert while the new build is busy; keep the replacement queued.
+    scheduler.observe(@splat(1), 1100);
+    try t.expect(!scheduler.take(2000, true));
+    try t.expect(scheduler.take(2100, desktop.flash_presenter.blocksAutoBuild(.stale)));
+    try t.expect(!scheduler.take(3000, desktop.flash_presenter.blocksAutoBuild(.stale)));
+}
 fn awaitWorker(worker: anytype) !@TypeOf(worker.*).Event {
     const started = std.Io.Clock.awake.now(std.testing.io);
     while (true) {
@@ -124,6 +137,77 @@ test "owned file worker freezes save and joins canceled or consumed jobs" {
     canceled.destroy();
     // Cancellation may race completion; either outcome retains editor ownership.
     try t.expect(model.dirty());
+}
+
+test "a completed older save advances the disk baseline without clearing newer edits" {
+    const t = std.testing;
+    var template = try project.profiles.create(t.allocator, .qwerty);
+    defer template.deinit();
+    var model = try desktop.model.Model.init(t.allocator, project.profiles.board, template.snapshot);
+    defer model.deinit();
+    var temp = t.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    try model.save(t.io, temp.dir);
+    try model.rename("Revision A");
+    var request = try desktop.project_files.Request.capture(&model, .save, root);
+    defer request.deinit();
+    try model.rename("Revision B");
+    var completed = try request.prepare(t.allocator, t.io);
+    defer completed.deinit();
+    try t.expectError(error.StaleProjectAction, completed.promote(&model));
+    try t.expect(model.dirty());
+    try t.expectEqual(request.captured, model.saved_id);
+    try t.expectEqualStrings("Revision B", model.document().layers[0].name);
+    var next = try desktop.project_files.Request.capture(&model, .save, root);
+    defer next.deinit();
+    var saved = try next.prepare(t.allocator, t.io);
+    defer saved.deinit();
+    try saved.promote(&model);
+    try t.expect(!model.dirty());
+    var disk = try project.snapshot.load(t.allocator, t.io, temp.dir, model.board);
+    defer disk.deinit();
+    try t.expectEqualStrings("Revision B", disk.snapshot.document.layers[0].name);
+}
+
+test "two independent project writers cannot publish over the same baseline" {
+    const t = std.testing;
+    var template = try project.profiles.create(t.allocator, .qwerty);
+    defer template.deinit();
+    var model = try desktop.model.Model.init(t.allocator, project.profiles.board, template.snapshot);
+    defer model.deinit();
+    var temp = t.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    try model.save(t.io, temp.dir);
+    try model.rename("Writer A");
+    var first = try desktop.project_files.Request.capture(&model, .save, root);
+    defer first.deinit();
+    try model.rename("Writer B");
+    var second = try desktop.project_files.Request.capture(&model, .save, root);
+    defer second.deinit();
+    const Writer = struct {
+        fn run(request: *const desktop.project_files.Request, io: std.Io) !bool {
+            var completed = request.prepare(std.heap.page_allocator, io) catch |err| {
+                if (err == error.ExternalProjectChanged) return false;
+                return err;
+            };
+            defer completed.deinit();
+            return true;
+        }
+    };
+    var a = try std.Io.concurrent(t.io, Writer.run, .{ &first, t.io });
+    defer _ = a.cancel(t.io) catch false;
+    var b = try std.Io.concurrent(t.io, Writer.run, .{ &second, t.io });
+    defer _ = b.cancel(t.io) catch false;
+    const a_saved = try a.await(t.io);
+    const b_saved = try b.await(t.io);
+    try t.expect(a_saved != b_saved);
+    var disk = try project.snapshot.load(t.allocator, t.io, temp.dir, model.board);
+    defer disk.deinit();
+    try t.expectEqualStrings(if (a_saved) "Writer A" else "Writer B", disk.snapshot.document.layers[0].name);
 }
 
 test "profile switching prepares read-only templates and preserves existing or invalid projects" {
@@ -785,54 +869,39 @@ test "build worker owns verified exports and accepts only the current editor pre
     var tmp = t.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{} }" });
-    try tmp.dir.writeFile(t.io, .{ .sub_path = "bundle.tar", .data = "controlled compiler fixture bundle" });
     const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
     defer t.allocator.free(root);
-    const bundle = try tmp.dir.realPathFileAlloc(t.io, "bundle.tar", t.allocator);
-    defer t.allocator.free(bundle);
     const helper = try std.Io.Dir.cwd().realPathFileAlloc(t.io, @import("options").helper_path, t.allocator);
     defer t.allocator.free(helper);
-    const helper_bytes = try std.Io.Dir.cwd().readFileAlloc(t.io, helper, t.allocator, .limited(64 * 1024 * 1024));
-    defer t.allocator.free(helper_bytes);
     const distribution = std.fs.path.dirname(helper).?;
-    var compiler_dir = try std.Io.Dir.cwd().openDir(t.io, distribution, .{ .iterate = true });
-    defer compiler_dir.close(t.io);
     const exported = try std.fs.path.join(t.allocator, &.{ root, ".zig-cache/export" });
     defer t.allocator.free(exported);
     const install = try std.fs.path.join(t.allocator, &.{ root, ".zig-cache/build" });
     defer t.allocator.free(install);
-    var resolution = try jobs.package_resolution.resolve(t.allocator, t.io, .{ .roots = &.{.{ .name = "fixture", .directory = root }} });
-    defer resolution.deinit();
-    var lock = jobs.target_lock.fixture();
-    lock.compiler_digest = jobs.firmware.digest(helper_bytes);
-    lock.compiler_bundle_digest = jobs.firmware.digest("controlled compiler fixture bundle");
-    lock.firmware_source_digest = resolution.record.roots[0].tree_digest;
-    lock.dependency_digest = resolution.record.closure_digest;
-    lock.board_mapping_digest = jobs.firmware.digest("fixture board mapping");
-    const receipt = jobs.toolchain.Receipt{ .kind = .selected_installation, .compiler = helper, .distribution = distribution, .compiler_digest = lock.compiler_digest, .tree_digest = try jobs.preparation.treeDigest(t.allocator, t.io, compiler_dir) };
-    var receipt_cache = try tmp.dir.createDirPathOpen(t.io, ".zig-cache/toolchain", .{});
-    defer receipt_cache.close(t.io);
-    try jobs.toolchain.save(t.allocator, t.io, receipt_cache, receipt);
-    const receipt_path = try receipt_cache.realPathFileAlloc(t.io, jobs.toolchain.filename, t.allocator);
-    defer t.allocator.free(receipt_path);
-    const serialized = try receipt.serialize(t.allocator);
-    defer t.allocator.free(serialized);
-    const formatted = try std.fmt.allocPrint(t.allocator, "{s}\n", .{serialized});
-    defer t.allocator.free(formatted);
-    try receipt_cache.writeFile(t.io, .{ .sub_path = jobs.toolchain.filename, .data = formatted });
-    const environment_input = desktop.build_environment.Input{ .resolution = resolution.record, .compiler_receipt = receipt, .compiler_receipt_path = receipt_path, .companion_root = "fixture", .firmware_root = "fixture", .firmware_revision = lock.firmware_revision, .source_kind = .development, .board_id = model.board.id, .build_board = "lk7", .board_mapping = "fixture board mapping", .export_directory = exported, .install_directory = install };
-    var generated = try desktop.build_environment.prepare(t.allocator, t.io, environment_input);
-    defer generated.deinit();
-    try t.expectEqual(@as(u16, 2), generated.plan.config.request.selection.lock.version);
-    try t.expectEqual(jobs.firmware.digest(formatted), generated.plan.config.request.selection.lock.toolchain_receipt_digest);
-    var unverified_published = environment_input;
-    unverified_published.source_kind = .published;
-    try t.expectError(error.UnverifiedPublishedFirmware, desktop.build_environment.prepare(t.allocator, t.io, unverified_published));
-    var config = generated.plan.config;
+    var descriptor_text: std.Io.Writer.Allocating = .init(t.allocator);
+    defer descriptor_text.deinit();
+    try std.zon.stringify.serialize(jobs.application_bundle.Manifest{
+        .id = jobs.firmware.digest("controlled release payload"),
+        .firmware_revision = jobs.target_lock.fixture().firmware_revision,
+        .wrapper_hash = @splat(1),
+        .picotool_hash = @splat(2),
+    }, .{}, &descriptor_text.writer);
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "application.zon", .data = descriptor_text.written() });
+    var application = try jobs.application_bundle.Bundle.open(t.allocator, t.io, root);
+    defer application.deinit();
+    const generated = try desktop.application_bundle.plan(t.allocator, application, root, "lk7", model.board.id);
+    defer p.owned_zon.free(t.allocator, generated);
+    var config = generated.config;
+    config.request.selection.compiler_path = helper;
+    config.request.selection.compiler_distribution_path = distribution;
+    config.request.selection.build_root = root;
+    config.request.export_directory = exported;
+    config.request.install_directory = install;
     config.request.timeout_ms = 5000;
     var environment: std.process.Environ.Map = .init(t.allocator);
     defer environment.deinit();
     try environment.put("ZIGMKAY_BUILD_FIXTURE", "success");
+    try t.expect(jobs.managed_build.isFirstBuild(t.allocator, t.io, config.request));
     var request = try desktop.build_worker.Request.capture(&model, config, &environment, 42);
     var owns_request = true;
     defer if (owns_request) request.deinit();
@@ -862,6 +931,7 @@ test "build worker owns verified exports and accepts only the current editor pre
         return err;
     };
     defer candidate.deinit();
+    try t.expect(!jobs.managed_build.isFirstBuild(t.allocator, t.io, config.request));
     var stale = candidate.ticket;
     stale.generation += 1;
     try t.expectError(error.StaleBuild, candidate.take(&model, stale));
@@ -873,28 +943,20 @@ test "build worker owns verified exports and accepts only the current editor pre
     const manifest = bundle_result.firmware;
     try bundle_result.runner.verifyFile(t.allocator, t.io, manifest.inputs);
     try t.expectEqual(captured, manifest.inputs.project_digest);
-    try t.expectEqual(.fast_prepared_inputs_no_fresh_full_provenance_audit, manifest.audit_mode);
+    try t.expectEqual(.bundled, manifest.audit_mode);
     try t.expectEqual(model.document().profile_id, manifest.inputs.profile_id);
     try t.expect(!std.mem.eql(u8, &manifest.inputs.source_digest, &@as([32]u8, @splat(0))));
     try t.expectError(error.BuildAlreadyCompleted, candidate.take(&model, candidate.ticket));
-    // The prepared claim reuses the receipt; deep capture independently audits selected sources.
+    // Snapshot revalidation is independent of package files and installation paths.
     var audit_request = try desktop.build_worker.Request.capture(&model, config, &environment, 44);
     defer audit_request.deinit();
     var fast_inputs = try audit_request.captureCurrentInputs(t.allocator, t.io, candidate.expected_export_tree);
     defer fast_inputs.deinit();
-    var deep_inputs = try audit_request.captureCurrentInputsMode(t.allocator, t.io, candidate.expected_export_tree, .deep);
-    defer deep_inputs.deinit();
-    try t.expectEqualDeep(deep_inputs.captured.receipt.digest(), fast_inputs.captured.receipt.digest());
     try t.expectEqualDeep(manifest.inputs.build_inputs_digest, fast_inputs.captured.inputs.build_inputs_digest);
     try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{}, .name = .changed }" });
     var still_prepared = try audit_request.captureCurrentInputs(t.allocator, t.io, candidate.expected_export_tree);
     defer still_prepared.deinit();
     try t.expectEqualDeep(fast_inputs.captured.receipt.digest(), still_prepared.captured.receipt.digest());
-    if (audit_request.captureCurrentInputsMode(t.allocator, t.io, candidate.expected_export_tree, .deep)) |changed| {
-        var modified = changed;
-        defer modified.deinit();
-        try t.expect(!std.mem.eql(u8, &deep_inputs.captured.inputs.build_inputs_digest, &modified.captured.inputs.build_inputs_digest));
-    } else |_| {} // A changed package manifest can also fail deep resolution verification.
     try environment.put("ZIGMKAY_BUILD_FIXTURE", if (@import("builtin").os.tag == .windows) "hang" else "spawn-hang");
     const cancel_install = try std.fs.path.join(t.allocator, &.{ root, ".zig-cache/cancelled-build" });
     defer t.allocator.free(cancel_install);

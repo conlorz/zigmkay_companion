@@ -8,10 +8,9 @@ const hid = @import("../hid_to_platform.zig");
 /// not the compositor's current layout. No active-map injection is available.
 pub const LinuxKeyMap = opaque {
     extern fn linuxKeyMapInit() ?*LinuxKeyMap;
-    pub fn init() *LinuxKeyMap {
-        // Returns null if xkb_context_new fails (very unusual); fall back to
-        // undefined so the opaque pointer is never dereferenced on failure.
-        return linuxKeyMapInit() orelse undefined;
+    pub fn init() ?*LinuxKeyMap {
+        // Allocation failure leaves fixed labels available without a native context.
+        return linuxKeyMapInit();
     }
 
     extern fn linuxKeyMapDeinit(*LinuxKeyMap) void;

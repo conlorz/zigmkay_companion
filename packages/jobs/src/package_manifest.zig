@@ -1,6 +1,5 @@
 //! Literal dependency metadata. No manifest/build script is evaluated.
 const std = @import("std");
-const provenance = @import("build_provenance.zig");
 pub const Dependency = struct { name: []const u8, url: ?[]const u8 = null, package_hash: ?[]const u8 = null, path: ?[]const u8 = null, lazy: bool = false };
 pub const Manifest = struct {
     arena: std.heap.ArenaAllocator,
@@ -91,7 +90,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Manifest {
                 if (dependency.url != null or dependency.package_hash != null or dependency.path.?.len == 0) return error.InvalidDependencyLocation;
             } else {
                 if (dependency.url == null or dependency.package_hash == null or dependency.url.?.len == 0 or dependency.package_hash.?.len == 0) return error.IncompleteDependencyPin;
-                try provenance.validatePackageHash(dependency.package_hash.?);
+                try validatePackageHash(dependency.package_hash.?);
             }
             try dependencies.append(a, dependency);
         }
@@ -99,69 +98,7 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Manifest {
     const owned = try dependencies.toOwnedSlice(a);
     return .{ .arena = arena, .dependencies = owned };
 }
-pub const Archive = struct {
-    url: []const u8,
-    revision: []const u8,
-    identity: @FieldType(provenance.Dependency, "identity"),
-    pub fn deinit(self: Archive, gpa: std.mem.Allocator) void {
-        gpa.free(self.url);
-        if (self.identity == .git_revision) gpa.free(self.revision);
-    }
-};
-/// Translate supported GitHub/GitLab/Codeberg pins to immutable archive URLs. No clone
-/// is created. Other data archives remain content-pinned by their package hash.
-pub fn archive(gpa: std.mem.Allocator, url: []const u8) !Archive {
-    const prefix = "git+https://";
-    if (std.mem.startsWith(u8, url, prefix)) {
-        const split = std.mem.indexOfScalar(u8, url, '#') orelse return error.FloatingDependencyRevision;
-        const revision = url[split + 1 ..];
-        if (revision.len != 40) return error.FloatingDependencyRevision;
-        for (revision) |c| if (!std.ascii.isDigit(c) and (c < 'a' or c > 'f')) return error.FloatingDependencyRevision;
-        const location = url[prefix.len..split];
-        const host_end = std.mem.indexOfScalar(u8, location, '/') orelse return error.UnsupportedDependencyUrl;
-        const host = location[0..host_end];
-        const github = std.mem.eql(u8, host, "github.com");
-        const codeberg = std.mem.eql(u8, host, "codeberg.org");
-        const gitlab = std.mem.eql(u8, host, "gitlab.com") or std.mem.eql(u8, host, "gitlab.freedesktop.org");
-        if (!github and !gitlab and !codeberg) return error.UnsupportedDependencyUrl;
-        const hinted_repo = location[host_end + 1 ..];
-        const hint = std.mem.indexOfScalar(u8, hinted_repo, '?') orelse hinted_repo.len;
-        const repo = std.mem.trimEnd(u8, hinted_repo[0..hint], "/");
-        const path = if (std.mem.endsWith(u8, repo, ".git")) repo[0 .. repo.len - 4] else repo;
-        const slash = std.mem.indexOfScalar(u8, path, '/') orelse return error.UnsupportedDependencyUrl;
-        if (slash == 0 or slash == path.len - 1 or ((github or codeberg) and std.mem.indexOfScalar(u8, path[slash + 1 ..], '/') != null)) return error.UnsupportedDependencyUrl;
-        var components = std.mem.splitScalar(u8, path, '/');
-        var count: usize = 0;
-        while (components.next()) |component| {
-            count += 1;
-            if (count > 16 or component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.UnsupportedDependencyUrl;
-        }
-        for (path) |c| if (!std.ascii.isAlphanumeric(c) and c != '/' and c != '-' and c != '_' and c != '.') return error.UnsupportedDependencyUrl;
-        const owned_url = if (github or codeberg)
-            try std.fmt.allocPrint(gpa, "https://{s}/{s}/archive/{s}.tar.gz", .{ host, path, revision })
-        else
-            try std.fmt.allocPrint(gpa, "https://{s}/{s}/-/archive/{s}/{s}-{s}.tar.gz", .{ host, path, revision, std.fs.path.basename(path), revision });
-        errdefer gpa.free(owned_url);
-        const owned_revision = try gpa.dupe(u8, revision);
-        return .{ .url = owned_url, .revision = owned_revision, .identity = .git_revision };
-    }
-    if (!std.mem.startsWith(u8, url, "https://") or std.mem.indexOfScalar(u8, url, '#') != null or std.mem.indexOfScalar(u8, url, 0) != null or std.mem.indexOfScalar(u8, url, '\\') != null) return error.UnsupportedDependencyUrl;
-    return .{ .url = try gpa.dupe(u8, url), .revision = "", .identity = .package_content };
-}
-
-test "Codeberg archive origins retain immutable revision despite branch hints" {
-    const t = std.testing;
-    const revision = "02ff0c523fb92a38939b04d0145c4a9602a74d56";
-    const selected = try archive(t.allocator, "git+https://codeberg.org/ziglang/translate-c?ref=zig-0.17.x#" ++ revision);
-    defer selected.deinit(t.allocator);
-    try t.expectEqualStrings("https://codeberg.org/ziglang/translate-c/archive/" ++ revision ++ ".tar.gz", selected.url);
-    try t.expectEqualStrings(revision, selected.revision);
-    try t.expectEqual(.git_revision, selected.identity);
-    try t.expectError(error.UnsupportedDependencyUrl, archive(t.allocator, "git+https://codeberg.org/owner/repo/nested#" ++ revision));
-    try t.expectError(error.UnsupportedDependencyUrl, archive(t.allocator, "git+https://codeberg.org/owner/../repo#" ++ revision));
-}
-
-test "literal dependency manifests own pins and translate Git pins to data archives" {
+test "literal dependency manifests own immutable pins" {
     const t = std.testing;
     const text = ".{ .name = .fixture, .dependencies = .{ .git = .{ .lazy = true, .url = \"git+https://github.com/allyourcodebase/picotool.git#d8df33801dbea792128baaab516291720d400a91\", .hash = \"picotool-2.3.1-PtJrRaJNAAA3xRwGctKAdomuKCJXz5UwMOrhzQ_Z2f-e\" }, .release = .{ .url = \"https://example.test/releases/v1/source.tar.gz\", .hash = \"sdl-1.0.3+3.4.16-i4QD0e0HqgDYP8m4T3rMJShyaDLy8ksp8qzCrCSncaPB\" }, .owned = .{ .path = \"packages/local\" } } }";
     const caller = try t.allocator.dupe(u8, text);
@@ -172,16 +109,6 @@ test "literal dependency manifests own pins and translate Git pins to data archi
     try t.expectEqual(@as(usize, 3), parsed.dependencies.len);
     try t.expect(parsed.dependencies[0].lazy);
     try t.expectEqualStrings("packages/local", parsed.dependencies[2].path.?);
-    const git = try archive(t.allocator, parsed.dependencies[0].url.?);
-    defer git.deinit(t.allocator);
-    try t.expectEqualStrings("https://github.com/allyourcodebase/picotool/archive/d8df33801dbea792128baaab516291720d400a91.tar.gz", git.url);
-    try t.expect(git.identity == .git_revision);
-    const release = try archive(t.allocator, parsed.dependencies[1].url.?);
-    defer release.deinit(t.allocator);
-    try t.expect(release.identity == .package_content and release.revision.len == 0);
-    try t.expectError(error.FloatingDependencyRevision, archive(t.allocator, "git+https://github.com/owner/repo#main"));
-    try t.expectError(error.UnsupportedDependencyUrl, archive(t.allocator, "git+https://github.com/../repo#d8df33801dbea792128baaab516291720d400a91"));
-    try t.expectError(error.UnsupportedDependencyUrl, archive(t.allocator, "git+https://elsewhere.test/owner/repo#d8df33801dbea792128baaab516291720d400a91"));
 }
 test "manifest data refuses missing pins conflicting locations and executable values" {
     const t = std.testing;
@@ -210,7 +137,7 @@ test "manifest data refuses missing pins conflicting locations and executable va
     try t.expectError(error.InvalidDependencyName, parse(t.allocator, ".{ .dependencies = .{ .@\"../escape\" = .{ .path = \"outside\" } } }"));
 }
 
-test "literal dependency metadata keeps pins mandatory and supports revision-only archive origins" {
+test "literal dependency metadata keeps pins mandatory" {
     const t = std.testing;
     var parsed = try parse(t.allocator, ".{ .dependencies = .{ .sdk = .{ .version = \"1.2.3\", .api_version = \"0.3\", .protocol_version = \"35\", .interface_version = 4, .unicode_version = \"16.0.0\", .url = \"https://example.test/sdk.tar.gz\", .hash = \"N-V-__8AAA46JQABKU7sa-6xGUAN44uFsYSUS_w79UVuu7qo\" } } }");
     defer parsed.deinit();
@@ -218,12 +145,9 @@ test "literal dependency metadata keeps pins mandatory and supports revision-onl
     try t.expectError(error.IncompleteDependencyPin, parse(t.allocator, ".{ .dependencies = .{ .sdk = .{ .version = \"1.2.3\" } } }"));
     try t.expectError(error.DuplicateManifestField, parse(t.allocator, ".{ .dependencies = .{ .sdk = .{ .path = \"local\", .version = \"1\", .version = \"2\" } } }"));
     try t.expectError(error.ExpectedLiteralManifestInteger, parse(t.allocator, ".{ .dependencies = .{ .sdk = .{ .path = \"local\", .interface_version = \"4\" } } }"));
-    const github = try archive(t.allocator, "git+https://github.com/owner/repo.git?ref=fix/zig17#87cc8a8728a923fc57938faa81ba0e74f34ecdc7");
-    defer github.deinit(t.allocator);
-    try t.expectEqualStrings("https://github.com/owner/repo/archive/87cc8a8728a923fc57938faa81ba0e74f34ecdc7.tar.gz", github.url);
-    const gitlab = try archive(t.allocator, "git+https://gitlab.freedesktop.org/wayland/wayland?ref=1.26.0#87cc8a8728a923fc57938faa81ba0e74f34ecdc7");
-    defer gitlab.deinit(t.allocator);
-    try t.expectEqualStrings("https://gitlab.freedesktop.org/wayland/wayland/-/archive/87cc8a8728a923fc57938faa81ba0e74f34ecdc7/wayland-87cc8a8728a923fc57938faa81ba0e74f34ecdc7.tar.gz", gitlab.url);
-    try t.expect(gitlab.identity == .git_revision);
-    try t.expectError(error.UnsupportedDependencyUrl, archive(t.allocator, "git+https://gitlab.com/group/../repo#87cc8a8728a923fc57938faa81ba0e74f34ecdc7"));
+}
+
+fn validatePackageHash(value: []const u8) !void {
+    if (value.len < 46 or value.len > 256 or value[value.len - 45] != '-') return error.InvalidDependencyPackageHash;
+    for (value, 0..) |c, offset| if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and !((c == '.' or c == '+') and offset < value.len - 45)) return error.InvalidDependencyPackageHash;
 }

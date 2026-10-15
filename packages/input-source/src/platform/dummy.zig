@@ -1,10 +1,9 @@
 const root = @import("../root.zig");
 
-/// No-op fallback for unsupported platforms.
-/// Returns undefined pointer; all methods discard self without dereferencing.
+/// Unsupported platforms have no native context; the wrapper keeps fixed labels.
 pub const DummyKeyMap = opaque {
-    pub fn init() *DummyKeyMap {
-        return undefined;
+    pub fn init() ?*DummyKeyMap {
+        return null;
     }
 
     pub fn deinit(km: *DummyKeyMap) void {

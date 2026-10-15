@@ -1,4 +1,14 @@
 const std = @import("std");
+/// Both the legacy wrapper and active input source use the same Zig and native bridges.
+pub fn keymapModule(b: *std.Build, root: std.Build.LazyPath, keycodes: *std.Build.Module, target: std.Build.ResolvedTarget, native: bool, us_fixture: bool) *std.Build.Module {
+    const options = b.addOptions();
+    options.addOption(bool, "native_available", native);
+    options.addOption(bool, "us_fixture", us_fixture);
+    const module = b.createModule(.{ .root_source_file = root.path(b, "src/root.zig"), .target = target, .imports = &.{.{ .name = "zkeycodes", .module = keycodes }} });
+    module.addOptions("options", options);
+    addPlatformSources(b, root, module, target, native);
+    return module;
+}
 pub const Published = struct {
     module: *std.Build.Module,
     source: *std.Build.Module,
@@ -14,15 +24,10 @@ pub fn publish(b: *std.Build, root: std.Build.LazyPath, keycodes: *std.Build.Mod
         .linux => b.graph.host.result.os.tag == .linux,
         else => false,
     };
-    const options = b.addOptions();
-    options.addOption(bool, "native_available", native_available);
-    const module = b.createModule(.{ .root_source_file = root.path(b, "src/root.zig"), .target = target, .imports = &.{.{ .name = "zkeycodes", .module = keycodes }} });
-    module.addOptions("options", options);
-    addPlatformSources(b, root, module, target, native_available);
+    const module = keymapModule(b, root, keycodes, target, native_available, false);
     const source = b.createModule(.{ .root_source_file = root.path(b, "src/input_source.zig"), .target = target, .imports = &.{.{ .name = "zkeymap", .module = module }} });
     const tests = b.step("test-input-source", "Run pure HID mappings and text-result tests without querying active input");
-    const pure = b.createModule(.{ .root_source_file = root.path(b, "src/root.zig"), .target = b.graph.host, .imports = &.{.{ .name = "zkeycodes", .module = keycodes }} });
-    pure.addOptions("options", options);
+    const pure = keymapModule(b, root, keycodes, b.graph.host, false, false);
     tests.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = pure })).step);
     const hid = b.createModule(.{ .root_source_file = root.path(b, "src/hid_to_platform.zig"), .imports = &.{.{ .name = "zkeycodes", .module = keycodes }} });
     const tables = b.createModule(.{ .root_source_file = root.path(b, "src/hid_to_platform.test.zig"), .target = b.graph.host, .imports = &.{ .{ .name = "zkeycodes", .module = keycodes }, .{ .name = "hid_to_platform", .module = hid } } });

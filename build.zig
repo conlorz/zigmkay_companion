@@ -2,8 +2,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
+    @setEvalBranchQuota(100_000);
     if (!std.mem.eql(u8, builtin.zig_version_string, "0.17.0"))
         @panic("zigmkay_companion requires exactly Zig 0.17.0");
+    // Register command-line options before lazy dependencies can suspend setup.
+    const application_bundle = b.option(bool, "application-bundle", "Include the compiler, firmware closure and prebuilt flash tools") orelse false;
 
     const check = b.step("check", "Compile downstream processor contract without device access");
     b.default_step = check;
@@ -23,20 +26,39 @@ pub fn build(b: *std.Build) void {
     const uf2_module = b.addModule("firmware-uf2", .{ .root_source_file = b.path("packages/artifact/src/uf2.zig") });
     const jobs_imports: []const std.Build.Module.Import = &.{ .{ .name = "owned-zon", .module = owned_zon }, .{ .name = "firmware-uf2", .module = uf2_module } };
     const jobs = b.addModule("companion-jobs", .{ .root_source_file = b.path("packages/jobs/src/root.zig"), .imports = jobs_imports });
+    const finalization_diagnostic = b.addExecutable(.{
+        .name = "diagnose-build-finalization",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/diagnose_build_finalization.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+            .strip = false,
+            .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
+        }),
+    });
+    const diagnostic_step = b.step("build-finalization-diagnostic", "Build the symbolized offline artifact publication reproduction");
+    diagnostic_step.dependOn(&b.addInstallArtifact(finalization_diagnostic, .{}).step);
+    if (b.option(bool, "finalization-diagnostic-only", "Configure only the offline artifact publication diagnostic") orelse false) return;
     const flash_controller = b.addModule("flash-controller", .{ .root_source_file = b.path("packages/desktop/src/flash_controller.zig"), .imports = &.{.{ .name = "companion-jobs", .module = jobs }} });
     const tray_lifecycle = b.addModule("tray-lifecycle", .{ .root_source_file = b.path("packages/desktop/src/tray_lifecycle.zig"), .target = b.graph.host });
     const flash_presenter = b.addModule("flash-presenter", .{ .root_source_file = b.path("packages/desktop/src/flash_presenter.zig"), .target = b.graph.host, .imports = &.{.{ .name = "flash-controller", .module = flash_controller }} });
     const desktop_geometry = b.addModule("desktop-geometry", .{ .root_source_file = b.path("packages/desktop/src/geometry.zig") });
     const desktop_tests_step = b.step("test-desktop-core", "Validate practice and explicit flash intents without GUI or devices");
-    const sqlite = b.dependency("sqlite", .{});
-    const sqlite_source = sqlite.path("sqlite3.c");
+    const zqlite = b.dependency("zqlite", .{
+        .target = b.graph.host,
+        .sqlite3 = @as([]const []const u8, &.{
+            "-std=c99",                     "-DSQLITE_THREADSAFE=1",     "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_DQS=0",
+            "-DSQLITE_DEFAULT_MEMSTATUS=0", "-DSQLITE_ENABLE_API_ARMOR", "-DSQLITE_MAX_LENGTH=33554432", "-DSQLITE_MAX_SQL_LENGTH=65536",
+        }),
+    }).module("zqlite");
+    if (b.graph.host.result.os.tag == .windows) zqlite.linkSystemLibrary("advapi32", .{});
     const practice_data_tests = b.step("test-practice-data", "Validate timing, database portability and legacy migration without firmware or devices");
     for ([_][]const u8{ "practice_generator.zig", "practice_results.zig", "practice_history.zig", "practice_history_runtime.zig", "practice_timing.zig", "practice_database.zig", "practice_progress.zig", "practice_analysis.zig", "practice_curriculum.zig", "practice_help.zig", "practice_retention.zig" }) |name| {
         const practice_tests = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("packages/desktop/src/{s}", .{name})),
             .target = b.graph.host,
         }) });
-        if (std.mem.indexOf(u8, name, "history") != null or std.mem.eql(u8, name, "practice_database.zig")) addSqlite(practice_tests.root_module, sqlite_source);
+        if (std.mem.indexOf(u8, name, "history") != null or std.mem.eql(u8, name, "practice_database.zig")) practice_tests.root_module.addImport("zqlite", zqlite);
         const run_practice = b.addRunArtifact(practice_tests);
         desktop_tests_step.dependOn(&run_practice.step);
         practice_data_tests.dependOn(&run_practice.step);
@@ -63,75 +85,10 @@ pub fn build(b: *std.Build) void {
     const tray_lifecycle_tests = b.addTest(.{ .root_module = tray_lifecycle });
     desktop_tests_step.dependOn(&b.addRunArtifact(tray_lifecycle_tests).step);
     check.dependOn(&tray_lifecycle_tests.step);
-    const acquisition_imports: []const std.Build.Module.Import = &.{ .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = owned_zon } };
-    const acquisition = b.addExecutable(.{ .name = "desktop-dependency-acquisition", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/desktop_dependency_acquisition.zig"),
-        .target = b.graph.host,
-        .imports = acquisition_imports,
-    }) });
-    const acquire_step = b.step("prepare-desktop-dependencies", "Explicitly acquire immutable desktop sources; no GUI execution");
-    if (b.option(bool, "desktop-acquisition", "Authorize explicit pinned desktop dependency acquisition") orelse false) {
-        const cache = b.option([]const u8, "desktop-source-cache", "Absolute dedicated desktop source cache") orelse @panic("Desktop acquisition requires desktop-source-cache");
-        const run = b.addRunArtifact(acquisition);
-        run.addFileArg2(.zig_exe, .{ .make_absolute = true });
-        run.addArg(cache);
-        if (b.option(bool, "desktop-vector-acquisition", "Include immutable reference icon and SVG/TinyVG sources in explicit acquisition") orelse false) run.addArg("--vector");
-        run.has_side_effects = true;
-        acquire_step.dependOn(&run.step);
-    } else acquire_step.dependOn(&b.addFail("Pass desktop-acquisition=true with absolute desktop-source-cache for explicit acquisition").step);
-    const acquisition_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/desktop_dependency_acquisition.zig"),
-        .target = b.graph.host,
-        .imports = acquisition_imports,
-    }) });
-    desktop_tests_step.dependOn(&b.addRunArtifact(acquisition_tests).step);
-    check.dependOn(&acquisition_tests.step);
-    const adaptation_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/desktop_source_adaptation.zig"),
-        .target = b.graph.host,
-        .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
-    }) });
-    const adaptation_tests_step = b.step("test-desktop-adaptation", "Validate exact dependency adaptations and source drift rejection offline");
-    adaptation_tests_step.dependOn(&b.addRunArtifact(adaptation_tests).step);
-    tests.dependOn(adaptation_tests_step);
-    check.dependOn(&adaptation_tests.step);
-    if (b.option(bool, "desktop-dependencies", "Prepare explicit desktop dependency compiler audit") orelse false) {
-        const adaptation = b.addExecutable(.{ .name = "desktop-source-adaptation", .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/desktop_source_adaptation.zig"),
-            .target = b.graph.host,
-            .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
-        }) });
-        const dvui_source = b.option([]const u8, "desktop-dvui-source", "Absolute pristine immutable DVUI source package for explicit development audit") orelse @panic("Desktop audit requires desktop-dvui-source");
-        const tray_source = b.option([]const u8, "desktop-ztray-source", "Absolute pristine immutable ztray source package for explicit development audit") orelse @panic("Desktop audit requires desktop-ztray-source");
-        if (!std.fs.path.isAbsolute(dvui_source) or !std.fs.path.isAbsolute(tray_source)) @panic("Desktop source inputs must be absolute");
-        const dvui_adapt = b.addRunArtifact(adaptation);
-        dvui_adapt.addFileArg2(.zig_exe, .{ .make_absolute = true });
-        dvui_adapt.addArg("dvui");
-        dvui_adapt.addDirectoryArg2(.{ .cwd_relative = dvui_source }, .{ .make_absolute = true });
-        const dvui_directory = dvui_adapt.addOutputDirectoryArg2("dvui", .{ .make_absolute = true });
-        const tray_adapt = b.addRunArtifact(adaptation);
-        tray_adapt.addFileArg2(.zig_exe, .{ .make_absolute = true });
-        tray_adapt.addArg("ztray");
-        tray_adapt.addDirectoryArg2(.{ .cwd_relative = tray_source }, .{ .make_absolute = true });
-        const tray_directory = tray_adapt.addOutputDirectoryArg2("ztray", .{ .make_absolute = true });
-        var vector_sources: ?@import("packages/platform/desktop_build.zig").VectorSources = null;
-        if (b.option(bool, "desktop-vectors", "Compile retained TinyVG/icon rendering with explicit pristine source inputs") orelse false) {
-            const vector_source = b.option([]const u8, "desktop-svg2tvg-source", "Absolute pristine SVG/TinyVG source package") orelse @panic("Vector audit requires desktop-svg2tvg-source");
-            const icons_source = b.option([]const u8, "desktop-icons-source", "Absolute pristine icons source package") orelse @panic("Vector audit requires desktop-icons-source");
-            if (!std.fs.path.isAbsolute(vector_source) or !std.fs.path.isAbsolute(icons_source)) @panic("Vector source inputs must be absolute");
-            const vector_adapt = b.addRunArtifact(adaptation);
-            vector_adapt.addFileArg2(.zig_exe, .{ .make_absolute = true });
-            vector_adapt.addArg("svg2tvg");
-            vector_adapt.addDirectoryArg2(.{ .cwd_relative = vector_source }, .{ .make_absolute = true });
-            const vector_directory = vector_adapt.addOutputDirectoryArg2("svg2tvg", .{ .make_absolute = true });
-            const icons_adapt = b.addRunArtifact(adaptation);
-            icons_adapt.addFileArg2(.zig_exe, .{ .make_absolute = true });
-            icons_adapt.addArg("icons");
-            icons_adapt.addDirectoryArg2(.{ .cwd_relative = icons_source }, .{ .make_absolute = true });
-            vector_sources = .{ .svg2tvg = vector_directory, .icons = icons_adapt.addOutputDirectoryArg2("icons", .{ .make_absolute = true }) };
-        }
-        desktop_graph = @import("packages/platform/desktop_build.zig").check(b, desktop_dependencies, dvui_directory, tray_directory, flash_presenter, tray_lifecycle, vector_sources);
-    } else desktop_dependencies.dependOn(&b.addFail("Pass desktop-dependencies=true with explicit pristine source inputs for GUI dependency preparation").step);
+    if (b.option(bool, "desktop-dependencies", "Compile native desktop dependencies") orelse false) {
+        const vectors = b.option(bool, "desktop-vectors", "Enable TinyVG rendering and icons") orelse false;
+        desktop_graph = @import("packages/platform/desktop_build.zig").check(b, desktop_dependencies, flash_presenter, tray_lifecycle, vectors);
+    } else desktop_dependencies.dependOn(&b.addFail("Pass desktop-dependencies=true to compile the native GUI").step);
     const job_fixture = b.addExecutable(.{ .name = "job-fixture", .root_module = b.createModule(.{
         .root_source_file = b.path("packages/jobs/src/fixture.zig"),
         .target = b.graph.host,
@@ -141,9 +98,17 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
     }) });
+    // Keep the bundle's process-lifecycle gate independent of imported firmware
+    // tests and Flash-tool fixtures. The complete test-jobs target stays intact.
+    const subprocess_tests = b.addTest(.{
+        .root_module = job_tests.root_module,
+        .filters = &.{"test_process."},
+    });
     const job_options = b.addOptions();
     job_options.addOptionPath("helper_path", job_fixture.getEmittedBin());
     job_tests.root_module.addOptions("options", job_options);
+    const subprocess_step = b.step("test-subprocess", "Run isolated subprocess lifecycle regressions offline");
+    subprocess_step.dependOn(&b.addRunArtifact(subprocess_tests).step);
     const jobs_step = b.step("test-jobs", "Run bounded subprocess, runner session and traversal regressions offline");
     const package_manifest_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -154,103 +119,6 @@ pub fn build(b: *std.Build) void {
         .filters = &.{ "literal dependency manifests", "manifest data" },
     });
     jobs_step.dependOn(&b.addRunArtifact(package_manifest_tests).step);
-    const toolchain_prepare = b.addExecutable(.{ .name = "toolchain-prepare", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/toolchain_prepare.zig"),
-        .target = b.graph.host,
-        .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
-    }) });
-    check.dependOn(&toolchain_prepare.step);
-    const run_toolchain = b.addRunArtifact(toolchain_prepare);
-    run_toolchain.addArgs(&.{
-        b.option([]const u8, "toolchain-compiler", "Absolute deliberately selected Zig executable") orelse "",
-        b.option([]const u8, "toolchain-distribution", "Absolute selected compiler distribution root") orelse "",
-        b.option([]const u8, "toolchain-receipt-cache", "Absolute caller-owned receipt cache directory") orelse "",
-    });
-    b.step("prepare-toolchain-installation", "Explicitly verify selected compiler/distribution and save a cache receipt").dependOn(&run_toolchain.step);
-    const verify_toolchain = b.addRunArtifact(toolchain_prepare);
-    verify_toolchain.addArgs(&.{ "--verify", b.option([]const u8, "verify-toolchain-cache", "Absolute receipt cache to verify without executing a compiler") orelse "" });
-    b.step("verify-toolchain-receipt", "Recheck a selected receipt without running or fetching a compiler").dependOn(&verify_toolchain.step);
-    const package_inventory = b.addExecutable(.{ .name = "package-inventory", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/package_inventory.zig"),
-        .target = b.graph.host,
-        .imports = &.{ .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = owned_zon } },
-    }) });
-    check.dependOn(&package_inventory.step);
-    const run_inventory = b.addRunArtifact(package_inventory);
-    run_inventory.addArgs(&.{ b.option([]const u8, "inventory-manifest", "Absolute selected package manifest to inventory read-only") orelse "", b.option([]const u8, "inventory-cache", "Absolute caller-owned inventory cache") orelse "" });
-    b.step("inventory-package-dependencies", "Inventory literal package pins without executing scripts or fetching sources").dependOn(&run_inventory.step);
-    const package_cache_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/jobs/src/package_cache.zig"),
-            .target = b.graph.host,
-            .imports = &.{ .{ .name = "owned-zon", .module = owned_zon }, .{ .name = "firmware-uf2", .module = uf2_module } },
-        }),
-        .filters = &.{ "package archive paths", "package source records" },
-    });
-    jobs_step.dependOn(&b.addRunArtifact(package_cache_tests).step);
-    const package_resolution_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/jobs/src/package_resolution.zig"),
-            .target = b.graph.host,
-            .imports = &.{ .{ .name = "owned-zon", .module = owned_zon }, .{ .name = "firmware-uf2", .module = uf2_module } },
-        }),
-        .filters = &.{"read-only resolution"},
-    });
-    jobs_step.dependOn(&b.addRunArtifact(package_resolution_tests).step);
-    const package_resolve = b.addExecutable(.{ .name = "package-resolve", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/package_resolve.zig"),
-        .target = b.graph.host,
-        .imports = &.{ .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = owned_zon } },
-    }) });
-    check.dependOn(&package_resolve.step);
-    const run_resolution = b.addRunArtifact(package_resolve);
-    run_resolution.addArgs(&.{ b.option([]const u8, "resolution-plan", "Absolute explicit dependency resolution plan") orelse "", b.option([]const u8, "resolution-cache", "Absolute caller-owned resolution output cache") orelse "" });
-    b.step("resolve-package-dependencies", "Resolve declared pins read-only from already verified source records").dependOn(&run_resolution.step);
-    const package_prepare = b.addExecutable(.{ .name = "package-prepare", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/package_prepare.zig"),
-        .target = b.graph.host,
-        .imports = &.{ .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = owned_zon } },
-    }) });
-    check.dependOn(&package_prepare.step);
-    const run_preparation = b.addRunArtifact(package_prepare);
-    run_preparation.addArgs(&.{ b.option([]const u8, "preparation-plan", "Absolute deliberate dependency preparation plan") orelse "", b.option([]const u8, "preparation-cache", "Absolute caller-owned preparation output cache") orelse "" });
-    b.step("prepare-package-dependencies", "Explicitly acquire missing declared packages; offline archives by default").dependOn(&run_preparation.step);
-    const build_capture = b.addExecutable(.{ .name = "build-capture", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/build_capture.zig"),
-        .target = b.graph.host,
-        .imports = &.{ .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = owned_zon } },
-    }) });
-    check.dependOn(&build_capture.step);
-    const run_capture = b.addRunArtifact(build_capture);
-    run_capture.addArg(b.option([]const u8, "build-capture-plan", "Absolute explicit prepared build capture plan") orelse "");
-    b.step("capture-prepared-build", "Read-only revalidation and complete prepared build input capture").dependOn(&run_capture.step);
-    const package_import = b.addExecutable(.{ .name = "package-import", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/package_import.zig"),
-        .target = b.graph.host,
-        .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
-    }) });
-    check.dependOn(&package_import.step);
-    const run_import = b.addRunArtifact(package_import);
-    run_import.addArgs(&.{
-        b.option([]const u8, "package-toolchain-receipt", "Absolute verified toolchain receipt for explicit package import") orelse "",
-        b.option([]const u8, "package-expected-hash", "Immutable named package hash required by the import") orelse "",
-        b.option([]const u8, "package-offline-archive", "Absolute deliberately selected offline package archive") orelse "",
-        b.option([]const u8, "package-source-cache", "Absolute existing caller-owned source cache directory") orelse "",
-    });
-    b.step("import-package-source", "Import an offline package archive without clones scripts or device access").dependOn(&run_import.step);
-    if (b.option(bool, "package-cache-real-test", "Enable explicit real compiler/offline archive cache integration fixture") orelse false) {
-        const package_options = b.addOptions();
-        package_options.addOption([]const u8, "receipt", b.option([]const u8, "package-cache-test-receipt", "Absolute compiler receipt for the explicit integration fixture") orelse @panic("package cache fixture requires receipt"));
-        package_options.addOption([]const u8, "archive", b.option([]const u8, "package-cache-test-archive", "Absolute offline archive for the explicit integration fixture") orelse @panic("package cache fixture requires archive"));
-        package_options.addOption([]const u8, "package_hash", b.option([]const u8, "package-cache-test-hash", "Pinned package hash for the explicit integration fixture") orelse @panic("package cache fixture requires package hash"));
-        const real_cache_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/package_cache_real.zig"),
-            .target = b.graph.host,
-            .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
-        }) });
-        real_cache_tests.root_module.addOptions("options", package_options);
-        b.step("test-package-cache-real", "Run explicit offline source import/reuse/corruption integration").dependOn(&b.addRunArtifact(real_cache_tests).step);
-    }
     jobs_step.dependOn(&b.addRunArtifact(job_tests).step);
     const traversal_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("packages/jobs/src/source_files.zig"),
@@ -260,7 +128,7 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&job_tests.step);
     check.dependOn(&traversal_tests.step);
     tests.dependOn(jobs_step);
-    for ([_][]const u8{ "target_lock.zig", "firmware.zig", "preparation.zig", "sidecar.zig", "flash_inputs.zig", "build_provenance.zig", "runner_artifact.zig" }) |file| {
+    for ([_][]const u8{ "target_lock.zig", "firmware.zig", "source_digest.zig", "sidecar.zig", "flash_inputs.zig", "application_bundle.zig", "bundle_payload.zig", "runner_artifact.zig" }) |file| {
         const artifact = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("packages/jobs/src/{s}", .{file})),
             .target = b.graph.host,
@@ -292,13 +160,7 @@ pub fn build(b: *std.Build) void {
     }) });
     check.dependOn(&uf2_tests.step);
     test_picotool.dependOn(&b.addRunArtifact(uf2_tests).step);
-    const prepare_picotool = b.option(bool, "flash-tools", "Prepare firmware-owned flash tools explicitly without device access") orelse false;
-    const picotool_step = b.step("prepare-picotool", "Install the firmware-owned wrapper and pinned picotool without device access");
-    if (!prepare_picotool) picotool_step.dependOn(&b.addFail("Preparing picotool requires explicit -Dflash-tools=true").step);
-    const firmware = (if (prepare_picotool)
-        b.lazyDependency("zigmkay_firmware", .{ .@"flash-tools" = true })
-    else
-        b.lazyDependency("zigmkay_firmware", .{})) orelse return;
+    const firmware = b.lazyDependency("zigmkay_firmware", .{}) orelse return;
     const api = b.lazyImport(@This(), "zigmkay_firmware") orelse return;
     if (@hasDecl(api, "flash_wrapper_contract_version") and api.flash_wrapper_contract_version == 1) {
         const wrapper_fixture = b.addExecutable(.{ .name = "firmware-wrapper-offline", .root_module = b.createModule(.{
@@ -312,30 +174,6 @@ pub fn build(b: *std.Build) void {
         }) });
         picotool_job_options.addOptionPath("wrapper", wrapper_fixture.getEmittedBin());
         picotool_job_options.addOptionPath("picotool_fixture", tool_fixture.getEmittedBin());
-    }
-    if (prepare_picotool) {
-        if (@hasDecl(api, "flash_wrapper_contract_version") and api.flash_wrapper_contract_version == 1) {
-            const install_wrapper = b.addInstallArtifact(firmware.artifact("picotool_flash"), .{});
-            picotool_step.dependOn(&install_wrapper.step);
-            const install_picotool = b.addInstallBinFile(firmware.namedLazyPath("picotool"), if (b.graph.host.result.os.tag == .windows) "picotool.exe" else "picotool");
-            picotool_step.dependOn(&install_picotool.step);
-            const inventory = b.addExecutable(.{ .name = "flash-tools-inventory", .root_module = b.createModule(.{
-                .root_source_file = b.path("tools/flash_tools_inventory.zig"),
-                .target = b.graph.host,
-                .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
-            }) });
-            const record = b.addRunArtifact(inventory);
-            record.step.dependOn(&install_wrapper.step);
-            record.step.dependOn(&install_picotool.step);
-            record.addArg(b.option([]const u8, "firmware-revision", "Exact selected firmware commit for prepared provenance") orelse @panic("Picotool preparation requires explicit firmware-revision"));
-            record.addArg(b.option([]const u8, "flash-source-kind", "Explicit published or development flash-tool source") orelse @panic("Picotool preparation requires explicit flash-source-kind"));
-            record.addDirectoryArg2(firmware.path(""), .{ .make_absolute = true });
-            record.addFileArg2(.{ .relative = .{ .base = .install_bin, .sub_path = if (b.graph.host.result.os.tag == .windows) "picotool_flash.exe" else "picotool_flash" } }, .{ .make_absolute = true });
-            record.addFileArg2(.{ .relative = .{ .base = .install_bin, .sub_path = if (b.graph.host.result.os.tag == .windows) "picotool.exe" else "picotool" } }, .{ .make_absolute = true });
-            record.addDirectoryArg2(.{ .relative = .{ .base = .install_prefix } }, .{ .make_absolute = true });
-            record.has_side_effects = true;
-            picotool_step.dependOn(&record.step);
-        } else picotool_step.dependOn(&b.addFail("Picotool preparation requires flash wrapper contract 1; use the explicit EuroZig override until publication").step);
     }
     const keycode_module = b.createModule(.{ .root_source_file = firmware.path("zkeycodes/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = firmware.module("zigmkay") }} });
     @import("packages/keymap/build.zig").tests(b, firmware.module("zigmkay"), keycode_module, tests, check);
@@ -466,7 +304,7 @@ pub fn build(b: *std.Build) void {
             .target = b.graph.host,
             .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model }, .{ .name = "zkeymap", .module = input_source.module }, .{ .name = "zkeycodes", .module = keycodes }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "companion-jobs", .module = jobs } },
         });
-        addSqlite(desktop_core, sqlite_source);
+        desktop_core.addImport("zqlite", zqlite);
         desktop_core.addImport("flash-controller", flash_controller);
         desktop_core.addImport("desktop-geometry", desktop_geometry);
         desktop_core.addImport("flash-presenter", flash_presenter);
@@ -577,7 +415,7 @@ pub fn build(b: *std.Build) void {
                 const frame_tests = b.addTest(.{ .root_module = b.createModule(.{
                     .root_source_file = b.path("tests/editor_frame.zig"),
                     .target = b.graph.host,
-                    .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog", .module = catalog }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "editor-frame-ui", .module = editor_frame }, .{ .name = "zkeymap", .module = input_source.module } },
+                    .imports = &.{ .{ .name = "paths-ui", .module = paths_ui }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog", .module = catalog }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "editor-frame-ui", .module = editor_frame }, .{ .name = "zkeymap", .module = input_source.module } },
                 }) });
                 const run_frames = b.addRunArtifact(frame_tests);
                 run_frames.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
@@ -651,28 +489,13 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{ .{ .name = "catalog", .module = catalog }, .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model } },
             });
             const adapter_tests = b.addTest(.{ .root_module = catalog_project });
-            const environment_tool = b.addExecutable(.{ .name = "build-environment", .root_module = b.createModule(.{
-                .root_source_file = b.path("tools/build_environment.zig"),
+            const bundle_check = b.addExecutable(.{ .name = "check-application-bundle", .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/check_application_bundle.zig"),
                 .target = b.graph.host,
-                .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "catalog-project", .module = catalog_project } },
+                .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "catalog-inventory", .module = catalog } },
             }) });
-            check.dependOn(&environment_tool.step);
-            const managed_tool = b.addExecutable(.{ .name = "managed-build-check", .root_module = b.createModule(.{
-                .root_source_file = b.path("tools/managed_build.zig"),
-                .target = b.graph.host,
-                .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project } },
-            }) });
-            check.dependOn(&managed_tool.step);
-            const run_managed = b.addRunArtifact(managed_tool);
-            const managed_config = b.option([]const u8, "managed-build-config", "Absolute prepared config for the explicit offline managed QWERTY build") orelse "";
-            run_managed.addArg(managed_config);
-            if (b.option(bool, "managed-allow-pinned-fetch", "Explicitly permit pinned dependency fetch for this selected managed build only") orelse false) run_managed.addArg("--allow-pinned-fetch");
-            b.step("check-managed-build", "Explicitly build and verify QWERTY UF2/runner through the editor worker without device access").dependOn(&run_managed.step);
-            const run_environment = b.addRunArtifact(environment_tool);
-            run_environment.addArgs(&.{ b.option([]const u8, "build-environment-plan", "Absolute explicit prepared build environment input plan") orelse "", b.option([]const u8, "build-environment-cache", "Absolute caller-owned build environment output cache") orelse "" });
-            run_environment.addDirectoryArg2(b.path("."), .{ .make_absolute = true });
-            run_environment.addDirectoryArg2(firmware.path(""), .{ .make_absolute = true });
-            b.step("prepare-build-environment", "Revalidate prepared receipts and emit a matching catalog build config without acquisition").dependOn(&run_environment.step);
+            const install_check = b.addInstallArtifact(bundle_check, .{});
+            b.step("build-bundle-check", "Build the offline application acceptance utility").dependOn(&install_check.step);
             const flash_session_tests = b.addTest(.{ .root_module = b.createModule(.{
                 .root_source_file = b.path("apps/desktop/flash_session.zig"),
                 .target = b.graph.host,
@@ -691,13 +514,6 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project } },
             }) });
             flash_session_step.dependOn(&b.addRunArtifact(flash_dispatch_tests).step);
-            const automatic_tests = b.addTest(.{ .root_module = b.createModule(.{
-                .root_source_file = b.path("apps/desktop/auto_prepare.zig"),
-                .target = b.graph.host,
-                .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project } },
-            }) });
-            flash_session_step.dependOn(&b.addRunArtifact(automatic_tests).step);
-            check.dependOn(&automatic_tests.step);
             tests.dependOn(flash_session_step);
             check.dependOn(&flash_session_tests.step);
             check.dependOn(&bootloader_gate_tests.step);
@@ -710,17 +526,68 @@ pub fn build(b: *std.Build) void {
                     .imports = &.{ .{ .name = "callback-ui", .module = b.modules.get("callback-ui").? }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "native-events", .module = graph.events }, .{ .name = "folder-dialog", .module = graph.folder_dialog }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "editor-frame-ui", .module = b.modules.get("editor-frame-ui").? }, .{ .name = "paths-ui", .module = b.modules.get("paths-ui").? }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "zkeymap", .module = input_source.module } },
                 }) });
                 app.root_module.addImport("companion-jobs", jobs);
-                const preparation_options = b.addOptions();
-                preparation_options.addOption([]const u8, "compiler", b.graph.zig_exe);
-                preparation_options.addOption([]const u8, "companion", b.root.root_dir.handle.realPathFileAlloc(b.graph.io, if (b.root.sub_path.len == 0) "." else b.root.sub_path, b.allocator) catch @panic("Cannot resolve companion source root"));
-                const manifest_text = @embedFile("build.zig.zon");
-                const firmware_url_start = std.mem.indexOf(u8, manifest_text, "git+https://github.com/EuroZig/zigmkay_firmware.git#").?;
-                const firmware_url_end = firmware_url_start + std.mem.indexOfScalar(u8, manifest_text[firmware_url_start..], '"').?;
-                const firmware_hash_start = std.mem.indexOf(u8, manifest_text, "zigmkay_firmware-0.1.0-").?;
-                const firmware_hash_end = firmware_hash_start + std.mem.indexOfScalar(u8, manifest_text[firmware_hash_start..], '"').?;
-                preparation_options.addOption([]const u8, "firmware_url", manifest_text[firmware_url_start..firmware_url_end]);
-                preparation_options.addOption([]const u8, "firmware_hash", manifest_text[firmware_hash_start..firmware_hash_end]);
-                app.root_module.addOptions("preparation-options", preparation_options);
+                const assemble_step = b.step("bundle-application", "Assemble the complete offline application");
+                if (application_bundle) {
+                    // The firmware root forwards this output before its lazy
+                    // tool dependency exists on a clean machine. Resolve the
+                    // tool package first and let Zig finish acquisition.
+                    const flash_dep = firmware.builder.dependency("zigmkay", .{ .@"flash-tools" = true });
+                    if (b.graph.needed_lazy_dependencies.count() != 0) return;
+                    // Configure every supported target so Zig acquires build-time
+                    // lazy inputs before the offline resource closure is copied.
+                    const mz = b.lazyImport(@This(), "microzig") orelse return;
+                    const mz_dep = b.lazyDependency("microzig", .{}) orelse return;
+                    const MicroBuild = mz.MicroBuild(.{ .rp2xxx = true });
+                    const mb = MicroBuild.init(b, mz_dep) orelse return;
+                    const target = mb.ports.rp2xxx.boards.raspberrypi.pico.*;
+                    for (api.boards.entries) |board| {
+                        const item = api.addKeyboardFirmware(b, mb, &target, .safe, b.fmt("bundle-contract-{s}", .{board.name}), board, .{
+                            .keyboards = firmware.path("keyboards"),
+                            .processor = firmware.path("zigmkay/src/root.zig"),
+                            .keycodes = firmware.path("zkeycodes/root.zig"),
+                            .companion_enabled = true,
+                        }, null);
+                        _ = item.get_emitted_bin(.{ .uf2 = .{ .family_id = .RP2040 } });
+                    }
+                    const assembler = b.addExecutable(.{ .name = "assemble-application", .root_module = b.createModule(.{
+                        .root_source_file = b.path("tools/assemble_application.zig"),
+                        .target = b.graph.host,
+                        .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
+                    }) });
+                    const manifest = @import("build.zig.zon");
+                    var manifest_text: std.Io.Writer.Allocating = .init(b.allocator);
+                    std.zon.stringify.serialize(.{
+                        .name = manifest.name,
+                        .fingerprint = manifest.fingerprint,
+                        .version = manifest.version,
+                        .minimum_zig_version = manifest.minimum_zig_version,
+                        .dependencies = .{ .zigmkay_firmware = manifest.dependencies.zigmkay_firmware, .microzig = manifest.dependencies.microzig },
+                        .paths = .{ "build.zig", "build.zig.zon", "packages" },
+                    }, .{}, &manifest_text.writer) catch @panic("Cannot write runtime manifest");
+                    const pins = b.addOptions();
+                    pins.addOption([]const []const u8, "license_hashes", &.{ manifest.dependencies.dvui.hash, manifest.dependencies.ztray.hash, manifest.dependencies.zqlite.hash, manifest.dependencies.svg2tvg.hash, manifest.dependencies.icons.hash });
+                    pins.addOption([]const u8, "manifest", manifest_text.written());
+                    pins.addOption([]const u8, "firmware_hash", manifest.dependencies.zigmkay_firmware.hash);
+                    pins.addOption([]const u8, "microzig_hash", manifest.dependencies.microzig.hash);
+                    pins.addOption([]const u8, "firmware_revision", manifest.dependencies.zigmkay_firmware.url[std.mem.lastIndexOfScalar(u8, manifest.dependencies.zigmkay_firmware.url, '#').? + 1 ..]);
+                    assembler.root_module.addOptions("bundle-pins", pins);
+                    const assemble = b.addRunArtifact(assembler);
+                    assemble.has_side_effects = true;
+                    assemble.addDirectoryArg2(b.path("."), .{ .make_absolute = true });
+                    assemble.addFileArg2(.zig_exe, .{ .make_absolute = true });
+                    assemble.addDirectoryArg2(b.path("zig-pkg"), .{ .make_absolute = true });
+                    const application = assemble.addOutputDirectoryArg2("Zigmkay.app", .{ .make_absolute = true });
+                    assemble.addArtifactArg(app);
+                    assemble.addArtifactArg(flash_dep.artifact("picotool_flash"));
+                    assemble.addFileArg2(flash_dep.namedLazyPath("picotool"), .{ .make_absolute = true });
+                    if (b.graph.host.result.os.tag == .windows) {
+                        assemble_step.dependOn(&b.addInstallFile(application.path(b, "Zigmkay.exe"), "Zigmkay.exe").step);
+                    } else {
+                        const install_bundle = b.addInstallDirectory(.{ .source_dir = application, .install_dir = .prefix, .install_subdir = "Zigmkay.app" });
+                        assemble_step.dependOn(&install_bundle.step);
+                    }
+                } else assemble_step.dependOn(&b.addFail("Pass application-bundle=true to assemble the complete application").step);
+
                 app.root_module.addImport("flash-ui", b.createModule(.{ .root_source_file = b.path("packages/desktop/src/flash_ui.zig"), .imports = &.{ .{ .name = "dvui", .module = graph.dvui }, .{ .name = "flash-presenter", .module = flash_presenter } } }));
                 app.root_module.addImport("app-paths", installed_paths);
                 app.root_module.addImport("native-tray", graph.tray);
@@ -739,11 +606,15 @@ pub fn build(b: *std.Build) void {
                 app.root_module.addImport("editor-ui", graph.ui);
                 app.root_module.addImport("native-draft-input", b.modules.get("native-draft-input").?);
                 b.step("build-desktop", "Compile the native companion without launching or accessing devices").dependOn(&app.step);
-                const run_desktop = b.addRunArtifact(app);
+                const installed_executable: std.Build.LazyPath = .{ .relative = .{ .base = .install_prefix, .sub_path = if (b.graph.host.result.os.tag == .windows) "Zigmkay.exe" else "Zigmkay.app/Contents/MacOS/zigmkay-companion" } };
+                const run_desktop = std.Build.Step.Run.create(b, "run bundled editor");
+                run_desktop.addFileArg2(installed_executable, .{ .make_absolute = true });
+                run_desktop.step.dependOn(assemble_step);
                 run_desktop.addPassthruArgs();
-                if (managed_config.len != 0) run_desktop.addArgs(&.{ "--prepared-build-config", managed_config });
                 b.step("run-desktop", "Launch the native editor with automatic keyboard monitoring; flashing remains explicit").dependOn(&run_desktop.step);
-                const run_companion = b.addRunArtifact(app);
+                const run_companion = std.Build.Step.Run.create(b, "run bundled companion");
+                run_companion.addFileArg2(installed_executable, .{ .make_absolute = true });
+                run_companion.step.dependOn(assemble_step);
                 run_companion.addArg("--background");
                 b.step("run-companion", "Start the resident companion with windows hidden and automatic keyboard monitoring").dependOn(&run_companion.step);
                 b.step("build-companion", "Compile the resident companion entry point without launching").dependOn(&app.step);
@@ -752,6 +623,11 @@ pub fn build(b: *std.Build) void {
                 launch_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
                 launch_fixture.setEnvironmentVariable("SDL_RENDER_DRIVER", "software");
                 b.step("test-desktop-launch", "Launch bounded dummy/software frames without native source or device access").dependOn(&launch_fixture.step);
+                const status_fixture = b.addRunArtifact(app);
+                status_fixture.addArgs(&.{ "--offline-status-frames", "24" });
+                status_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
+                status_fixture.setEnvironmentVariable("SDL_RENDER_DRIVER", "software");
+                b.step("test-desktop-status", "Check editor activity bounds and capture build, Flash and error states offline").dependOn(&status_fixture.step);
                 const practice_fixture = b.addRunArtifact(app);
                 practice_fixture.addArgs(&.{ "--offline-practice-frames", "3" });
                 practice_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
@@ -776,11 +652,6 @@ pub fn build(b: *std.Build) void {
                 const tray_fixture = b.addRunArtifact(app);
                 tray_fixture.addArgs(&.{ "--native-tray-frames", "3" });
                 b.step("test-native-tray", "Explicit bounded native tray install/menu/shutdown with a hidden window and no device access").dependOn(&tray_fixture.step);
-                const build_fixture = b.addRunArtifact(app);
-                build_fixture.addArgs(&.{ "--offline-build-frames", "30000", managed_config });
-                build_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
-                build_fixture.setEnvironmentVariable("SDL_RENDER_DRIVER", "software");
-                b.step("test-desktop-managed-build", "Explicitly build, accept and practice the current runner through SDL frames without hardware").dependOn(&build_fixture.step);
             }
             check.dependOn(&adapter_tests.step);
             catalog_tests.dependOn(&b.addRunArtifact(adapter_tests).step);
@@ -916,8 +787,7 @@ pub fn build(b: *std.Build) void {
             app.root_module.addImport("live-adapter", live);
         }
         if (b.option(bool, "native-hid", "Prepare pinned SDL native acceptance dependencies") orelse false) {
-            const sdl = b.lazyDependency("sdl3", .{ .target = b.graph.host, .optimize = .ReleaseSafe }) orelse return;
-            @import("packages/platform/sdl_build.zig").prepare(sdl.artifact("SDL3"));
+            const dvui = @import("packages/platform/desktop_build.zig").dependency(b, false) orelse return;
             const probe = b.addExecutable(.{ .name = "usb-acceptance", .root_module = b.createModule(.{
                 .root_source_file = b.path("tools/usb_acceptance.zig"),
                 .target = b.graph.host,
@@ -926,7 +796,7 @@ pub fn build(b: *std.Build) void {
                     .{ .name = "native-hid", .module = native },
                     .{ .name = "live-adapter", .module = live },
                     .{ .name = "device-protocol", .module = protocol },
-                    .{ .name = "sdl3", .module = sdl.module("sdl3") },
+                    .{ .name = "dvui_backend", .module = dvui.module("sdl3") },
                 },
             }) });
             hardware_client.dependOn(&b.addInstallArtifact(probe, .{}).step);
@@ -1106,14 +976,4 @@ pub fn build(b: *std.Build) void {
     }
     const compatibility = b.step("check-compatibility", "Require accepted firmware and host compatibility gates");
     compatibility.dependOn(&b.addFail("Firmware PR review, physical board mapping, managed provenance and desktop/native release gates remain pending").step);
-}
-
-fn addSqlite(module: *std.Build.Module, source: std.Build.LazyPath) void {
-    module.link_libc = true;
-    module.addCSourceFile(.{ .file = source, .flags = &.{
-        "-DSQLITE_THREADSAFE=1",         "-DSQLITE_OMIT_LOAD_EXTENSION", "-DSQLITE_DQS=0",
-        "-DSQLITE_DEFAULT_MEMSTATUS=0",  "-DSQLITE_ENABLE_API_ARMOR",    "-DSQLITE_MAX_LENGTH=33554432",
-        "-DSQLITE_MAX_SQL_LENGTH=65536",
-    } });
-    if (builtin.os.tag == .windows) module.linkSystemLibrary("advapi32", .{});
 }

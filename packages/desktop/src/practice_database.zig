@@ -1,31 +1,26 @@
-//! Narrow SQLite C API bridge. Transactions, validation and migration stay in Zig.
+//! Practice schema and transactions over zqlite; existing database bytes remain compatible.
 const std = @import("std");
 const results = @import("practice_results.zig");
 const timing = @import("practice_timing.zig");
-const Handle = opaque {};
-const RawStatement = opaque {};
-const Backup = opaque {};
-extern "c" fn sqlite3_open_v2([*:0]const u8, *?*Handle, c_int, ?[*:0]const u8) c_int;
-extern "c" fn sqlite3_close_v2(*Handle) c_int;
-extern "c" fn sqlite3_busy_timeout(*Handle, c_int) c_int;
-extern "c" fn sqlite3_sleep(c_int) c_int;
-extern "c" fn sqlite3_exec(*Handle, [*:0]const u8, ?*const anyopaque, ?*anyopaque, ?*?[*:0]u8) c_int;
-extern "c" fn sqlite3_prepare_v2(*Handle, [*:0]const u8, c_int, *?*RawStatement, ?*?[*:0]const u8) c_int;
-extern "c" fn sqlite3_finalize(*RawStatement) c_int;
-extern "c" fn sqlite3_step(*RawStatement) c_int;
-extern "c" fn sqlite3_bind_blob(*RawStatement, c_int, ?*const anyopaque, c_int, ?*const fn (?*anyopaque) callconv(.c) void) c_int;
-extern "c" fn sqlite3_bind_int64(*RawStatement, c_int, i64) c_int;
-extern "c" fn sqlite3_bind_null(*RawStatement, c_int) c_int;
-extern "c" fn sqlite3_column_blob(*RawStatement, c_int) ?*const anyopaque;
-extern "c" fn sqlite3_column_bytes(*RawStatement, c_int) c_int;
-extern "c" fn sqlite3_column_type(*RawStatement, c_int) c_int;
-extern "c" fn sqlite3_column_int64(*RawStatement, c_int) i64;
-extern "c" fn sqlite3_backup_init(*Handle, [*:0]const u8, *Handle, [*:0]const u8) ?*Backup;
-extern "c" fn sqlite3_backup_step(*Backup, c_int) c_int;
-extern "c" fn sqlite3_backup_finish(*Backup) c_int;
+const zqlite = @import("zqlite");
+const c = zqlite.c;
 pub const filename = "practice.sqlite3";
 pub const max_payload_bytes = 16 * 1024 * 1024;
 const application_id = 0x5a4d5052;
+// Keep application diagnostics stable across the wrapper migration.
+fn databaseError(err: anyerror) anyerror {
+    const name = @errorName(err);
+    if (std.mem.startsWith(u8, name, "Busy") or std.mem.startsWith(u8, name, "Locked")) return error.PracticeDatabaseBusy;
+    if (std.mem.startsWith(u8, name, "Readonly") or err == error.ReadOnly or err == error.Perm) return error.PracticeDatabaseReadOnly;
+    if (std.mem.startsWith(u8, name, "Ioerr") or err == error.IoErr or err == error.Full or err == error.CantOpen) return error.PracticeDatabaseIO;
+    if (std.mem.startsWith(u8, name, "Constraint")) return error.PracticeRunCollision;
+    return switch (err) {
+        error.NoMem => error.OutOfMemory,
+        error.Corrupt, error.NotADB => error.InvalidPracticeDatabase,
+        else => error.PracticeDatabaseFailure,
+    };
+}
+// The wrapper exposes SQLite's header for the online backup API.
 fn check(code: c_int) !void {
     return switch (code & 0xff) {
         0 => {},
@@ -39,35 +34,31 @@ fn check(code: c_int) !void {
     };
 }
 pub const Statement = struct {
-    raw: *RawStatement,
+    raw: zqlite.Stmt,
     retained: ?[]u8 = null,
     gpa: ?std.mem.Allocator = null,
     pub fn deinit(self: *Statement) void {
-        _ = sqlite3_finalize(self.raw);
+        self.raw.deinit();
         if (self.retained) |bytes| self.gpa.?.free(bytes);
     }
     pub fn step(self: *Statement) !bool {
-        const code = sqlite3_step(self.raw);
-        if (code == 100) return true;
-        if (code == 101) return false;
-        try check(code);
-        return error.PracticeDatabaseFailure;
+        return self.raw.step() catch |err| return databaseError(err);
     }
-    pub fn blob(self: *Statement, column: c_int) ![]const u8 {
-        if (sqlite3_column_type(self.raw, column) != 4) return error.InvalidPracticeDatabase;
-        const length = sqlite3_column_bytes(self.raw, column);
-        if (length < 0 or length > max_payload_bytes) return error.InvalidPracticeDatabase;
-        if (length == 0) return &.{};
-        const ptr: [*]const u8 = @ptrCast(sqlite3_column_blob(self.raw, column) orelse return error.InvalidPracticeDatabase);
-        return ptr[0..@intCast(length)];
+    pub fn blob(self: *Statement, column: usize) ![]const u8 {
+        if (self.raw.columnType(column) != .blob) return error.InvalidPracticeDatabase;
+        if (self.raw.columnBytes(column) > max_payload_bytes) return error.InvalidPracticeDatabase;
+        return self.raw.blob(column);
     }
-    fn bindBlob(self: *Statement, index: c_int, bytes: []const u8) !void {
+    fn bindBlob(self: *Statement, index: usize, bytes: []const u8) !void {
         if (bytes.len > max_payload_bytes) return error.PracticeRecordTooLarge;
-        // SQLITE_STATIC: callers retain these bytes until statement finalization.
-        try check(sqlite3_bind_blob(self.raw, index, bytes.ptr, @intCast(bytes.len), null));
+        // zqlite borrows blobs until finalization; callers retain the bytes.
+        self.raw.bindValue(zqlite.blob(bytes), index - 1) catch |err| return databaseError(err);
     }
-    fn integer(self: *Statement, index: c_int, value: i64) !void {
-        try check(sqlite3_bind_int64(self.raw, index, value));
+    fn integer(self: *Statement, index: usize, value: i64) !void {
+        self.raw.bindValue(value, index - 1) catch |err| return databaseError(err);
+    }
+    fn bindNull(self: *Statement, index: usize) !void {
+        self.raw.bindValue(@as(?i64, null), index - 1) catch |err| return databaseError(err);
     }
 };
 pub fn encode(gpa: std.mem.Allocator, value: anytype) ![]u8 {
@@ -197,21 +188,17 @@ test "older timing defaults remain idempotent without rewriting original payload
     try t.expectEqualStrings(old, try rows.blob(2));
 }
 pub const Database = struct {
-    handle: *Handle,
+    connection: zqlite.Conn,
     gpa: std.mem.Allocator,
+    readonly: bool,
     pub fn open(gpa: std.mem.Allocator, path: []const u8, readonly: bool) !Database {
         if (!std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, 0) != null) return error.AbsolutePracticeDatabasePathRequired;
         const name = try gpa.dupeSentinel(u8, path, 0);
         defer gpa.free(name);
-        var ptr: ?*Handle = null;
-        const code = sqlite3_open_v2(name, &ptr, if (readonly) 1 else 2 | 4, null);
-        if (code != 0) {
-            if (ptr) |p| _ = sqlite3_close_v2(p);
-            try check(code);
-        }
-        var self = Database{ .handle = ptr orelse return error.PracticeDatabaseFailure, .gpa = gpa };
+        const connection = zqlite.open(name, if (readonly) zqlite.OpenFlags.ReadOnly else zqlite.OpenFlags.Create) catch |err| return databaseError(err);
+        var self = Database{ .connection = connection, .gpa = gpa, .readonly = readonly };
         errdefer self.deinit();
-        try check(sqlite3_busy_timeout(self.handle, 1500));
+        self.connection.busyTimeout(1500) catch |err| return databaseError(err);
         try self.exec("PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON;");
         if (!readonly) try self.exec("BEGIN IMMEDIATE");
         errdefer if (!readonly) self.exec("ROLLBACK") catch {};
@@ -228,9 +215,9 @@ pub const Database = struct {
             // SQLite can return BUSY here without invoking its busy handler.
             var attempts: usize = 0;
             while (true) : (attempts += 1) {
-                const result = sqlite3_exec(self.handle, "PRAGMA journal_mode=WAL", null, null, null);
+                const result = c.sqlite3_exec(self.connection.conn, "PRAGMA journal_mode=WAL", null, null, null);
                 if ((result == 5 or result == 6) and attempts < 3) {
-                    _ = sqlite3_sleep(10);
+                    _ = c.sqlite3_sleep(10);
                     continue;
                 }
                 try check(result);
@@ -241,21 +228,37 @@ pub const Database = struct {
         return self;
     }
     pub fn deinit(self: *Database) void {
-        _ = sqlite3_close_v2(self.handle);
+        self.connection.close();
+    }
+    pub fn currentSchema(self: *Database) !bool {
+        return try self.number("PRAGMA user_version") == 3;
+    }
+    /// Reopen only when migration or a deliberate mutation actually needs a writer.
+    pub fn makeWritable(self: *Database, path: []const u8) !void {
+        if (!self.readonly) return;
+        const writable = try Database.open(self.gpa, path, false);
+        self.deinit();
+        self.* = writable;
+    }
+    pub fn legacyImported(self: *Database, record: *const results.Record) !bool {
+        var stmt = try self.prepare("SELECT record FROM legacy_imports WHERE id=?1");
+        defer stmt.deinit();
+        try stmt.bindBlob(1, &record.id);
+        if (!try stmt.step()) return false;
+        if (!try sameRecord(self.gpa, try stmt.blob(0), record)) return error.PracticeRunCollision;
+        return true;
     }
     pub fn exec(self: *Database, sql: [:0]const u8) !void {
-        try check(sqlite3_exec(self.handle, sql, null, null, null));
+        self.connection.execNoArgs(sql) catch |err| return databaseError(err);
     }
     pub fn prepare(self: *Database, sql: [:0]const u8) !Statement {
-        var stmt: ?*RawStatement = null;
-        try check(sqlite3_prepare_v2(self.handle, sql, -1, &stmt, null));
-        return .{ .raw = stmt orelse return error.PracticeDatabaseFailure };
+        return .{ .raw = self.connection.prepare(sql) catch |err| return databaseError(err) };
     }
     fn number(self: *Database, sql: [:0]const u8) !i64 {
         var stmt = try self.prepare(sql);
         defer stmt.deinit();
         if (!try stmt.step()) return error.InvalidPracticeDatabase;
-        return sqlite3_column_int64(stmt.raw, 0);
+        return stmt.raw.int(0);
     }
     pub fn rows(self: *Database) !Statement {
         return self.prepare("SELECT id,record,timing FROM runs ORDER BY timestamp DESC,id DESC");
@@ -334,7 +337,7 @@ pub const Database = struct {
             if (!try sameRecord(self.gpa, try found.blob(0), record)) return error.PracticeRunCollision;
             if (samples) |b| {
                 _ = b;
-                if (sqlite3_column_type(found.raw, 1) == 5) return error.PracticeRunCollision;
+                if (found.raw.columnType(1) == .null) return error.PracticeRunCollision;
                 var arena = std.heap.ArenaAllocator.init(self.gpa);
                 defer arena.deinit();
                 const old_payload = try decode(timing.Payload, arena.allocator(), try found.blob(1));
@@ -353,7 +356,7 @@ pub const Database = struct {
         try stmt.bindBlob(1, &record.id);
         try stmt.integer(2, record.timestamp);
         try stmt.bindBlob(3, bytes);
-        if (samples) |b| try stmt.bindBlob(4, b) else try check(sqlite3_bind_null(stmt.raw, 4));
+        if (samples) |b| try stmt.bindBlob(4, b) else try stmt.bindNull(4);
         try stmt.bindBlob(5, cohort);
         try stmt.bindBlob(6, &scope);
         _ = try stmt.step();
@@ -366,12 +369,12 @@ pub const Database = struct {
             try e.integer(4, std.math.cast(i64, event.active_us) orelse return error.InvalidPracticeTiming);
             try e.integer(5, @backingInt(event.kind));
             try e.integer(6, event.position);
-            if (event.expected) |v| try e.integer(7, v) else try check(sqlite3_bind_null(e.raw, 7));
-            if (event.typed) |v| try e.integer(8, v) else try check(sqlite3_bind_null(e.raw, 8));
+            if (event.expected) |v| try e.integer(7, v) else try e.bindNull(7);
+            if (event.typed) |v| try e.integer(8, v) else try e.bindNull(8);
             try e.integer(9, event.batch);
             try e.integer(10, @backingInt(event.input));
             try e.integer(11, @backingInt(event.eligibility));
-            if (event.interval_us) |v| try e.integer(12, std.math.cast(i64, v) orelse return error.InvalidPracticeTiming) else try check(sqlite3_bind_null(e.raw, 12));
+            if (event.interval_us) |v| try e.integer(12, std.math.cast(i64, v) orelse return error.InvalidPracticeTiming) else try e.bindNull(12);
             try e.integer(13, @intFromBool(event.correct));
             try e.integer(14, event.assistance);
             try e.integer(15, std.math.cast(i64, event.observed_us) orelse return error.InvalidPracticeTiming);
@@ -422,7 +425,7 @@ pub const Database = struct {
             defer arena.deinit();
             const record = try decode(results.Record, arena.allocator(), try rows_stmt.blob(1));
             if (!std.mem.eql(u8, try rows_stmt.blob(0), &record.id)) return error.InvalidPracticeDatabase;
-            const payload = if (sqlite3_column_type(rows_stmt.raw, 2) == 5) null else try decode(timing.Payload, arena.allocator(), try rows_stmt.blob(2));
+            const payload = if (rows_stmt.raw.columnType(2) == .null) null else try decode(timing.Payload, arena.allocator(), try rows_stmt.blob(2));
             try self.put(&record, payload);
             count += 1;
         }
@@ -433,7 +436,7 @@ pub const Database = struct {
         var stmt = try self.prepare("SELECT timing FROM runs WHERE id=?1");
         defer stmt.deinit();
         try stmt.bindBlob(1, &id);
-        if (!try stmt.step() or sqlite3_column_type(stmt.raw, 0) == 5) return null;
+        if (!try stmt.step() or stmt.raw.columnType(0) == .null) return null;
         var arena = std.heap.ArenaAllocator.init(gpa);
         errdefer arena.deinit();
         const payload = try decode(timing.Payload, arena.allocator(), try stmt.blob(0));
@@ -449,7 +452,7 @@ pub const Database = struct {
             var arena = std.heap.ArenaAllocator.init(self.gpa);
             defer arena.deinit();
             _ = try decode(results.Record, arena.allocator(), try stmt.blob(1));
-            if (sqlite3_column_type(stmt.raw, 2) != 5) _ = try decode(timing.Payload, arena.allocator(), try stmt.blob(2));
+            if (stmt.raw.columnType(2) != .null) _ = try decode(timing.Payload, arena.allocator(), try stmt.blob(2));
         }
         try self.exec("DELETE FROM runs");
         try self.exec("COMMIT");
@@ -466,28 +469,20 @@ pub const Database = struct {
         defer std.Io.Dir.cwd().deleteFile(io, temporary) catch {};
         const name = try self.gpa.dupeSentinel(u8, temporary, 0);
         defer self.gpa.free(name);
-        var destination: ?*Handle = null;
-        const open_code = sqlite3_open_v2(name, &destination, 2, null);
-        if (open_code != 0) {
-            if (destination) |p| _ = sqlite3_close_v2(p);
-            try check(open_code);
-        }
-        const out = destination orelse return error.PracticeDatabaseFailure;
+        const destination = zqlite.open(name, zqlite.OpenFlags.ReadWrite) catch |err| return databaseError(err);
         var opened = true;
-        defer if (opened) {
-            _ = sqlite3_close_v2(out);
-        };
-        try check(sqlite3_busy_timeout(out, 1500));
-        const backup = sqlite3_backup_init(out, "main", self.handle, "main") orelse return error.PracticeDatabaseFailure;
+        defer if (opened) destination.close();
+        destination.busyTimeout(1500) catch |err| return databaseError(err);
+        const backup = c.sqlite3_backup_init(destination.conn, "main", self.connection.conn, "main") orelse return error.PracticeDatabaseFailure;
         var finished = false;
         defer if (!finished) {
-            _ = sqlite3_backup_finish(backup);
+            _ = c.sqlite3_backup_finish(backup);
         };
         var retries: usize = 0;
         const deadline = std.Io.Clock.awake.now(io).toMilliseconds() + 15000;
         while (true) {
             if (std.Io.Clock.awake.now(io).toMilliseconds() > deadline) return error.PracticeDatabaseBusy;
-            const code = sqlite3_backup_step(backup, 256);
+            const code = c.sqlite3_backup_step(backup, 256);
             if (code == 101) break;
             if (code == 5 or code == 6) {
                 if (retries == 30) return error.PracticeDatabaseBusy;
@@ -495,10 +490,10 @@ pub const Database = struct {
                 try std.Io.sleep(io, .fromMilliseconds(50), .awake);
             } else try check(code);
         }
-        const finish_code = sqlite3_backup_finish(backup);
+        const finish_code = c.sqlite3_backup_finish(backup);
         finished = true;
         try check(finish_code);
-        try check(sqlite3_close_v2(out));
+        destination.tryClose() catch |err| return databaseError(err);
         opened = false;
         var atomic = try std.Io.Dir.cwd().createFileAtomic(io, path, .{});
         defer atomic.deinit(io);

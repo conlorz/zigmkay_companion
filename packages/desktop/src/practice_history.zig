@@ -1,5 +1,5 @@
-//! Immutable per-run files: independent instances never overwrite shared indexes.
-//! All-history is streamed from bounded records; ten newest records form a page.
+//! SQLite practice history, legacy import and bounded background query results.
+//! Current-schema refreshes use read-only connections and one consistent snapshot.
 const std = @import("std");
 const results = @import("practice_results.zig");
 const database = @import("practice_database.zig");
@@ -188,8 +188,23 @@ pub const Request = struct {
         defer gpa.free(root);
         const path = try std.fs.path.join(gpa, &.{ root, database.filename });
         defer gpa.free(path);
-        var db = try database.Database.open(gpa, path, false);
+        const existing = directory.openFile(io, database.filename, .{}) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (existing) |file| file.close(io);
+        if (existing == null and self.record == null and self.transfer == .none and !self.clearing) {
+            var entries = directory.iterate();
+            var legacy = false;
+            while (try entries.next(io)) |entry| {
+                if (entry.kind == .file and entry.name.len == 36 and std.mem.endsWith(u8, entry.name, ".zon")) legacy = true;
+            }
+            if (!legacy) return .{};
+        }
+        const mutating = self.record != null or self.clearing or self.transfer == .import_database;
+        var db = try database.Database.open(gpa, path, existing != null and !mutating);
         defer db.deinit();
+        if (!try db.currentSchema()) try db.makeWritable(path);
         var rejected: usize = 0;
         var iterator = directory.iterate();
         while (try iterator.next(io)) |entry| {
@@ -208,13 +223,23 @@ pub const Request = struct {
                 rejected += 1;
                 continue;
             }
-            db.importLegacy(&legacy) catch |err| {
+            const imported = db.legacyImported(&legacy) catch |err| {
                 if (err == error.PracticeRunCollision) {
                     rejected += 1;
                     continue;
                 }
                 return err;
             };
+            if (!imported) {
+                try db.makeWritable(path);
+                db.importLegacy(&legacy) catch |err| {
+                    if (err == error.PracticeRunCollision) {
+                        rejected += 1;
+                        continue;
+                    }
+                    return err;
+                };
+            }
         }
         if (self.clearing) {
             if (rejected != 0) return error.InvalidPracticeHistory;
@@ -239,6 +264,8 @@ pub const Request = struct {
             },
             .import_database => output.imported = try db.importDatabase(self.transfer_path),
         }
+        try db.exec("BEGIN");
+        defer db.exec("ROLLBACK") catch {};
         output.database_runs = try db.runCount();
         var rows = try db.rowsFor(self.cohort);
         defer rows.deinit();
@@ -347,6 +374,35 @@ test "immutable publication restart pages cohorts weighted history and corrupt p
     var empty = try query(t.allocator, t.io, temp.dir, .{}, null);
     defer empty.deinit();
     try t.expectEqual(@as(usize, 0), empty.total);
+}
+
+test "history refresh stays read-only while another instance holds the writer lock" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{ .iterate = true });
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    var request = try Request.init(t.allocator, root, .{});
+    defer request.deinit();
+    // An existing empty directory must not create a database merely for viewing.
+    var empty = try request.prepare(t.allocator, t.io);
+    defer empty.deinit();
+    try t.expectError(error.FileNotFound, temp.dir.openFile(t.io, database.filename, .{}));
+    const record: Record = .{ .id = @splat(9) };
+    try save(t.allocator, t.io, temp.dir, &record);
+    var migrated = try request.prepare(t.allocator, t.io);
+    defer migrated.deinit();
+    const path = try std.fs.path.join(t.allocator, &.{ root, database.filename });
+    defer t.allocator.free(path);
+    var writer = try database.Database.open(t.allocator, path, false);
+    defer writer.deinit();
+    try writer.exec("BEGIN IMMEDIATE");
+    defer writer.exec("ROLLBACK") catch {};
+    // The retained legacy file is already imported and must not force a writer.
+    var queried = try request.prepare(t.allocator, t.io);
+    defer queried.deinit();
+    try t.expectEqual(@as(usize, 1), queried.database_runs);
+    try t.expectEqual(@as(usize, 1), queried.total);
 }
 
 test "native Unicode directories atomic interruption and independent writers preserve prior runs" {

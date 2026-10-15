@@ -1,60 +1,14 @@
+//! Legacy keymap API and regression tests over the shared input-source implementation.
 const std = @import("std");
 const testing = std.testing;
-pub const zkeycodes = @import("zkeycodes");
-pub const KeyCodeFire = @import("zigmkay").core.KeyCodeFire;
-const keycodes = zkeycodes.layouts.keycodes;
-pub const ScanCode = keycodes.kc.basic;
-const zkcGetLabel = keycodes.getLabel;
-
-pub const KeyMap = @import("KeyMap.zig").KeyMap;
-pub const hid_to_platform = @import("hid_to_platform.zig");
-
-pub const TextResult = struct {
-    /// UTF-8 encoded bytes, if key-label (e.g. "BACKSPACE", "F11"), we smuggle ScanCode in here
-    data: [4]u8 = @splat(0),
-    /// Number of valid bytes in 'data' (0 means no text produced)
-    len: u8 = 0,
-    /// True when 'data' contains a human-readable key label ("F11", "TAB",
-    /// "BACKSPACE", …) rather than layout-translated text.  Callers that only
-    /// want typed characters should skip results where is_label is true.
-    pub fn isLabel(self: *const TextResult) bool {
-        return self.len == 0 and @as(u32, @bitCast(self.data)) != 0;
-    }
-
-    pub fn getLabel(self: *const TextResult) []const u8 {
-        const raw = @as(u16, @bitCast(self.data[0..2].*));
-        const kcf = KeyCodeFire{ .tap_keycode = @truncate(raw) };
-        return zkcGetLabel(kcf, true) orelse "";
-    }
-
-    /// Helper to get a slice of the actual text
-    pub fn slice(self: *const TextResult) []const u8 {
-        return self.data[0..self.len];
-    }
-};
-
-/// Returns true if the raw HID scancode is layout-dependent.
-///
-/// Layout-dependent keys are those whose output depends on the OS keyboard layout:
-/// - Letters (A-Z)
-/// - Digits (1-0)
-/// - Punctuation and special characters
-/// - Numpad digits and operators
-///
-/// Fixed-label keys (function keys, escape, arrows, etc.) return false because
-/// their labels are independent of the keyboard layout.
-///
-/// Takes u16 instead of ScanCode enum because comparing against enum variants
-/// requires listing every single variant - ranges are simpler and more maintainable.
-pub fn isLayoutDependent(code: u16) bool {
-    return switch (code) {
-        0x04...0x1D => true, // Letters A-Z
-        0x1E...0x27 => true, // Digits 1-0
-        0x2C...0x38 => true, // Punctuation including space
-        0x54...0x63 => true, // Numpad digits and operators
-        else => false, // Fixed-label keys (F1-F24, ESC, arrows, etc.)
-    };
-}
+const shared = @import("input-keymap");
+pub const zkeycodes = shared.zkeycodes;
+pub const KeyCodeFire = shared.KeyCodeFire;
+pub const ScanCode = shared.ScanCode;
+pub const KeyMap = shared.KeyMap;
+pub const TextResult = shared.TextResult;
+pub const hid_to_platform = shared.hid_to_platform;
+pub const isLayoutDependent = shared.isLayoutDependent;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

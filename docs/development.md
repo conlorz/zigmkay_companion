@@ -5,6 +5,29 @@ This checkout contains the editor, resident companion, native UI, utilities and
 tests. First-party implementation uses exactly Zig 0.17.0; imported C bridges
 retain their existing scope. Follow [AGENTS.md](../AGENTS.md) when contributing.
 
+## CI and Windows finalization diagnostics
+
+All four workflows run automatically on pull requests and on pushes to `main`.
+Feature-branch pushes do not duplicate the pull-request runs. Full application
+verification covers macOS and Windows, including relocated offline builds and
+the GUI build/practice smoke test, without device access.
+
+The **Self-contained application** workflow also supports manual dispatch:
+
+- `diagnostic`: Windows-only manifest publication, runner protection, cache reuse
+  and cleanup using fixture artifacts, without firmware compilation. The run
+  preserves its executable, PDB, log and output artifacts for three days.
+- `gui`: Windows-only offline GUI build/practice verification, without repeating
+  the catalog's cold/warm build matrix.
+- `full`: the complete macOS/Windows bundle matrix.
+
+Build the small diagnostic locally with
+`zig build build-finalization-diagnostic -Dfinalization-diagnostic-only=true`.
+Run `zig-out/bin/diagnose-build-finalization` (with `.exe` on Windows), passing a
+fresh output-directory path. Outputs must remain in a cache directory. Windows
+attributes are queried natively because Zig 0.17.0's Windows `stat` reports
+default permissions rather than the actual read-only attribute.
+
 ## Everyday commands
 
 Run commands from the repository root. `mise run` selects the pinned tools;
@@ -21,7 +44,7 @@ shell activation is optional.
 | `mise run editor` | Launch the editor with automatic keyboard monitoring |
 | `mise run companion` | Launch the tray resident with windows hidden and automatic monitoring |
 
-For a GUI session without keyboard monitoring or automatic Build/Flash setup:
+For a GUI session without keyboard monitoring:
 
 ```sh
 mise run editor -- -- --offline
@@ -31,10 +54,10 @@ The two `--` separators forward arguments through mise and `zig build` to the
 application. Closing the editor can leave the tray resident alive; choose
 **Quit Zigmkay** to exit. An offline session never authorizes a device transfer.
 
-GUI tasks prepare missing pinned desktop sources under `.zig-cache/` before
-compilation. Acquisition needs network access; the checks themselves do not
-access keyboards. Keep test outputs in caches, and preserve personal projects
-and attached source bundles.
+Developer builds acquire immutable dependencies through Zig before compilation.
+Network access may be needed on the build machine. The assembled application
+contains its runtime dependencies and never downloads packages. Keep test outputs
+in caches, and preserve personal projects and attached source bundles.
 
 ## Source map and further reading
 
@@ -92,21 +115,24 @@ native platform acceptance remain incomplete; do not interpret a passing
 
 Normal editor startup monitors keyboards. Builds, tests and explicit offline
 startup do not access hardware. Flashing or other hardware mutations require a
-separate explicit hardware task. No preparation step below launches a GUI or
-flashes a device.
+separate explicit hardware task. The checks below never flash a device.
 
 ## Editor Build and Flash
 
-Normal source-built editor startup automatically prepares Build and Flash in
-the background. `mise run editor` only launches the application; no firmware
-configuration flags or manual receipt generation are needed. The application
-uses the exact Zig 0.17.0 compiler that built it, its owning companion source
-tree, and the immutable firmware pin. First use may download pinned packages
-and compile Flash tools; the system-message bar shows preparation status. Prepared inputs
-are cached under the application's cache directory. Preparation never accesses
-a device or flashes firmware. Failed preparation offers **Retry setup**.
+The installed application contains Zig 0.17.0 and its libraries, the pinned
+firmware dependency closure, native runner sources, and prebuilt Flash tools.
+Startup reads a small bundle descriptor; it does not scan packages, run the
+compiler, download files or compile tools. Build exports the selected project
+and invokes the bundled compiler with `--system`, which forbids dependency
+fetching. Missing resources produce a local error.
 
-Once ready, **Flash** builds the current project if necessary, enters BOOTSEL,
+On macOS these resources live inside `Zigmkay.app`. On Windows they are embedded
+in the single `Zigmkay.exe`; the first Build extracts those shipped bytes
+atomically into an application-owned cache. This requires disk space, never a
+network connection. Subsequent builds reuse the extracted resources. Project
+exports, compiler caches and results stay outside the installed application.
+
+**Flash** builds the current project if necessary, enters BOOTSEL,
 transfers the verified UF2, and waits for coherent reconnection. Only that
 explicit click authorizes transfer; startup and edits do not. **Auto-build** is
 optional and does not authorize flashing. Normal Flash progress stays in the
@@ -114,56 +140,70 @@ system-message bar; a separate window opens only for errors. If BOOTSEL is not
 discovered within five seconds of the HID trigger, the bar asks the user to
 enter BOOTSEL manually and allows thirty additional seconds. That is the same
 authorized transaction, not another transfer attempt. No automatic retry occurs.
-Full provenance audits are off by
-default. Automatic setup skips companion package-tree and archive audits, while
-retaining Zig's pinned package-hash checks during acquisition. **Debug** deep
-audits require an explicitly audited developer environment; automatic inputs
-report `PackageAuditNotCaptured` rather than claiming audited provenance.
-Explicit offline startup and tests do
-not run automatic preparation. Explicit prepared-config/tool arguments remain
-developer overrides. These source-build inputs require the compiler and owning
-source tree to remain available; this is not a self-contained release bundle.
+The build evidence records the application payload identity and exported snapshot.
+Artifact freshness, runner verification and Flash admission checks remain active.
+No compiler installation, development checkout or platform SDK is required by
+the assembled application.
 
-## Developer preparation
-
-Optional desktop source acquisition is separate from normal checks:
+## Assemble the application
 
 ```sh
-zig build prepare-desktop-dependencies \
-  -Ddesktop-acquisition=true -Ddesktop-source-cache=<absolute-cache-directory>
+zig build bundle-application -Dapplication-bundle=true \
+  -Ddesktop-dependencies=true -Ddesktop-vectors=true -j2
 ```
 
-The resulting `source-inputs.zon` records verified immutable sources. Supply
-its `dvui.source_path` and `ztray.source_path` to
-`check-desktop-dependencies -Ddesktop-dependencies=true` using the
-`desktop-dvui-source` and `desktop-ztray-source` options. This compiles and links
-the native graph without launching it.
+This developer-only step acquires pinned dependencies and builds the editor and
+Flash tools before copying the complete runtime payload. macOS output is
+`zig-out/Zigmkay.app`; Windows output is `zig-out/Zigmkay.exe`.
+Signing, notarization and DMG creation are separate release work.
+`mise run editor` and `mise run companion` assemble and launch this installed
+application. Compile-only desktop checks do not produce a distributable bundle.
 
-Selected toolchain preparation and verification require explicitly owned caches:
+To validate firmware and native runners for every catalog board without devices:
 
 ```sh
-zig build prepare-toolchain-installation \
-  -Dtoolchain-compiler=<absolute-zig-executable> \
-  -Dtoolchain-distribution=<absolute-distribution-directory> \
-  -Dtoolchain-receipt-cache=<absolute-owned-cache>
-zig build verify-toolchain-receipt \
-  -Dverify-toolchain-cache=<absolute-owned-cache>
+zig build build-bundle-check
+zig-out/bin/check-application-bundle \
+  "$PWD/zig-out/Zigmkay.app/Contents/Resources" \
+  "$PWD/.zig-cache/bundle-check" all
 ```
 
-Preparation verifies the selected compiler distribution; receipt verification
-rechecks recorded bytes without executing the compiler. Neither downloads a
-toolchain or builds firmware.
+## Dependencies
 
-Package inventory, offline source import, dependency resolution and build
-environment preparation are explicit operations with caller-selected absolute
-plan and cache paths. Missing prepared sources fail resolution; network
-acquisition through these developer commands requires an explicit preparation-plan
-opt-in. Normal checks and explicit offline startup never run these operations.
-Normal editor startup instead owns automatic preparation as described above.
-A prepared environment can still be selected at application launch using
-`--prepared-build-config <absolute-file>`.
+Desktop builds resolve immutable dependencies through Zig's package manager;
+no source-directory arguments or source adaptation step is required:
 
-Manual Flash-tool preparation (`prepare-picotool -Dflash-tools=true`)
-requires a compatible firmware wrapper and pinned source revision. It installs
-verified tools into a selected cache prefix, not onto a device. Physical
-picotool acceptance and desktop flash integration remain separate gates.
+```sh
+zig build build-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true
+zig build check-desktop-dependencies -Ddesktop-dependencies=true -Ddesktop-vectors=true
+```
+
+The root [manifest](../build.zig.zon) declares DVUI, ztray, SVG/TinyVG and icons
+as ordinary upstream dependencies, each pinned by revision and package hash.
+DVUI owns its SDL3 backend and FreeType dependency; the application consumes its
+exported `dvui_sdl3` and `sdl3` modules. ztray owns the native menu/tray compilation
+and framework linkage. Their Zig 0.17 build scripts run directly, without a local
+wrapper, hidden source manifest or patches to cached dependencies.
+The ztray pin uses the immutable head of its
+[Zig 0.17 upstream PR](https://github.com/StaffinityAI/ztray/pull/2), pending merge.
+
+Native CI assembles macOS and Windows applications and exercises relocated
+firmware builds and practice without keyboard access. macOS acceptance denies
+network and developer checkout/toolchain access. Windows uses the single
+executable with empty application caches and Zig's offline package mode.
+Interactive desktop/tray and physical device acceptance remain separate gates;
+Linux distribution packaging remains pending.
+
+Practice persistence uses the immutable `zqlite` dependency declared in
+`build.zig.zon`, including its bundled SQLite implementation. Application code
+owns schema validation, transactions and migrations; the translated upstream
+header is used only for SQLite's online backup integration and journal-mode
+retry handling. Current-schema history queries use a read-only connection and
+one read transaction. Legacy imports and schema upgrades reopen for writing
+only when needed.
+
+Project saves retain a `.project.lock` file in the project directory. Cooperating
+instances hold its OS lock while checking the saved digest and publishing the
+document; the file must not be removed while an instance may hold it. Atomic
+source bundles remain immutable. A completed background save advances the disk
+baseline even if newer editor changes remain dirty.

@@ -136,6 +136,26 @@ fn atomicWrite(io: std.Io, dir: std.Io.Dir, path: []const u8, bytes: []const u8,
 /// Immutable source bundles are materialized before the single atomic document commit.
 /// Failures may leave unreferenced bundles; the previous document and bundles stay readable.
 pub fn save(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot: Snapshot, board: p.Board) !void {
+    try saveChecked(gpa, io, dir, snapshot, board, null);
+}
+
+/// Cooperating writers keep the same lock inode across atomic document replaces.
+/// The lock file is retained; unlinking it would let later writers bypass a holder.
+pub fn saveChecked(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot: Snapshot, board: p.Board, expected: ?[32]u8) !void {
+    const lock = try dir.createFile(io, ".project.lock", .{ .truncate = false, .lock = .exclusive });
+    defer lock.close(io);
+    if (expected) |baseline| {
+        const present = dir.openFile(io, "project.zon", .{}) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (present) |file| {
+            file.close(io);
+            var previous = try load(gpa, io, dir, board);
+            defer previous.deinit();
+            if (!std.mem.eql(u8, &baseline, &try projectDigest(gpa, previous.snapshot, board))) return error.ExternalProjectChanged;
+        }
+    }
     try validate(snapshot, board);
     const document = try p.serialize(gpa, snapshot.document);
     defer gpa.free(document);

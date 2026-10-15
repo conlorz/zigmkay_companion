@@ -40,11 +40,11 @@ mise exec -- zig version    # must print 0.17.0
 mise run editor
 ```
 
-Mise selects exactly **Zig 0.17.0** and prepares the pinned GUI dependencies.
-The first launch may take longer while packages download and compile. A separate
-firmware checkout is unnecessary; firmware sources are pinned in this repository.
-On macOS, native source builds also need the Xcode Command Line Tools
-(`xcode-select --install`).
+Mise selects exactly **Zig 0.17.0** and assembles the complete application.
+The developer build may download pinned dependencies and compile tools. The
+assembled application bundles its compiler, firmware sources and Flash tools;
+it runs and builds offline without this checkout. On macOS, compiling the
+application from source needs Xcode Command Line Tools (`xcode-select --install`).
 
 For the companion in the background, start this instead:
 
@@ -98,18 +98,16 @@ into the inspector. Apply edits explicitly, with undo/redo available afterward.
 ### Build and Flash from the same window
 
 **Build**, **Flash** and optional **Auto-build** sit in the editor toolbar shown
-above. Normal source startup prepares the build environment and Flash tools in
-the background, with status in the system-message bar and **Retry setup** if
-preparation fails.
+above. The installed application includes everything needed to build firmware
+and run practice offline. Startup does not download or prepare packages.
 
 Click **Flash** to build the current project if needed, request BOOTSEL, transfer
 the verified UF2, and wait for reconnection. If BOOTSEL is not discovered, the
 editor prompts for manual entry. Progress stays in the message bar; errors open
 details. Auto-build compiles edits without starting a transfer.
 
-Source builds currently need their compiler and checkout to remain available.
 [Build and Flash details](docs/development.md#editor-build-and-flash) explain
-preparation, supported source bindings and current limits.
+bundling, supported source bindings and current limits.
 
 ## A little tray icon, always within reach
 
@@ -215,7 +213,7 @@ mise run test
 ```
 
 The [development guide](docs/development.md) covers the package map, native GUI
-builds, explicit offline startup, test tasks, dependency preparation and further
+builds, explicit offline startup, test tasks, application assembly and further
 design/implementation docs. Builds, tests and explicit offline startup do not
 access keyboards. See [compatibility status](compatibility/README.md) for the
 remaining platform and hardware acceptance work.

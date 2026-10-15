@@ -10,6 +10,12 @@ macOS/Windows/Linux C bridge bytes. Window, font and folder-dialog Zig adapters
 are carried with the same GPLv2 provenance. The lazy pinned FreeType dependency
 retains its upstream license files; release bundles must include its attribution.
 
+The zqlite dependency is pinned to karlseguin/zqlite.zig revision
+865223b734a5113f731ab1eb1d7d81c8ac252913 and retains its MIT license.
+It supplies the Zig database API and bundled public-domain SQLite implementation.
+The legacy keymap API shares the input-source package's implementation and native
+bridges; duplicate bridge copies were removed without changing the retained bytes.
+
 The migration reference is conlorz/zigmkay_firmware at
 4755dac978658d10fd9b3bd13a184a1e1198b975 (local/monorepo).
 Its implementation baseline is 3ee4135d308f18f15cc51b1d73e33e1b36bf517f;
@@ -50,8 +56,9 @@ sdl-1.0.3+3.4.16-i4QD0e0HqgDYP8m4T3rMJShyaDLy8ksp8qzCrCSncaPB.
 Upstream SDL 3.4.16 package hash N-V-__8AABHq9wIiTHGY4qR6mw45F_TX8FSvqsQQ-Wtq1tzY.
 SDL is distributed under the zlib license; retained dependency sources include
 their licenses. No SDL/C source is modified or copied into first-party code.
-packages/platform/sdl_build.zig removes five unused generated CMake values
-for Zig 0.17 strictness, scoped to this exact macOS build contract.
+The current desktop graph uses DVUI's upstream SDL3 and FreeType dependencies
+and build configuration directly; the local SDL configuration adjustment has
+been removed. DVUI, ztray, SVG/TinyVG and icons are pinned in build.zig.zon.
 Reference zig-flash/src/{main,transfer,uf2,volume}.zig -> packages/platform/flash/,
 GPL-2.0 from the same reference implementation baseline above. The historical
 filesystem transfer sources are retired; pure validation now lives in

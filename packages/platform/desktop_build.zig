@@ -1,72 +1,39 @@
-//! Compile-only audit graph for the immutable retained desktop dependencies.
+//! Shared native desktop graph used by the application and offline compile checks.
 const std = @import("std");
-pub const VectorSources = struct { svg2tvg: std.Build.LazyPath, icons: std.Build.LazyPath };
 pub const Graph = struct { dvui: *std.Build.Module, backend: *std.Build.Module, fonts: *std.Build.Module, ui: *std.Build.Module, events: *std.Build.Module, folder_dialog: *std.Build.Module, tray: *std.Build.Module, icons: ?*std.Build.Module, vectors: ?*std.Build.Module };
-pub fn check(b: *std.Build, step: *std.Build.Step, dvui_source: std.Build.LazyPath, tray_source: std.Build.LazyPath, flash_presenter: *std.Build.Module, tray_lifecycle: *std.Build.Module, vectors: ?VectorSources) ?Graph {
-    const sdl = b.lazyDependency("sdl3", .{ .target = b.graph.host, .optimize = .Debug }) orelse return null;
-    @import("sdl_build.zig").prepare(sdl.artifact("SDL3"));
-    const freetype = b.lazyDependency("freetype", .{ .target = b.graph.host, .optimize = .Debug }) orelse return null;
-    const c = b.addTranslateC(.{
-        .root_source_file = dvui_source.path(b, "src/dvui-c.h"),
+pub fn dependency(b: *std.Build, vectors: bool) ?*std.Build.Dependency {
+    return b.lazyDependency("dvui", .{
         .target = b.graph.host,
-        .optimize = .Debug,
-        .link_libc = true,
+        .optimize = .debug,
+        .backend = .sdl3,
+        .freetype = true,
+        .@"tiny-file-dialogs" = false,
+        .@"tree-sitter" = false,
+        .tvg = vectors,
+        .accesskit = .off,
     });
-    c.addIncludePath(dvui_source.path(b, "vendor/stb"));
-    c.defineCMacro("DVUI_USE_LIBC", "1");
-    c.defineCMacro("DVUI_USE_FREETYPE", "1");
-    c.addIncludePath(freetype.path("include"));
-    const dvui = b.createModule(.{
-        .root_source_file = dvui_source.path(b, "src/dvui.zig"),
-        .target = b.graph.host,
-        .link_libc = true,
-        .imports = &.{.{ .name = "dvui-c", .module = c.createModule() }},
-    });
-    dvui.linkLibrary(freetype.artifact("freetype"));
-    for ([_][]const u8{ "stb_image_impl.c", "stb_image_write_impl.c", "stb_truetype_impl.c" }) |file| dvui.addCSourceFile(.{
-        .file = dvui_source.path(b, b.fmt("vendor/stb/{s}", .{file})),
-    });
-    const options = b.addOptions();
-    options.addOption(?[]const u8, "snapshot_image_suffix", null);
-    options.addOption(?[]const u8, "image_dir", null);
-    options.addOption(?u8, "log_stack_trace", null);
-    options.addOption(?bool, "log_error_trace", null);
-    options.addOption(bool, "tvg", vectors != null);
-    options.addOption(enum { u16, u32 }, "vertex_index", .u16);
-    options.addOption(enum { off, static, dynamic }, "accesskit", .off);
-    dvui.addOptions("build_options", options);
+}
+pub fn check(b: *std.Build, step: *std.Build.Step, flash_presenter: *std.Build.Module, tray_lifecycle: *std.Build.Module, vectors: bool) ?Graph {
+    const dvui_dep = dependency(b, vectors) orelse return null;
+    const tray_dep = b.lazyDependency("ztray", .{ .target = b.graph.host, .optimize = .debug }) orelse return null;
+    const dvui = dvui_dep.module("dvui_sdl3");
+    const backend = dvui_dep.module("sdl3");
+    const sdl_module = backend.import_table.get("sdl3-c").?;
     var icons_module: ?*std.Build.Module = null;
     var vector_module: ?*std.Build.Module = null;
-    if (vectors) |sources| {
-        vector_module = b.createModule(.{ .root_source_file = sources.svg2tvg.path(b, "src/root.zig"), .target = b.graph.host });
-        dvui.addImport("svg2tvg", vector_module.?);
-        icons_module = b.createModule(.{ .root_source_file = sources.icons.path(b, "src/root.zig"), .target = b.graph.host });
+    if (vectors) {
+        const svg = b.lazyDependency("svg2tvg", .{ .target = b.graph.host, .optimize = .debug });
+        const icons = b.lazyDependency("icons", .{ .target = b.graph.host, .optimize = .debug });
+        if (svg == null or icons == null) return null;
+        vector_module = svg.?.module("svg2tvg");
+        icons_module = icons.?.module("icons");
         const vector_tests = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path("tests/desktop_vectors.zig"),
             .target = b.graph.host,
             .imports = &.{ .{ .name = "svg2tvg", .module = vector_module.? }, .{ .name = "icons", .module = icons_module.? } },
         }) });
-        b.step("test-desktop-vectors", "Decode immutable reference vector icons without a GUI").dependOn(&b.addRunArtifact(vector_tests).step);
+        b.step("test-desktop-vectors", "Decode pinned vector icons without a GUI").dependOn(&b.addRunArtifact(vector_tests).step);
     }
-    const defaults = b.addOptions();
-    defaults.addOption(bool, "libc", true);
-    defaults.addOption(bool, "freetype", true);
-    defaults.addOption(bool, "tiny_file_dialogs", false);
-    defaults.addOption(bool, "tree_sitter", false);
-    dvui.addOptions("default_options", defaults);
-    const renderer = b.createModule(.{
-        .root_source_file = dvui_source.path(b, "src/backends/render/default.zig"),
-        .imports = &.{.{ .name = "dvui", .module = dvui }},
-    });
-    dvui.addImport("render_backend", renderer);
-    const sdl_c = b.addTranslateC(.{
-        .root_source_file = dvui_source.path(b, "src/backends/sdl3-c.h"),
-        .target = b.graph.host,
-        .optimize = .Debug,
-        .link_libc = true,
-    });
-    sdl_c.addIncludePath(sdl.artifact("SDL3").getEmittedIncludeTree());
-    const sdl_module = sdl_c.createModule();
     const placement = b.createModule(.{
         .root_source_file = b.path("packages/platform/src/window_placement.zig"),
         .target = b.graph.host,
@@ -80,18 +47,6 @@ pub fn check(b: *std.Build, step: *std.Build.Step, dvui_source: std.Build.LazyPa
     const placement_tests = b.addTest(.{ .root_module = placement });
     const placement_tests_step = b.step("test-window-placement", "Validate reference window bounds without opening a window");
     placement_tests_step.dependOn(&b.addRunArtifact(placement_tests).step);
-    const backend = b.createModule(.{
-        .root_source_file = dvui_source.path(b, "src/backends/sdl.zig"),
-        .target = b.graph.host,
-        .link_libc = true,
-        .imports = &.{ .{ .name = "dvui", .module = dvui }, .{ .name = "sdl3-c", .module = sdl_module } },
-    });
-    backend.linkLibrary(sdl.artifact("SDL3"));
-    const sdl_options = b.addOptions();
-    sdl_options.addOption(std.SemanticVersion, "version", .{ .major = 3, .minor = 0, .patch = 0 });
-    sdl_options.addOption(?bool, "callbacks", null);
-    backend.addOptions("sdl_options", sdl_options);
-    dvui.addImport("backend", backend);
     const fonts = b.createModule(.{
         .root_source_file = b.path("packages/desktop/src/fonts.zig"),
         .target = b.graph.host,
@@ -103,17 +58,12 @@ pub fn check(b: *std.Build, step: *std.Build.Step, dvui_source: std.Build.LazyPa
         .imports = &.{ .{ .name = "dvui", .module = dvui }, .{ .name = "editor-fonts", .module = fonts } },
     });
     editor_ui.addImport("desktop-geometry", b.modules.get("desktop-geometry").?);
-    const menu = b.createModule(.{ .root_source_file = tray_source.path(b, "src/zmenu.zig"), .target = b.graph.host });
     const flash_ui = b.createModule(.{
         .root_source_file = b.path("packages/desktop/src/flash_ui.zig"),
         .target = b.graph.host,
         .imports = &.{ .{ .name = "dvui", .module = dvui }, .{ .name = "flash-presenter", .module = flash_presenter } },
     });
-    const tray = b.createModule(.{
-        .root_source_file = tray_source.path(b, "src/ztray.zig"),
-        .target = b.graph.host,
-        .imports = &.{.{ .name = "zmenu", .module = menu }},
-    });
+    const tray = tray_dep.module("ztray");
     const native_tray = b.createModule(.{
         .root_source_file = b.path("packages/desktop/src/tray_native.zig"),
         .target = b.graph.host,
@@ -125,14 +75,6 @@ pub fn check(b: *std.Build, step: *std.Build.Step, dvui_source: std.Build.LazyPa
         .imports = &.{.{ .name = "dvui", .module = dvui }},
     }) });
     b.step("test-tray-icon", "Decode retained tray PNG offline without installing a tray").dependOn(&b.addRunArtifact(tray_icon_tests).step);
-    if (b.graph.host.result.os.tag == .macos) {
-        backend.addCSourceFile(.{ .file = dvui_source.path(b, "src/backends/macos_monitor.m"), .language = .objective_c });
-        backend.linkFramework("AppKit", .{});
-        menu.addCSourceFile(.{ .file = tray_source.path(b, "src/macos_menu.m"), .language = .objective_c });
-        menu.linkFramework("AppKit", .{});
-        tray.addCSourceFile(.{ .file = tray_source.path(b, "src/macos_tray.m"), .language = .objective_c });
-        tray.linkFramework("AppKit", .{});
-    }
     const events = b.createModule(.{
         .root_source_file = b.path("packages/platform/src/events.zig"),
         .target = b.graph.host,
@@ -151,7 +93,7 @@ pub fn check(b: *std.Build, step: *std.Build.Step, dvui_source: std.Build.LazyPa
     probe.root_module.addImport("native-tray", native_tray);
     probe.root_module.addImport("native-events", events);
     const audit_options = b.addOptions();
-    audit_options.addOption(bool, "vectors", vectors != null);
+    audit_options.addOption(bool, "vectors", vectors);
     probe.root_module.addOptions("desktop-audit-options", audit_options);
     if (icons_module) |icons| probe.root_module.addImport("desktop-icons", icons);
     _ = probe.getEmittedBin();

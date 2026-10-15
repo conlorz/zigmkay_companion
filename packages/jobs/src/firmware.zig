@@ -58,19 +58,20 @@ pub const Command = struct {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         errdefer arena.deinit();
         const a = arena.allocator();
-        const args = try a.alloc([]const u8, if (development_firmware != null) 13 else 11);
+        const args = try a.alloc([]const u8, if (development_firmware != null) 14 else 12);
         var owned_cwd: []const u8 = try a.dupe(u8, repository);
         args[0] = try a.dupe(u8, compiler);
         args[1] = "build";
         args[2] = "--build-file";
-        args[3] = try std.fs.path.join(a, &.{ repository, "build.zig" });
+        args[3] = "build.zig";
         args[4] = "build-project";
         args[5] = try std.fmt.allocPrint(a, "-Dproject-board={s}", .{input.lock.board});
         args[6] = try std.fmt.allocPrint(a, "-Dproject-export={s}", .{export_directory});
-        args[7] = "-Dfirmware-check=true";
-        args[8] = "-Dproject-build=true";
-        args[9] = "-p";
-        args[10] = try a.dupe(u8, install_directory);
+        args[7] = "-j2";
+        args[8] = "--cache-dir";
+        args[9] = try std.fs.path.join(a, &.{ install_directory, "local-cache" });
+        args[10] = "-p";
+        args[11] = try a.dupe(u8, install_directory);
         if (development_firmware) |path| {
             // Zig 0.17 needs a relative --fork for local package dependencies.
             // Canonicalize both paths so symlinked checkout spellings agree with
@@ -82,8 +83,8 @@ pub const Command = struct {
             const canonical_firmware = try std.Io.Dir.realPathFileAbsoluteAlloc(io, path, a);
             const relative = try std.fs.path.relativeAlloc(a, owned_cwd, null, owned_cwd, canonical_firmware);
             if (std.fs.path.isAbsolute(relative)) return error.InvalidBuildPath;
-            args[11] = "--fork";
-            args[12] = relative;
+            args[12] = "--fork";
+            args[13] = relative;
         }
         const owned_path = try std.fs.path.join(a, &.{ install_directory, "firmware", "project.uf2" });
         return .{ .arena = arena, .argv = args, .cwd = owned_cwd, .uf2_path = owned_path, .build_key = key(input) };
@@ -96,7 +97,7 @@ pub const Command = struct {
 };
 
 pub const Completion = enum { succeeded, failed, cancelled };
-pub const AuditMode = enum { deep, fast_prepared_inputs_no_fresh_full_provenance_audit };
+pub const AuditMode = enum { deep, fast_prepared_inputs_no_fresh_full_provenance_audit, bundled };
 pub const Record = struct { version: u32, audit_mode: ?AuditMode = null, inputs: Inputs, build_key: Digest, uf2_path: []const u8, uf2_size: usize, uf2_hash: Digest };
 
 /// An owned frozen value: it never aliases editable input strings. A failed or
@@ -207,9 +208,9 @@ test "firmware argv preserves literal metacharacters and selects build only" {
     var command = try Command.init(std.testing.allocator, publishedInputs(), "/compiler with spaces/zig", "/repo", "/export ; $(touch nope)", "/cache ; output", null);
     defer command.deinit();
     try std.testing.expectEqualStrings("-Dproject-export=/export ; $(touch nope)", command.argv[6]);
-    try std.testing.expectEqualStrings("/cache ; output", command.argv[10]);
+    try std.testing.expectEqualStrings("/cache ; output", command.argv[11]);
     try std.testing.expectEqualStrings("/cache ; output/firmware/project.uf2", command.uf2_path);
-    try std.testing.expectEqual(@as(usize, 11), command.argv.len);
+    try std.testing.expectEqual(@as(usize, 12), command.argv.len);
     try std.testing.expectError(error.InvalidBuildPath, Command.init(std.testing.allocator, inputs(), "zig", "/repo", "/export", "/cache", "/firmware"));
     try std.testing.expectError(error.FirmwareOverrideMismatch, Command.init(std.testing.allocator, inputs(), "/zig", "/repo", "/export", "/cache", null));
 }
@@ -235,8 +236,8 @@ test "development fork canonicalizes symlinked cwd and sibling with spaces" {
     const canonical_repo = try std.Io.Dir.realPathFileAbsoluteAlloc(io, repo, a);
     defer a.free(canonical_repo);
     try std.testing.expectEqualStrings(canonical_repo, command.cwd);
-    try std.testing.expectEqualStrings("--fork", command.argv[11]);
-    try std.testing.expectEqualStrings("../firmware checkout", command.argv[12]);
+    try std.testing.expectEqualStrings("--fork", command.argv[12]);
+    try std.testing.expectEqualStrings("../firmware checkout", command.argv[13]);
 }
 
 test "manifest rejects failures cancellation stale input and corrupt artifact" {

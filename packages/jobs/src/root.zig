@@ -1,19 +1,17 @@
 const std = @import("std");
+pub const application_bundle = @import("application_bundle.zig");
+pub const bundle_payload = @import("bundle_payload.zig");
 pub const source_files = @import("source_files.zig");
 pub const firmware = @import("firmware.zig");
 pub const target_lock = @import("target_lock.zig");
-pub const preparation = @import("preparation.zig");
-pub const toolchain = @import("toolchain.zig");
+pub const source_digest = @import("source_digest.zig");
 pub const package_manifest = @import("package_manifest.zig");
-pub const package_cache = @import("package_cache.zig");
-pub const package_resolution = @import("package_resolution.zig");
-pub const package_preparation = @import("package_preparation.zig");
 pub const sidecar = @import("sidecar.zig");
 pub const flash_inputs = @import("flash_inputs.zig");
 pub const picotool_job = @import("picotool_job.zig");
 pub const managed_flash = @import("managed_flash.zig");
 pub const managed_build = @import("managed_build.zig");
-pub const build_provenance = @import("build_provenance.zig");
+pub const build_context = @import("build_context.zig");
 pub const runner_artifact = @import("runner_artifact.zig");
 pub const output_limit = 1024 * 1024;
 pub const SnapshotId = [32]u8;
@@ -62,8 +60,16 @@ fn execute(gpa: std.mem.Allocator, io: std.Io, spec: Spec) anyerror!std.process.
         if (comptime posix_groups) if (!succeeded and spec.isolated_group) if (child.id) |id| {
             _ = std.posix.system.kill(-id, std.posix.SIG.KILL);
         };
-        child.kill(io);
-        reader.deinit();
+        if (comptime @import("builtin").os.tag == .windows) {
+            if (!succeeded) stopWindowsProducerAndReads(&child);
+            reader.deinit();
+            if (!succeeded) std.log.info("Windows subprocess cleanup: reads joined; closing handles", .{});
+            child.kill(io);
+            if (!succeeded) std.log.info("Windows subprocess cleanup: complete", .{});
+        } else {
+            child.kill(io);
+            reader.deinit();
+        }
     }
     while (reader.fill(4096, deadline)) |_| {
         if (reader.reader(0).buffered().len > output_limit or reader.reader(1).buffered().len > output_limit) return error.StreamTooLong;
@@ -78,6 +84,39 @@ fn execute(gpa: std.mem.Allocator, io: std.Io, spec: Spec) anyerror!std.process.
     const stderr = try reader.toOwnedSlice(1);
     succeeded = true;
     return .{ .stdout = stdout, .stderr = stderr, .term = term };
+}
+/// Child.kill also closes the pipes. Keep them open until MultiReader has
+/// consumed the cancellation APCs and released its read buffers. Zig 0.17's
+/// Windows batchCancel waits for an APC before submitting cancellation itself,
+/// so request cancellation here before entering that wait.
+fn stopWindowsProducerAndReads(child: *std.process.Child) void {
+    const windows = std.os.windows;
+    const Api = struct {
+        // Zig 0.17 has no CancelIoEx binding. A null request cancels all reads
+        // on this owned pipe; buffers must still be joined before release.
+        extern "kernel32" fn CancelIoEx(windows.HANDLE, ?*anyopaque) callconv(.winapi) windows.BOOL;
+    };
+    if (child.id) |handle| {
+        std.log.info("Windows subprocess cleanup: terminating producer", .{});
+        const status = windows.ntdll.NtTerminateProcess(handle, @fromBackingInt(@intCast(1)));
+        switch (status) {
+            .SUCCESS, .PROCESS_IS_TERMINATING => {},
+            // A process that has already exited may reject termination. The
+            // normal Child.kill below still owns reaping and handle closure.
+            .ACCESS_DENIED => {},
+            else => std.log.warn("Windows subprocess termination status: {t}", .{status}),
+        }
+    }
+    std.log.info("Windows subprocess cleanup: requesting pipe cancellation", .{});
+    for ([_]?std.Io.File{ child.stdout, child.stderr }) |optional_file| {
+        if (optional_file) |file| {
+            if (!Api.CancelIoEx(file.handle, null).toBool()) {
+                const status = windows.GetLastError();
+                if (status != .NOT_FOUND) std.log.warn("Windows pipe cancellation status: {t}", .{status});
+            }
+        }
+    }
+    std.log.info("Windows subprocess cleanup: joining pending reads", .{});
 }
 fn expire(io: std.Io, milliseconds: u32) anyerror!void {
     try std.Io.sleep(io, .fromMilliseconds(milliseconds), .awake);

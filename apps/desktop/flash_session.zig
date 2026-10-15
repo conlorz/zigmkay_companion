@@ -58,7 +58,7 @@ pub const Session = struct {
             try tools.verify(gpa, io);
         }
         const capture_start = std.Io.Clock.awake.now(io);
-        var inputs = request.captureCurrentInputsMode(gpa, io, expected_export_tree, request.config.request.audit_mode) catch |err| {
+        var inputs = request.captureCurrentInputs(gpa, io, expected_export_tree) catch |err| {
             std.log.info("flash session init capture_ms={d}", .{capture_start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds()});
             return err;
         };
@@ -85,7 +85,7 @@ pub const Session = struct {
     /// The returned capture belongs to the caller.
     pub fn recapture(self: *const Session, gpa: std.mem.Allocator, io: std.Io) !desktop.build_worker.Request.CurrentInputs {
         try self.tools.verify(gpa, io);
-        return self.request.captureCurrentInputsMode(gpa, io, self.expected_export_tree, self.request.config.request.audit_mode);
+        return self.request.captureCurrentInputs(gpa, io, self.expected_export_tree);
     }
 
     fn current(self: *const Session) !jobs.firmware.Inputs {
@@ -223,13 +223,6 @@ pub const Session = struct {
         return effect;
     }
 };
-
-pub fn readTools(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !jobs.flash_inputs.Tools {
-    if (!std.fs.path.isAbsolute(path)) return error.AbsoluteFlashToolsRequired;
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 * 1024));
-    defer gpa.free(bytes);
-    return jobs.flash_inputs.Tools.parse(gpa, bytes);
-}
 
 test "manual BOOTSEL guidance starts at five seconds and expires thirty seconds later" {
     const t = std.testing;

@@ -32,7 +32,6 @@ pub const Paths = struct {
     logs: []const u8,
     rollback: []const u8,
     builds: []const u8,
-    toolchains: []const u8,
     startup_preference: []const u8,
     profile_preferences: []const u8,
     legacy_profile_preferences: []const u8,
@@ -153,7 +152,6 @@ pub fn resolve(gpa: std.mem.Allocator, options: Options) !OwnedPaths {
         .logs = try normalize(a, platform, &.{ data, "logs" }),
         .rollback = try normalize(a, platform, &.{ data, "verified-rollback" }),
         .builds = try normalize(a, platform, &.{ cache, "builds" }),
-        .toolchains = try normalize(a, platform, &.{ cache, "toolchains" }),
         .startup_preference = try normalize(a, platform, &.{ config, "startup-project.zon" }),
         .profile_preferences = try normalize(a, platform, &.{ config, "profile-projects-v1.zon" }),
         .legacy_profile_preferences = try normalize(a, platform, &.{ config, "profile-projects.zon" }),
@@ -230,6 +228,27 @@ test "installed paths are independent of working directories on all platforms" {
     try std.testing.expectEqualStrings("/home/zoë/.config/zigmkay/profile-projects-v1.zon", linux.paths.profile_preferences);
     try std.testing.expectEqualStrings("/home/zoë/.config/zigmkay/profile-projects.zon", linux.paths.legacy_profile_preferences);
     try std.testing.expectEqualStrings("/usr/share/zigmkay", linux.paths.resources);
+}
+
+test "Windows relocated smoke test separates installation from user storage" {
+    const env: Environment = .{
+        .home = "C:\\temp\\Zigmkay offline ü\\home",
+        .appdata = "C:\\temp\\Zigmkay offline ü\\config",
+        .localappdata = "C:\\temp\\Zigmkay offline ü\\cache",
+    };
+    try std.testing.expectError(error.StorageOverlap, resolve(std.testing.allocator, .{
+        .platform = .windows,
+        .env = env,
+        .executable_path = "C:\\temp\\Zigmkay offline ü\\Zigmkay.exe",
+    }));
+    var paths = try resolve(std.testing.allocator, .{
+        .platform = .windows,
+        .env = env,
+        .executable_path = "C:\\temp\\Zigmkay offline ü\\install\\Zigmkay.exe",
+    });
+    defer paths.deinit();
+    try std.testing.expectEqualStrings("C:\\temp\\Zigmkay offline ü\\install", paths.paths.installation_root);
+    try std.testing.expectEqualStrings("C:\\temp\\Zigmkay offline ü\\cache\\zigmkay\\cache", paths.paths.cache);
 }
 
 test "XDG values and UNC user directories are injected and validated" {

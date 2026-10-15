@@ -1,17 +1,19 @@
 # Package A: exercise timing and portable history
 
 Package A adds the raw data foundation without introducing charts into practice.
-The user approved the narrow SQLite C API bridge exception on 2026-10-14. All
-first-party capture, persistence, validation, import/export and UI logic is Zig.
+The database API uses pinned zqlite with its bundled SQLite implementation.
+All first-party capture, persistence, validation, import/export and UI logic is Zig.
 
 ## Storage and compatibility
 
-- SQLite 3.54.0 source: `https://www.sqlite.org/2026/sqlite-autoconf-3540000.tar.gz`.
-- Official archive SHA3-256, verified locally:
-  `f5e3e724e9c9b3b5d512c76b02082091a59eeea9becd169a9fbf4d376403acce`.
-- Immutable Zig package hash is recorded in `build.zig.zon`. The dependency
-  strips the archive's `sqlite-autoconf-3540000` root directory. Clean CI
-  fetching verifies the same package hash on macOS, Linux and Windows.
+- The immutable zqlite revision and Zig package hash are recorded in
+  `build.zig.zon`. Its bundled SQLite is compiled with the application's
+  explicit hardening flags and payload/SQL limits. The previous direct autoconf
+  archive dependency and handwritten C ABI declarations have been removed.
+- The existing database format remains compatible. A current-schema refresh uses
+  a read-only connection and one read transaction, including while another
+  instance is writing. Creation, migrations, pending legacy imports, save,
+  clear and database import acquire writable access deliberately.
 - Database application ID `0x5a4d5052`; package A introduced schema version 1,
   and package E upgrades it transactionally to version 2 with a practice-scope
   index. Old raw record bytes remain unchanged. Counts record version 1

@@ -64,7 +64,7 @@ test "toPlatformMods: no modifiers returns 0" {
 test "Modifiers roundtrip: all 256 byte values" {
     var i: u16 = 0;
     while (i < 256) : (i += 1) {
-        const mods = @import("zigmkay").core.Modifiers.fromByte(@intCast(i));
+        const mods = hid.Modifiers.fromByte(@intCast(i));
         try testing.expectEqual(@as(u8, @intCast(i)), mods.toByte());
     }
 }
