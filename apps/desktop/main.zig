@@ -201,7 +201,7 @@ const FileJob = struct {
 };
 const SourceJob = struct { worker: *desktop.source_worker.Owner, action: callbacks.Action, editor_generation: u64 };
 const ProfileJob = struct { worker: *desktop.profile_switch.Worker, action: desktop.editor_dispatch.Request, editor_generation: u64, previous_path: [4096]u8 };
-const BuildJob = struct { worker: *desktop.build_worker.Owner, editor_generation: u64 };
+const BuildJob = struct { worker: *desktop.build_worker.Owner, editor_generation: u64, first_build: bool };
 const Jobs = struct {
     file: ?FileJob = null,
     source: ?SourceJob = null,
@@ -229,7 +229,8 @@ fn artifactMatchesBundle(artifact: anytype) bool {
 fn startBuild(gpa: std.mem.Allocator, io: std.Io, model: *const desktop.model.Model, config: desktop.build_worker.Config, environment: *const std.process.Environ.Map, generation: u64, editor_generation: u64) !BuildJob {
     var request = try desktop.build_worker.Request.capture(model, config, environment, generation);
     errdefer request.deinit();
-    return .{ .worker = try desktop.build_worker.Owner.create(gpa, io, &request, generation), .editor_generation = editor_generation };
+    const first_build = jobs_api.managed_build.isFirstBuild(gpa, io, config.request);
+    return .{ .worker = try desktop.build_worker.Owner.create(gpa, io, &request, generation), .editor_generation = editor_generation, .first_build = first_build };
 }
 fn applyPractice(runtime: *desktop.runner_runtime.Runtime, practice: *desktop.practice_controller.Controller, effect: desktop.practice_controller.Effect, runner: ?desktop.build_worker.Runner, model: *const desktop.model.Model, view: *editor.View, now_us: u64) void {
     runtime.apply(practice, effect, runner, model, now_us) catch |err| {
@@ -1263,7 +1264,7 @@ pub fn main(init: std.process.Init) !void {
         }
         const document = model.document();
         const can_build = if (build_plan) |plan| !jobs.busy() and std.mem.eql(u8, &plan.config.board_id, &model.board.id) and std.mem.eql(u8, plan.config.build_board, board.entry.selector) else false;
-        const build_status: []const u8 = if (jobs.build != null) "Building" else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id()))) "Built snapshot" else "Build outdated") else if (build_plan != null) "Ready to build and Flash" else "Application bundle is missing build resources";
+        const build_status: []const u8 = if (jobs.build) |job| (if (job.first_build) "First build: this can take a few minutes. Later builds are faster." else "Building") else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id()))) "Built snapshot" else "Build outdated") else if (build_plan != null) "Ready to build and Flash" else "Application bundle is missing build resources";
         view.callback.busy = jobs.busy();
         practice_history.poll();
         if (practice_view.transfer != .none) {
@@ -1676,7 +1677,7 @@ pub fn main(init: std.process.Init) !void {
             }, .can_build = can_build, .can_flash = flash_tools != null and build_plan != null and can_build and frame_limit == null, .flash_active = flash != null and switch (flash.?.owner.phase) {
                 .ready, .failed, .cancelled, .reconnect_timeout, .stale => false,
                 else => true,
-            }, .flash_status = if (flash) |session| try session.status(dvui.currentWindow().arena(), now_us / 1000) else if (pending_flash != null) "Building for Flash" else if (flash_failure != null) "Flash failed" else "", .build_status = build_status, .profiles = if (std.mem.eql(u8, &model.board.id, &project.profiles.board.id)) &.{ .{ .id = "danish\x00\x00".*, .name = project.profiles.names[0] }, .{ .id = "qwerty\x00\x00".*, .name = project.profiles.names[1] }, .{ .id = "eurkey\x00\x00".*, .name = project.profiles.names[2] }, .{ .id = "eurmac\x00\x00".*, .name = project.profiles.names[3] } } else &.{} },
+            }, .flash_status = if (jobs.build != null) "" else if (flash) |session| try session.status(dvui.currentWindow().arena(), now_us / 1000) else if (pending_flash != null) "Building for Flash" else if (flash_failure != null) "Flash failed" else "", .build_status = build_status, .profiles = if (std.mem.eql(u8, &model.board.id, &project.profiles.board.id)) &.{ .{ .id = "danish\x00\x00".*, .name = project.profiles.names[0] }, .{ .id = "qwerty\x00\x00".*, .name = project.profiles.names[1] }, .{ .id = "eurkey\x00\x00".*, .name = project.profiles.names[2] }, .{ .id = "eurmac\x00\x00".*, .name = project.profiles.names[3] } } else &.{} },
             .keyboard = .{ .snapshot = try model.id(), .board_id = document.board_id, .physical_layout = document.physical_layout, .geometry = board.entry.geometry, .labels = &captions.labels, .board_name = board.entry.selector, .fidelity = "Catalog geometry · physical acceptance pending" },
             .host = &captions.host,
             .paths = .{ .exported = exported, .can_choose = frame_limit == null and !dialog.active(), .busy = jobs.busy() },
@@ -2232,13 +2233,22 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         build_scheduler.observe(try model.id(), now_us / 1000);
-        if (build_scheduler.take(now_us / 1000, !view.toolbar.auto_build or build_plan == null or !can_build or jobs.busy() or flash_panel or practicing or view.modal != .none or owner.closed or owner.close_requested != null or owner.pending != null or owner.inspector.dirty())) {
+        if (build_scheduler.take(now_us / 1000, !view.toolbar.auto_build or build_plan == null or !can_build or jobs.busy() or pending_flash != null or desktop.flash_presenter.blocksAutoBuild(if (flash) |session| session.owner.phase else null) or practicing or view.modal != .none or owner.closed or owner.close_requested != null or owner.pending != null or owner.inspector.dirty())) {
             const next_job = try std.math.add(u64, job_generation, 1);
             jobs.build = startBuild(gpa, init.io, &model, build_plan.?.config, init.environ_map, next_job, owner_generation) catch |err| failed: {
                 view.report(err);
                 break :failed null;
             };
-            if (jobs.build != null) job_generation = next_job;
+            if (jobs.build != null) {
+                job_generation = next_job;
+                if (flash) |*previous| previous.deinit();
+                flash = null;
+                flash_gate.cancel();
+                retained_flash_view = null;
+                flash_failure = null;
+                flash_panel = false;
+                view.diagnostic = @splat(0);
+            }
         }
         // Never enter SDL's potentially unbounded wait after accepting Quit.
         if (owner.closed) {

@@ -2,6 +2,17 @@
 const std = @import("std");
 pub const controller = @import("flash-controller");
 pub const Action = enum { prepare, build, freeze, select, confirm, cancel, reset };
+pub fn blocksAutoBuild(phase: ?controller.Phase) bool {
+    return if (phase) |value| switch (value) {
+        .idle, .ready, .failed, .cancelled, .reconnect_timeout, .stale => false,
+        else => true,
+    } else false;
+}
+test "completed and invalidated Flash sessions allow the next automatic build" {
+    const t = std.testing;
+    for ([_]controller.Phase{ .ready, .failed, .cancelled, .reconnect_timeout, .stale }) |phase| try t.expect(!blocksAutoBuild(phase));
+    for ([_]controller.Phase{ .preparing, .building, .frozen, .awaiting_confirmation, .verifying, .rebooting, .reconnecting, .cancelling }) |phase| try t.expect(blocksAutoBuild(phase));
+}
 pub fn showErrorWindow(phase: ?controller.Phase, failure: ?anyerror) bool {
     return failure != null or phase == .failed or phase == .reconnect_timeout;
 }

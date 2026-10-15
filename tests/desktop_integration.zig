@@ -1,5 +1,18 @@
 //! Real combined module graph: document edits, cache/practice and explicit flash.
 const std = @import("std");
+test "edits and reverting during a build are scheduled after Flash has finished" {
+    const t = std.testing;
+    var scheduler: desktop.auto_build.Scheduler = .{};
+    scheduler.observe(@splat(1), 0);
+    scheduler.manual(@splat(1));
+    scheduler.observe(@splat(2), 10);
+    try t.expect(scheduler.take(1000, desktop.flash_presenter.blocksAutoBuild(.ready)));
+    // Revert while the new build is busy; keep the replacement queued.
+    scheduler.observe(@splat(1), 1100);
+    try t.expect(!scheduler.take(2000, true));
+    try t.expect(scheduler.take(2100, desktop.flash_presenter.blocksAutoBuild(.stale)));
+    try t.expect(!scheduler.take(3000, desktop.flash_presenter.blocksAutoBuild(.stale)));
+}
 fn awaitWorker(worker: anytype) !@TypeOf(worker.*).Event {
     const started = std.Io.Clock.awake.now(std.testing.io);
     while (true) {
@@ -888,6 +901,7 @@ test "build worker owns verified exports and accepts only the current editor pre
     var environment: std.process.Environ.Map = .init(t.allocator);
     defer environment.deinit();
     try environment.put("ZIGMKAY_BUILD_FIXTURE", "success");
+    try t.expect(jobs.managed_build.isFirstBuild(t.allocator, t.io, config.request));
     var request = try desktop.build_worker.Request.capture(&model, config, &environment, 42);
     var owns_request = true;
     defer if (owns_request) request.deinit();
@@ -917,6 +931,7 @@ test "build worker owns verified exports and accepts only the current editor pre
         return err;
     };
     defer candidate.deinit();
+    try t.expect(!jobs.managed_build.isFirstBuild(t.allocator, t.io, config.request));
     var stale = candidate.ticket;
     stale.generation += 1;
     try t.expectError(error.StaleBuild, candidate.take(&model, stale));

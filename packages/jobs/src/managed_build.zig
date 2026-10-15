@@ -17,8 +17,20 @@ pub const Request = struct {
     expected_export_tree: jobs.firmware.Digest,
     install_directory: []const u8,
     development_firmware: ?[]const u8 = null,
-    timeout_ms: u32 = 120_000,
+    timeout_ms: u32 = 300_000,
 };
+fn compilerCacheDirectory(a: std.mem.Allocator, request: Request) ![]u8 {
+    return std.fs.path.join(a, &.{ request.install_directory, "compiler-cache", &std.fmt.bytesToHex(request.bundled.receipt.bundle_id, .lower) });
+}
+/// A single small completion marker, read only when a build is requested.
+pub fn isFirstBuild(gpa: std.mem.Allocator, io: std.Io, request: Request) bool {
+    const path = compilerCacheDirectory(gpa, request) catch return true;
+    defer gpa.free(path);
+    var directory = std.Io.Dir.cwd().openDir(io, path, .{}) catch return true;
+    defer directory.close(io);
+    _ = directory.statFile(io, "built", .{}) catch return true;
+    return false;
+}
 /// Stable address from start through completion/cancellation.
 pub const Job = struct {
     arena: std.heap.ArenaAllocator,
@@ -65,7 +77,7 @@ pub const Job = struct {
         errdefer command.deinit();
         var selected_environment = try environment.clone(gpa);
         defer selected_environment.deinit();
-        const compiler_cache = try std.fs.path.join(arena.allocator(), &.{ owned.install_directory, "compiler-cache", &std.fmt.bytesToHex(captured.receipt.bundle_id, .lower) });
+        const compiler_cache = try compilerCacheDirectory(arena.allocator(), owned);
         try selected_environment.put("ZIG_GLOBAL_CACHE_DIR", try std.fs.path.join(arena.allocator(), &.{ compiler_cache, "global" }));
         for ([_][]const u8{ "ZIG_LOCAL_CACHE_DIR", "ZIG_LOCAL_PKG_DIR", "ZIG_LIBC", "ZIG_LIBC_PATH", "ZIG_BUILD_RUNNER", "ZIG_EXECUTABLE" }) |name| _ = selected_environment.swapRemove(name);
         // Zig's system package mode reads supplied package directories and
@@ -119,12 +131,21 @@ pub const Job = struct {
         defer self.gpa.free(bytes);
         var manifest = try jobs.firmware.Manifest.complete(self.gpa, .succeeded, self.command.build_key, self.captured.inputs, current, self.command.uf2_path, bytes);
         manifest.audit_mode = .bundled;
+        // Informational only: losing this marker must never reject a valid build.
+        self.noteWarmCache() catch {};
         self.accepted = true;
         self.finish_verified_key = jobs.firmware.key(current);
         self.finish_verified_receipt = self.captured.receipt;
         self.finish_verified_at_ms = std.Io.Clock.awake.now(self.io).toMilliseconds();
         self.finish_verified = true;
         return manifest;
+    }
+    fn noteWarmCache(self: *Job) !void {
+        const path = try compilerCacheDirectory(self.gpa, self.request);
+        defer self.gpa.free(path);
+        var directory = try std.Io.Dir.cwd().createDirPathOpen(self.io, path, .{});
+        defer directory.close(self.io);
+        try directory.writeFile(self.io, .{ .sub_path = "built", .data = "" });
     }
     /// The existing build-project command also installs the native processor runner.
     /// It is accepted only after successful firmware completion from this same job.
