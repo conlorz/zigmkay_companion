@@ -5,6 +5,8 @@ pub fn build(b: *std.Build) void {
     @setEvalBranchQuota(100_000);
     if (!std.mem.eql(u8, builtin.zig_version_string, "0.17.0"))
         @panic("zigmkay_companion requires exactly Zig 0.17.0");
+    // Register command-line options before lazy dependencies can suspend setup.
+    const application_bundle = b.option(bool, "application-bundle", "Include the compiler, firmware closure and prebuilt flash tools") orelse false;
 
     const check = b.step("check", "Compile downstream processor contract without device access");
     b.default_step = check;
@@ -504,7 +506,7 @@ pub fn build(b: *std.Build) void {
                 }) });
                 app.root_module.addImport("companion-jobs", jobs);
                 const assemble_step = b.step("bundle-application", "Assemble the complete offline application");
-                if (b.option(bool, "application-bundle", "Include the compiler, firmware closure and prebuilt flash tools") orelse false) {
+                if (application_bundle) {
                     const flash_dep = b.lazyDependency("zigmkay_firmware", .{ .@"flash-tools" = true }) orelse return;
                     // Configure every supported target so Zig acquires build-time
                     // lazy inputs before the offline resource closure is copied.
