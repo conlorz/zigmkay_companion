@@ -5,6 +5,29 @@ This checkout contains the editor, resident companion, native UI, utilities and
 tests. First-party implementation uses exactly Zig 0.17.0; imported C bridges
 retain their existing scope. Follow [AGENTS.md](../AGENTS.md) when contributing.
 
+## CI and Windows finalization diagnostics
+
+All four workflows run automatically on pull requests and on pushes to `main`.
+Feature-branch pushes do not duplicate the pull-request runs. Full application
+verification covers macOS and Windows, including relocated offline builds and
+the GUI build/practice smoke test, without device access.
+
+The **Self-contained application** workflow also supports manual dispatch:
+
+- `diagnostic`: Windows-only manifest publication, runner protection, cache reuse
+  and cleanup using fixture artifacts, without firmware compilation. The run
+  preserves its executable, PDB, log and output artifacts for three days.
+- `gui`: Windows-only offline GUI build/practice verification, without repeating
+  the catalog's cold/warm build matrix.
+- `full`: the complete macOS/Windows bundle matrix.
+
+Build the small diagnostic locally with
+`zig build build-finalization-diagnostic -Dfinalization-diagnostic-only=true`.
+Run `zig-out/bin/diagnose-build-finalization` (with `.exe` on Windows), passing a
+fresh output-directory path. Outputs must remain in a cache directory. Windows
+attributes are queried natively because Zig 0.17.0's Windows `stat` reports
+default permissions rather than the actual read-only attribute.
+
 ## Everyday commands
 
 Run commands from the repository root. `mise run` selects the pinned tools;

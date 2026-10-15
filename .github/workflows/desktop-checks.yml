@@ -2,12 +2,11 @@ name: Native desktop contracts
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
   desktop:
-    # Temporary PR #4 diagnostic gate. Restore automatic coverage before merge.
-    if: github.ref != 'refs/heads/t3code/review-dependency-configuration' && github.head_ref != 't3code/review-dependency-configuration'
     runs-on: macos-latest
     timeout-minutes: 30
     steps:

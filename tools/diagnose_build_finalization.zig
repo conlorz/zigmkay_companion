@@ -1,4 +1,4 @@
-//! Temporary offline reproduction of post-build artifact publication. No compiler or devices.
+//! Offline reproduction of post-build artifact publication. No compiler or devices.
 const std = @import("std");
 const jobs = @import("companion-jobs");
 

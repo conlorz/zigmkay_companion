@@ -2,11 +2,12 @@ name: Self-contained application
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
       mode:
-        description: Diagnostic only, or full bundle verification (restore automatic checks before merge)
+        description: Windows finalization diagnostic, Windows GUI verification, or full bundle verification
         type: choice
         options: [diagnostic, gui, full]
         default: diagnostic
@@ -43,8 +44,7 @@ jobs:
             finalization.log
             ${{ runner.temp }}/finalization ü
   bundle:
-    # Temporary PR #4 diagnostic gate. Restore automatic coverage before merge.
-    if: (github.event_name == 'workflow_dispatch' && (inputs.mode == 'full' || inputs.mode == 'gui')) || (github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/t3code/review-dependency-configuration' && github.head_ref != 't3code/review-dependency-configuration')
+    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'full' || inputs.mode == 'gui'
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +75,7 @@ jobs:
           profile="(version 1)(allow default)(deny network*)(deny file-read* (subpath \"$GITHUB_WORKSPACE\"))(deny file-read* (subpath \"$RUNNER_TOOL_CACHE\"))(deny file-read* (subpath \"/Applications/Xcode.app\"))(deny file-read* (subpath \"/Library/Developer\"))"
           cd "$target"
           for pass in cold warm; do
+            echo "Offline bundle verification: $pass"
             env -i HOME="$target/home" PATH=/usr/bin:/bin SDKROOT=/missing DEVELOPER_DIR=/missing ZIG_LOCAL_PKG_DIR=/missing \
               sandbox-exec -p "$profile" ./check "$target/Zigmkay.app/Contents/Resources" "$target/home/Library/Caches/zigmkay" all
           done

@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
     });
     const diagnostic_step = b.step("build-finalization-diagnostic", "Build the symbolized offline artifact publication reproduction");
     diagnostic_step.dependOn(&b.addInstallArtifact(finalization_diagnostic, .{}).step);
-    if (b.option(bool, "finalization-diagnostic-only", "Configure only the temporary artifact publication diagnostic") orelse false) return;
+    if (b.option(bool, "finalization-diagnostic-only", "Configure only the offline artifact publication diagnostic") orelse false) return;
     const flash_controller = b.addModule("flash-controller", .{ .root_source_file = b.path("packages/desktop/src/flash_controller.zig"), .imports = &.{.{ .name = "companion-jobs", .module = jobs }} });
     const tray_lifecycle = b.addModule("tray-lifecycle", .{ .root_source_file = b.path("packages/desktop/src/tray_lifecycle.zig"), .target = b.graph.host });
     const flash_presenter = b.addModule("flash-presenter", .{ .root_source_file = b.path("packages/desktop/src/flash_presenter.zig"), .target = b.graph.host, .imports = &.{.{ .name = "flash-controller", .module = flash_controller }} });
