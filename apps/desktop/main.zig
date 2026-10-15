@@ -1,9 +1,8 @@
 //! Native editor/companion startup monitors HID by default. Explicit offline
-//! modes and fixtures avoid devices; flashing and acquisition remain explicit.
+//! modes and fixtures avoid devices; flashing remains explicit.
 const std = @import("std");
 const flash_session = @import("flash_session.zig");
-const automatic = @import("auto_prepare.zig");
-const preparation_options = @import("preparation-options");
+const bundled = @import("desktop-core").application_bundle;
 const bootloader = @import("flash_bootloader.zig");
 const flash_ui = @import("flash-ui");
 const jobs_api = @import("companion-jobs");
@@ -224,16 +223,11 @@ fn startFile(gpa: std.mem.Allocator, io: std.Io, view: *editor.View, model: *des
     errdefer request.deinit();
     return .{ .worker = try desktop.project_worker.Owner.create(gpa, io, &request, generation), .action = action, .editor_generation = editor_generation };
 }
-fn artifactMatchesAudit(artifact: anytype, full: bool) bool {
-    return artifact.audit_mode == (if (full) jobs_api.firmware.AuditMode.deep else .fast_prepared_inputs_no_fresh_full_provenance_audit);
+fn artifactMatchesBundle(artifact: anytype) bool {
+    return artifact.audit_mode == jobs_api.firmware.AuditMode.bundled;
 }
-fn auditConfig(config: desktop.build_worker.Config, full: bool) desktop.build_worker.Config {
-    var selected = config;
-    selected.request.audit_mode = if (full) .deep else .fast;
-    return selected;
-}
-fn startBuild(gpa: std.mem.Allocator, io: std.Io, model: *const desktop.model.Model, config: desktop.build_worker.Config, full: bool, environment: *const std.process.Environ.Map, generation: u64, editor_generation: u64) !BuildJob {
-    var request = try desktop.build_worker.Request.capture(model, auditConfig(config, full), environment, generation);
+fn startBuild(gpa: std.mem.Allocator, io: std.Io, model: *const desktop.model.Model, config: desktop.build_worker.Config, environment: *const std.process.Environ.Map, generation: u64, editor_generation: u64) !BuildJob {
+    var request = try desktop.build_worker.Request.capture(model, config, environment, generation);
     errdefer request.deinit();
     return .{ .worker = try desktop.build_worker.Owner.create(gpa, io, &request, generation), .editor_generation = editor_generation };
 }
@@ -318,38 +312,10 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const args = try init.minimal.args.toSlice(gpa);
     defer gpa.free(args);
-    // Exercise the exact automatic preparer without a window or device access.
-    if (args.len == 4 and (std.mem.eql(u8, args[1], "--prepare-editor-environment") or std.mem.eql(u8, args[1], "--check-editor-build"))) {
-        if (!std.fs.path.isAbsolute(args[2])) return error.AbsolutePreparedInputRequired;
-        var selected_board = try boards.OwnedBoard.init(gpa, args[3]);
-        defer selected_board.deinit();
-        var request = try automatic.Request.capture(gpa, .{ .compiler = preparation_options.compiler, .companion = preparation_options.companion, .firmware_url = preparation_options.firmware_url, .firmware_hash = preparation_options.firmware_hash }, args[2], args[3], if (std.mem.eql(u8, args[3], "lk7")) project.profiles.board.id else selected_board.board.id, init.environ_map);
-        defer request.deinit();
-        const preparation_started = std.Io.Clock.awake.now(init.io);
-        var prepared = try request.prepare(gpa, init.io);
-        std.log.info("editor preparation elapsed_ms={d}", .{std.Io.Clock.awake.now(init.io).toMilliseconds() - preparation_started.toMilliseconds()});
-        defer prepared.deinit();
-        std.log.info("editor environment ready: board={s} cached={} (no devices accessed)", .{ prepared.plan.config.build_board, prepared.cached });
-        if (std.mem.eql(u8, args[1], "--check-editor-build")) {
-            if (!std.mem.eql(u8, args[3], "lk7")) return error.BuildFixtureRequiresLk7;
-            var loaded = try project.profiles.create(gpa, .qwerty);
-            defer loaded.deinit();
-            var model = try desktop.model.Model.init(gpa, project.profiles.board, loaded.snapshot);
-            defer model.deinit();
-            var build_request = try desktop.build_worker.Request.capture(&model, prepared.plan.config, init.environ_map, 1);
-            defer build_request.deinit();
-            var result = try build_request.prepare(gpa, init.io);
-            defer result.deinit();
-            std.log.info("automatic editor build ready: UF2 and runner verified (no devices accessed)", .{});
-        }
-        return;
-    }
     var frame_limit: ?usize = null;
     const physical_flash = args.len > 1 and std.mem.eql(u8, args[1], "--physical-flash-once");
-    const physical_auto = physical_flash and args.len == 2;
     if (physical_flash) {
-        if ((!physical_auto and args.len != 5) or !std.mem.eql(u8, init.environ_map.get("ZIGMKAY_EXPLICIT_FLASH_TRIAL") orelse "", "1")) return error.ExplicitFlashAuthorizationRequired;
-        for (args[2..]) |path| if (!std.fs.path.isAbsolute(path)) return error.AbsolutePreparedInputRequired;
+        if (args.len != 2 or !std.mem.eql(u8, init.environ_map.get("ZIGMKAY_EXPLICIT_FLASH_TRIAL") orelse "", "1")) return error.ExplicitFlashAuthorizationRequired;
     }
     const background_offline = args.len == 2 and std.mem.eql(u8, args[1], "--background-offline");
     const offline = background_offline or (args.len == 2 and std.mem.eql(u8, args[1], "--offline"));
@@ -378,82 +344,31 @@ pub fn main(init: std.process.Init) !void {
     var native_tray_fixture = false;
     var source_refresh_fixture = false;
     var draft_manifest: ?[]const u8 = null;
-    var flash_tools_path: ?[]const u8 = null;
     var build_plan: ?desktop.build_worker.Plan = null;
     defer if (build_plan) |plan| project.owned_zon.free(gpa, plan);
-    if (args.len != 1 and !background and !offline and !light and !explicit_live and !physical_auto) {
+    if (args.len != 1 and !background and !offline and !light and !explicit_live and !physical_flash) {
         draft_fixture = std.mem.eql(u8, args[1], "--offline-draft-frames");
         build_fixture = std.mem.eql(u8, args[1], "--offline-build-frames");
-        if (physical_flash) {
-            flash_tools_path = args[4];
-            const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[3], gpa, .limited(1024 * 1024));
-            defer gpa.free(bytes);
-            const text = try gpa.dupeSentinel(u8, bytes, 0);
-            defer gpa.free(text);
-            build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
-            if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
-        } else if (args.len == 5 and std.mem.eql(u8, args[1], "--prepared-build-config") and std.mem.eql(u8, args[3], "--prepared-flash-tools")) {
-            if (!std.fs.path.isAbsolute(args[2]) or !std.fs.path.isAbsolute(args[4])) return error.AbsolutePreparedInputRequired;
-            flash_tools_path = args[4];
-            const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[2], gpa, .limited(1024 * 1024));
-            defer gpa.free(bytes);
-            const text = try gpa.dupeSentinel(u8, bytes, 0);
-            defer gpa.free(text);
-            build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
-            if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
-        } else if (args.len == 5 and std.mem.eql(u8, args[1], "--prepared-flash-tools") and std.mem.eql(u8, args[3], "--prepared-build-config")) {
-            if (!std.fs.path.isAbsolute(args[2]) or !std.fs.path.isAbsolute(args[4])) return error.AbsolutePreparedInputRequired;
-            flash_tools_path = args[2];
-            const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[4], gpa, .limited(1024 * 1024));
-            defer gpa.free(bytes);
-            const text = try gpa.dupeSentinel(u8, bytes, 0);
-            defer gpa.free(text);
-            build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
-            if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
+        if (args.len != (if (draft_fixture) @as(usize, 4) else 3)) return error.Usage;
+        practice_fixture = std.mem.eql(u8, args[1], "--offline-practice-frames");
+        rundown_fixture = native_rundown or std.mem.eql(u8, args[1], "--offline-rundown-frames");
+        companion_fixture = std.mem.eql(u8, args[1], "--offline-companion-frames");
+        native_tray_fixture = std.mem.eql(u8, args[1], "--native-tray-frames");
+        source_refresh_fixture = std.mem.eql(u8, args[1], "--offline-source-refresh-frames");
+        if (!rundown_fixture and !practice_fixture and !draft_fixture and !build_fixture and !companion_fixture and !native_tray_fixture and !source_refresh_fixture and !std.mem.eql(u8, args[1], "--offline-frames")) return error.Usage;
+        frame_limit = try std.fmt.parseInt(usize, args[2], 10);
+        const minimum_frames: usize = if (rundown_fixture) 20 else if (companion_fixture) 9 else if (practice_fixture or native_tray_fixture or source_refresh_fixture) 3 else if (build_fixture) 2 else 1;
+        const maximum_frames: usize = if (build_fixture) 30_000 else if (draft_fixture) 1000 else if (layout_preview) 200 else 100;
+        if (frame_limit.? < minimum_frames or frame_limit.? > maximum_frames) return error.InvalidFrameLimit;
+        if (draft_fixture) {
+            if (!std.fs.path.isAbsolute(args[3])) return error.AbsoluteRunnerManifestRequired;
+            draft_manifest = args[3];
+        }
+        if (native_tray_fixture or native_rundown) {
+            if (std.c.getenv("SDL_VIDEODRIVER")) |driver| if (std.mem.eql(u8, std.mem.span(driver), "dummy")) return error.NativeVideoRequired;
         } else {
-            if (args.len != (if (draft_fixture or build_fixture) @as(usize, 4) else 3)) return error.Usage;
-            if (std.mem.eql(u8, args[1], "--prepared-flash-tools")) {
-                if (args.len != 3 or !std.fs.path.isAbsolute(args[2])) return error.AbsoluteFlashToolsRequired;
-                flash_tools_path = args[2];
-            } else if (std.mem.eql(u8, args[1], "--prepared-build-config")) {
-                if (!std.fs.path.isAbsolute(args[2])) return error.AbsoluteBuildConfigRequired;
-                const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[2], gpa, .limited(1024 * 1024));
-                defer gpa.free(bytes);
-                const text = try gpa.dupeSentinel(u8, bytes, 0);
-                defer gpa.free(text);
-                build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
-                if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
-            } else {
-                practice_fixture = std.mem.eql(u8, args[1], "--offline-practice-frames");
-                rundown_fixture = native_rundown or std.mem.eql(u8, args[1], "--offline-rundown-frames");
-                companion_fixture = std.mem.eql(u8, args[1], "--offline-companion-frames");
-                native_tray_fixture = std.mem.eql(u8, args[1], "--native-tray-frames");
-                source_refresh_fixture = std.mem.eql(u8, args[1], "--offline-source-refresh-frames");
-                if (!rundown_fixture and !practice_fixture and !draft_fixture and !build_fixture and !companion_fixture and !native_tray_fixture and !source_refresh_fixture and !std.mem.eql(u8, args[1], "--offline-frames")) return error.Usage;
-                frame_limit = try std.fmt.parseInt(usize, args[2], 10);
-                const minimum_frames: usize = if (rundown_fixture) 20 else if (companion_fixture) 9 else if (practice_fixture or native_tray_fixture or source_refresh_fixture) 3 else if (build_fixture) 2 else 1;
-                const maximum_frames: usize = if (build_fixture) 30_000 else if (draft_fixture) 1000 else if (layout_preview) 200 else 100;
-                if (frame_limit.? < minimum_frames or frame_limit.? > maximum_frames) return error.InvalidFrameLimit;
-                if (build_fixture) {
-                    if (!std.fs.path.isAbsolute(args[3])) return error.AbsoluteBuildConfigRequired;
-                    const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[3], gpa, .limited(1024 * 1024));
-                    defer gpa.free(bytes);
-                    const text = try gpa.dupeSentinel(u8, bytes, 0);
-                    defer gpa.free(text);
-                    build_plan = try project.owned_zon.parse(desktop.build_worker.Plan, gpa, text);
-                    if (build_plan.?.version != 1) return error.UnsupportedBuildConfig;
-                }
-                if (draft_fixture) {
-                    if (!std.fs.path.isAbsolute(args[3])) return error.AbsoluteRunnerManifestRequired;
-                    draft_manifest = args[3];
-                }
-                if (native_tray_fixture or native_rundown) {
-                    if (std.c.getenv("SDL_VIDEODRIVER")) |driver| if (std.mem.eql(u8, std.mem.span(driver), "dummy")) return error.NativeVideoRequired;
-                } else {
-                    const driver = std.c.getenv("SDL_VIDEODRIVER") orelse return error.DummyVideoRequired;
-                    if (!std.mem.eql(u8, std.mem.span(driver), "dummy")) return error.DummyVideoRequired;
-                }
-            }
+            const driver = std.c.getenv("SDL_VIDEODRIVER") orelse return error.DummyVideoRequired;
+            if (!std.mem.eql(u8, std.mem.span(driver), "dummy")) return error.DummyVideoRequired;
         }
     }
     const live_enabled = explicit_live or (!offline and !light and frame_limit == null);
@@ -480,7 +395,7 @@ pub fn main(init: std.process.Init) !void {
     defer registry.deinit();
     var user_paths: ?installed.OwnedPaths = null;
     defer if (user_paths) |*owned| owned.deinit();
-    if (frame_limit == null) {
+    if (frame_limit == null or build_fixture) {
         user_paths = installedPaths(init) catch |err| unavailable: {
             view.report(err);
             break :unavailable null;
@@ -527,18 +442,12 @@ pub fn main(init: std.process.Init) !void {
             }
         }
     }
-    if ((physical_flash and !physical_auto) or (explicit_live and args.len == 3)) {
+    if (explicit_live and args.len == 3) {
         if (!std.fs.path.isAbsolute(args[2]) or args[2].len >= view.paths.project.len) return error.AbsoluteProjectPathRequired;
         view.paths.project = @splat(0);
         @memcpy(view.paths.project[0..args[2].len], args[2]);
         _ = try fileOperation(gpa, init.io, &view, &model, view.paths.action(try model.id(), .open));
         try owner.sync(&model);
-    }
-    if (physical_flash and !physical_auto) {
-        if (!std.mem.eql(u8, &model.board.id, "lk7\x00\x00\x00\x00\x00") or
-            !std.mem.eql(u8, &model.document().profile_id, "eurmac\x00\x00") or
-            !std.mem.eql(u8, &build_plan.?.config.board_id, &model.board.id) or
-            !std.mem.eql(u8, build_plan.?.config.build_board, "lk7")) return error.PhysicalFlashIdentityMismatch;
     }
     var source: ?Source = if (frame_limit == null) Source.init() else null;
     defer if (source) |*active| active.deinit();
@@ -606,17 +515,15 @@ pub fn main(init: std.process.Init) !void {
     var job_generation: u64 = 0;
     var jobs: Jobs = .{};
     defer jobs.cancel();
-    var flash_tools: ?jobs_api.flash_inputs.Tools = if (flash_tools_path) |path| try flash_session.readTools(gpa, init.io, path) else null;
+    var flash_tools: ?jobs_api.flash_inputs.Tools = null;
     defer if (flash_tools) |*tools| tools.deinit();
-    const automatic_enabled = automatic.enabled(frame_limit != null or (physical_flash and !physical_auto), offline or background_offline, build_plan != null or flash_tools_path != null);
-    var preparation: ?*automatic.Owner = null;
-    defer if (preparation) |worker| worker.destroy();
-    var preparation_selector: ?[]u8 = null;
-    var preparation_board: ?[8]u8 = null;
-    defer if (preparation_selector) |selector| gpa.free(selector);
-    var preparation_error: ?anyerror = null;
-    var preparation_error_visible = false;
-    if (physical_flash and !physical_auto and flash_tools == null) return error.FlashToolsReceiptRequired;
+    const executable = try std.process.executablePathAlloc(init.io, gpa);
+    defer gpa.free(executable);
+    var resources: ?bundled.Bundle = if (user_paths) |owned| (if (@import("builtin").os.tag == .windows) bundled.Bundle.fromExecutable(gpa, init.io, executable, owned.paths.cache) else bundled.Bundle.open(gpa, init.io, owned.paths.resources)) catch null else null;
+    defer if (resources) |*value| value.deinit();
+    if (resources) |value| {
+        if (flash_tools == null) flash_tools = try bundled.tools(gpa, value);
+    }
     var trial_start: ?i128 = null;
     var flash: ?flash_session.Session = null;
     var flash_panel = false;
@@ -624,7 +531,7 @@ pub fn main(init: std.process.Init) !void {
     var flash_failure: ?anyerror = null;
     var flash_gate: bootloader.Gate = .{};
     var retained_flash_view: ?desktop.flash_presenter.View = null;
-    var pending_flash: ?struct { snapshot: [32]u8, generation: u64, full_provenance_audit: bool } = null;
+    var pending_flash: ?struct { snapshot: [32]u8, generation: u64 } = null;
     var advance_flash = false;
     var built_generation: u64 = 0;
     var built_tree: jobs_api.firmware.Digest = @splat(0);
@@ -783,48 +690,15 @@ pub fn main(init: std.process.Init) !void {
             _ = Backend.c.SDL_ShowWindow(native.window);
         }
         if (life.quit_requested and owner.close_requested == null and owner.pending == null and !owner.closed) life.cancelQuit();
-        if (automatic_enabled and !jobs.busy() and flash == null and pending_flash == null) {
-            var automatic_board = try boards.OwnedBoard.fromDocument(gpa, model.document());
-            defer automatic_board.deinit();
-            if (preparation) |worker| {
-                if (worker.poll()) |event| {
-                    if (event.result) |value| {
-                        var prepared = value;
-                        defer prepared.deinit();
-                        if (std.mem.eql(u8, preparation_selector.?, automatic_board.entry.selector) and std.mem.eql(u8, &worker.request.board_id, &automatic_board.board.id)) {
-                            if (build_plan) |plan| project.owned_zon.free(gpa, plan);
-                            build_plan = try project.owned_zon.clone(gpa, prepared.plan);
-                            if (flash_tools) |*tools| tools.deinit();
-                            flash_tools = try jobs_api.flash_inputs.Tools.clone(gpa, prepared.tools);
-                            preparation_error = null;
-                        }
-                    } else |err| {
-                        preparation_error = err;
-                        preparation_error_visible = true;
-                        view.report(err);
-                    }
-                    worker.destroy();
-                    preparation = null;
-                }
+        if (resources) |value| if (user_paths) |owned| {
+            var selected = try boards.OwnedBoard.fromDocument(gpa, model.document());
+            defer selected.deinit();
+            if (build_plan == null or !std.mem.eql(u8, &build_plan.?.config.board_id, &model.board.id)) {
+                if (build_plan) |old| project.owned_zon.free(gpa, old);
+                build_plan = try bundled.plan(gpa, value, owned.paths.cache, selected.entry.selector, model.board.id);
             }
-            if (preparation == null and (preparation_selector == null or !std.mem.eql(u8, preparation_selector.?, automatic_board.entry.selector) or !std.mem.eql(u8, &preparation_board.?, &automatic_board.board.id))) {
-                if (preparation_selector) |selector| gpa.free(selector);
-                preparation_selector = try gpa.dupe(u8, automatic_board.entry.selector);
-                preparation_board = automatic_board.board.id;
-                preparation_error = null;
-                if (user_paths) |owned| {
-                    var request = try automatic.Request.capture(gpa, .{ .compiler = preparation_options.compiler, .companion = preparation_options.companion, .firmware_url = preparation_options.firmware_url, .firmware_hash = preparation_options.firmware_hash }, owned.paths.cache, automatic_board.entry.selector, automatic_board.board.id, init.environ_map);
-                    preparation = automatic.Owner.create(gpa, init.io, &request, 1) catch |err| failed: {
-                        request.deinit();
-                        preparation_error = err;
-                        preparation_error_visible = true;
-                        view.report(err);
-                        break :failed null;
-                    };
-                }
-            }
-        }
-        if (frame_limit == null and preparation == null and !life.editor_visible and !life.companion_visible and !jobs.busy() and flash == null and pending_flash == null and retained_flash_view == null and draft_runtime.owner == null and practice_history.worker == null and (practice_history.queued == 0 or practice_history.error_value != null)) {
+        };
+        if (frame_limit == null and !life.editor_visible and !life.companion_visible and !jobs.busy() and flash == null and pending_flash == null and retained_flash_view == null and draft_runtime.owner == null and practice_history.worker == null and (practice_history.queued == 0 or practice_history.error_value != null)) {
             // An idle resident does not construct editor frames or redraw hidden
             // windows. SDL waits for native events between bounded tray polls.
             tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = false });
@@ -1042,7 +916,7 @@ pub fn main(init: std.process.Init) !void {
             flash_gate.cancel();
             retained_flash_view = null;
             if (pending_flash) |pending| {
-                if (pending.generation == owner_generation and pending.full_provenance_audit == view.toolbar.full_provenance_audit and std.mem.eql(u8, &pending.snapshot, &(try model.id()))) {
+                if (pending.generation == owner_generation and std.mem.eql(u8, &pending.snapshot, &(try model.id()))) {
                     advance_flash = true;
                 } else pending_flash = null;
             }
@@ -1388,8 +1262,8 @@ pub fn main(init: std.process.Init) !void {
             applyPractice(&draft_runtime, &practice, practice.pause(now_us), built_runner, &model, &view, now_us);
         }
         const document = model.document();
-        const can_build = if (build_plan) |plan| preparation == null and preparation_error == null and !jobs.busy() and std.mem.eql(u8, &plan.config.board_id, &model.board.id) and std.mem.eql(u8, plan.config.build_board, board.entry.selector) else false;
-        const build_status: []const u8 = if (preparation) |worker| try worker.request.progress.message(dvui.currentWindow().arena(), @intCast(std.Io.Clock.awake.now(init.io).toMilliseconds())) else if (preparation_error != null) "Build preparation failed; see diagnostics" else if (jobs.build != null) (if (view.toolbar.full_provenance_audit) "Building (deep audit)" else "Building (prepared inputs)") else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id())) and artifactMatchesAudit(artifact, view.toolbar.full_provenance_audit)) "Built snapshot" else "Build outdated") else if (build_plan != null) "Ready to build and Flash" else "Build environment not selected";
+        const can_build = if (build_plan) |plan| !jobs.busy() and std.mem.eql(u8, &plan.config.board_id, &model.board.id) and std.mem.eql(u8, plan.config.build_board, board.entry.selector) else false;
+        const build_status: []const u8 = if (jobs.build != null) "Building" else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id()))) "Built snapshot" else "Build outdated") else if (build_plan != null) "Ready to build and Flash" else "Application bundle is missing build resources";
         view.callback.busy = jobs.busy();
         practice_history.poll();
         if (practice_view.transfer != .none) {
@@ -1799,7 +1673,7 @@ pub fn main(init: std.process.Init) !void {
                 .stale => "Keyboard state stale",
                 .disconnected => "Keyboard disconnected",
                 .incompatible => "Keyboard layout mismatch",
-            }, .can_build = can_build, .preparation_failed = automatic_enabled and preparation_error != null, .can_flash = flash_tools != null and build_plan != null and can_build and frame_limit == null, .flash_active = flash != null and switch (flash.?.owner.phase) {
+            }, .can_build = can_build, .can_flash = flash_tools != null and build_plan != null and can_build and frame_limit == null, .flash_active = flash != null and switch (flash.?.owner.phase) {
                 .ready, .failed, .cancelled, .reconnect_timeout, .stale => false,
                 else => true,
             }, .flash_status = if (flash) |session| try session.status(dvui.currentWindow().arena(), now_us / 1000) else if (pending_flash != null) "Building for Flash" else if (flash_failure != null) "Flash failed" else "", .build_status = build_status, .profiles = if (std.mem.eql(u8, &model.board.id, &project.profiles.board.id)) &.{ .{ .id = "danish\x00\x00".*, .name = project.profiles.names[0] }, .{ .id = "qwerty\x00\x00".*, .name = project.profiles.names[1] }, .{ .id = "eurkey\x00\x00".*, .name = project.profiles.names[2] }, .{ .id = "eurmac\x00\x00".*, .name = project.profiles.names[3] } } else &.{} },
@@ -1811,15 +1685,6 @@ pub fn main(init: std.process.Init) !void {
             break :failed editor.Result{ .effect = .none };
         };
         var flash_intent: ?desktop.flash_controller.Intent = null;
-        if (preparation_error_visible and life.editor_visible) if (preparation_error) |err| {
-            if (try flash_ui.drawSetupFailure(err, if (user_paths) |owned_paths| owned_paths.paths.cache else "unavailable", &preparation_error_visible)) {
-                if (preparation_selector) |selector| gpa.free(selector);
-                preparation_selector = null;
-                preparation_error = null;
-                preparation_error_visible = false;
-                view.diagnostic = @splat(0);
-            }
-        };
         var flash_rendered: ?desktop.flash_presenter.View = null;
         var close_flash_panel = false;
         const flash_has_error = desktop.flash_presenter.showErrorWindow(if (flash) |session| session.owner.phase else null, flash_failure);
@@ -1835,7 +1700,7 @@ pub fn main(init: std.process.Init) !void {
                 flash_ui.drawPending(flash_failure, jobs.build != null, &close_flash_panel);
             }
         }
-        if (physical_flash and trial_start == null and can_build and preparation == null) {
+        if (physical_flash and trial_start == null and can_build) {
             if (!can_build or jobs.busy() or flash != null) return error.PhysicalFlashStartupNotIdle;
             trial_start = native.nanoTime();
             std.log.info("Physical flash click dispatched (prepared inputs; cache-only status determined by build)", .{});
@@ -1959,18 +1824,18 @@ pub fn main(init: std.process.Init) !void {
         // the toolbar and cannot implicitly transfer or reset a selected UF2.
         if (close_flash_panel) flash_panel = false;
         if (pending_flash) |pending| {
-            if (owner_generation != pending.generation or pending.full_provenance_audit != view.toolbar.full_provenance_audit or !std.mem.eql(u8, &pending.snapshot, &(try model.id()))) {
+            if (owner_generation != pending.generation or !std.mem.eql(u8, &pending.snapshot, &(try model.id()))) {
                 pending_flash = null;
                 advance_flash = false;
             }
         }
-        if (advance_flash and built != null and pending_flash != null and flash == null and !jobs.busy() and artifactMatchesAudit(built.?, pending_flash.?.full_provenance_audit)) {
+        if (advance_flash and built != null and pending_flash != null and flash == null and !jobs.busy() and artifactMatchesBundle(built.?)) {
             advance_flash = false;
             const pending = pending_flash.?;
             pending_flash = null;
             if (flash_tools) |tools| admit: {
                 const plan = build_plan orelse break :admit;
-                var request = desktop.build_worker.Request.capture(&model, auditConfig(plan.config, pending.full_provenance_audit), init.environ_map, built_generation) catch |err| {
+                var request = desktop.build_worker.Request.capture(&model, plan.config, init.environ_map, built_generation) catch |err| {
                     view.report(err);
                     break :admit;
                 };
@@ -2243,19 +2108,12 @@ pub fn main(init: std.process.Init) !void {
                         view.report(err);
                         continue;
                     };
-                    if (automatic_enabled and preparation_error != null and preparation == null) {
-                        if (preparation_selector) |selector| gpa.free(selector);
-                        preparation_selector = null;
-                        preparation_error = null;
-                        view.diagnostic = @splat(0);
-                        continue;
-                    }
                     const plan = build_plan orelse {
-                        view.report(error.CapabilityNotPrepared);
+                        view.report(error.MissingApplicationBundle);
                         continue;
                     };
                     const next_job = try std.math.add(u64, job_generation, 1);
-                    const job = startBuild(gpa, init.io, &model, plan.config, view.toolbar.full_provenance_audit, init.environ_map, next_job, owner_generation) catch |err| {
+                    const job = startBuild(gpa, init.io, &model, plan.config, init.environ_map, next_job, owner_generation) catch |err| {
                         view.report(err);
                         continue;
                     };
@@ -2292,18 +2150,18 @@ pub fn main(init: std.process.Init) !void {
                     // Do not open a panel that could imply a verified target or offer
                     // confirmation until the application can capture and retain the
                     // wrapper/picotool provenance and a genuine selected device.
-                    if (built == null or !std.mem.eql(u8, &built.?.inputs.project_digest, &(try model.id())) or !artifactMatchesAudit(built.?, view.toolbar.full_provenance_audit)) {
+                    if (built == null or !std.mem.eql(u8, &built.?.inputs.project_digest, &(try model.id())) or !artifactMatchesBundle(built.?)) {
                         if (jobs.busy() or !can_build or build_plan == null or flash_tools == null) {
                             view.report(error.FreshFirmwareBuildRequired);
                             continue;
                         }
                         const next_job = try std.math.add(u64, job_generation, 1);
-                        jobs.build = startBuild(gpa, init.io, &model, build_plan.?.config, view.toolbar.full_provenance_audit, init.environ_map, next_job, owner_generation) catch |err| {
+                        jobs.build = startBuild(gpa, init.io, &model, build_plan.?.config, init.environ_map, next_job, owner_generation) catch |err| {
                             view.report(err);
                             continue;
                         };
                         job_generation = next_job;
-                        pending_flash = .{ .snapshot = try model.id(), .generation = owner_generation, .full_provenance_audit = view.toolbar.full_provenance_audit };
+                        pending_flash = .{ .snapshot = try model.id(), .generation = owner_generation };
                         build_scheduler.manual(try model.id());
                         flash_panel = true;
                     } else if (build_plan == null or
@@ -2316,7 +2174,7 @@ pub fn main(init: std.process.Init) !void {
                             view.report(error.FlashAlreadyInProgress);
                             continue;
                         }
-                        var request = desktop.build_worker.Request.capture(&model, auditConfig(build_plan.?.config, view.toolbar.full_provenance_audit), init.environ_map, built_generation) catch |err| {
+                        var request = desktop.build_worker.Request.capture(&model, build_plan.?.config, init.environ_map, built_generation) catch |err| {
                             view.report(err);
                             continue;
                         };
@@ -2376,7 +2234,7 @@ pub fn main(init: std.process.Init) !void {
         build_scheduler.observe(try model.id(), now_us / 1000);
         if (build_scheduler.take(now_us / 1000, !view.toolbar.auto_build or build_plan == null or !can_build or jobs.busy() or flash_panel or practicing or view.modal != .none or owner.closed or owner.close_requested != null or owner.pending != null or owner.inspector.dirty())) {
             const next_job = try std.math.add(u64, job_generation, 1);
-            jobs.build = startBuild(gpa, init.io, &model, build_plan.?.config, view.toolbar.full_provenance_audit, init.environ_map, next_job, owner_generation) catch |err| failed: {
+            jobs.build = startBuild(gpa, init.io, &model, build_plan.?.config, init.environ_map, next_job, owner_generation) catch |err| failed: {
                 view.report(err);
                 break :failed null;
             };

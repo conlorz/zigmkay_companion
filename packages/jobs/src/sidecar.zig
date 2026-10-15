@@ -3,12 +3,12 @@
 const std = @import("std");
 const target = @import("target_lock.zig");
 const firmware = @import("firmware.zig");
-const provenance = @import("build_provenance.zig");
+const provenance = @import("build_context.zig");
 const runner = @import("runner_artifact.zig");
 pub const Replacement = enum { create, replace_supported };
 pub const lock_name = "target-lock.zon";
 pub const manifest_name = "firmware-manifest.zon";
-pub const receipt_name = "preparation-receipt.zon";
+pub const receipt_name = "bundle-build.zon";
 pub const runner_name = "runner-manifest.zon";
 
 fn write(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, comptime kind: enum { lock, manifest, receipt, runner }, bytes: []const u8, replacement: Replacement) !void {
@@ -68,7 +68,7 @@ test "runner sidecar creates supported records and preserves future provenance" 
     try t.expectEqualStrings(encoded.written(), bytes);
 }
 
-/// Keep preparation evidence separate from firmware bytes and project schema.
+/// Keep bundled-build evidence separate from firmware bytes and project schema.
 pub fn saveReceipt(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, receipt: provenance.Receipt, replacement: Replacement) !void {
     const bytes = try receipt.serialize(gpa);
     defer gpa.free(bytes);
@@ -160,21 +160,14 @@ test "manifest sidecars reject malformed replacements and preserve existing reco
     try std.testing.expectEqualStrings("preserve unsupported provenance", retained);
 }
 
-test "preparation receipt saves preserve unsupported existing evidence" {
+test "bundle receipt saves preserve unsupported existing evidence" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const receipt: provenance.Receipt = .{
         .lock_digest = @splat(1),
-        .compiler_digest = @splat(2),
-        .compiler_bundle_digest = @splat(3),
-        .compiler_tree_digest = @splat(4),
-        .companion_tree_digest = @splat(5),
-        .firmware_tree_digest = @splat(6),
-        .dependency_closure_digest = @splat(7),
-        .board_mapping_digest = @splat(8),
-        .compiler_version_verified = true,
+        .bundle_id = @splat(2),
     };
     try saveReceipt(gpa, io, tmp.dir, receipt, .create);
     try std.testing.expectError(error.SidecarAlreadyExists, saveReceipt(gpa, io, tmp.dir, receipt, .create));

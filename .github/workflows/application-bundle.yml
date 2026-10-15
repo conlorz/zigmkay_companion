@@ -1,0 +1,62 @@
+name: Self-contained application
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.17.0
+      - name: Assemble all runtime inputs
+        run: zig build bundle-application build-bundle-check -Dapplication-bundle=true -Ddesktop-dependencies=true -Ddesktop-vectors=true -j2
+      - name: Relocated macOS offline builds and practice
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eu
+          target="$RUNNER_TEMP/Zigmkay offline ü"
+          mkdir -p "$target/home"
+          cp -R zig-out/Zigmkay.app "$target/"
+          cp zig-out/bin/check-application-bundle "$target/check"
+          chmod -R a-w "$target/Zigmkay.app"
+          profile="(version 1)(allow default)(deny network*)(deny file-read* (subpath \"$GITHUB_WORKSPACE\"))(deny file-read* (subpath \"$RUNNER_TOOL_CACHE\"))(deny file-read* (subpath \"/Applications/Xcode.app\"))(deny file-read* (subpath \"/Library/Developer\"))"
+          cd "$target"
+          for pass in cold warm; do
+            env -i HOME="$target/home" PATH=/usr/bin:/bin SDKROOT=/missing DEVELOPER_DIR=/missing ZIG_LOCAL_PKG_DIR=/missing \
+              sandbox-exec -p "$profile" ./check "$target/Zigmkay.app/Contents/Resources" "$target/cache" all
+          done
+          env -i HOME="$target/home" PATH=/usr/bin:/bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software \
+            sandbox-exec -p "$profile" "$target/Zigmkay.app/Contents/MacOS/zigmkay-companion" --offline-build-frames 30000
+      - name: Single Windows executable builds and practice
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'Zigmkay offline ü'
+          New-Item -ItemType Directory -Force "$target/home", "$target/config", "$target/cache" | Out-Null
+          Copy-Item zig-out/Zigmkay.exe "$target/Zigmkay.exe"
+          Copy-Item zig-out/bin/check-application-bundle.exe "$target/check.exe"
+          $env:HOME = "$target/home"
+          $env:APPDATA = "$target/config"
+          $env:LOCALAPPDATA = "$target/cache"
+          $env:ZIG_LOCAL_PKG_DIR = 'C:\missing'
+          $env:ZIG_LIB_DIR = 'C:\missing'
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          Set-Location $target
+          & ./check.exe "$target/Zigmkay.exe" "$target/build-cache" all
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & ./check.exe "$target/Zigmkay.exe" "$target/build-cache" all
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:SDL_VIDEODRIVER = 'dummy'
+          $env:SDL_RENDER_DRIVER = 'software'
+          & ./Zigmkay.exe --offline-build-frames 30000
+          exit $LASTEXITCODE

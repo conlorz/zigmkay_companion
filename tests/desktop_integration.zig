@@ -856,50 +856,34 @@ test "build worker owns verified exports and accepts only the current editor pre
     var tmp = t.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{} }" });
-    try tmp.dir.writeFile(t.io, .{ .sub_path = "bundle.tar", .data = "controlled compiler fixture bundle" });
     const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
     defer t.allocator.free(root);
-    const bundle = try tmp.dir.realPathFileAlloc(t.io, "bundle.tar", t.allocator);
-    defer t.allocator.free(bundle);
     const helper = try std.Io.Dir.cwd().realPathFileAlloc(t.io, @import("options").helper_path, t.allocator);
     defer t.allocator.free(helper);
-    const helper_bytes = try std.Io.Dir.cwd().readFileAlloc(t.io, helper, t.allocator, .limited(64 * 1024 * 1024));
-    defer t.allocator.free(helper_bytes);
     const distribution = std.fs.path.dirname(helper).?;
-    var compiler_dir = try std.Io.Dir.cwd().openDir(t.io, distribution, .{ .iterate = true });
-    defer compiler_dir.close(t.io);
     const exported = try std.fs.path.join(t.allocator, &.{ root, ".zig-cache/export" });
     defer t.allocator.free(exported);
     const install = try std.fs.path.join(t.allocator, &.{ root, ".zig-cache/build" });
     defer t.allocator.free(install);
-    var resolution = try jobs.package_resolution.resolve(t.allocator, t.io, .{ .roots = &.{.{ .name = "fixture", .directory = root }} });
-    defer resolution.deinit();
-    var lock = jobs.target_lock.fixture();
-    lock.compiler_digest = jobs.firmware.digest(helper_bytes);
-    lock.compiler_bundle_digest = jobs.firmware.digest("controlled compiler fixture bundle");
-    lock.firmware_source_digest = resolution.record.roots[0].tree_digest;
-    lock.dependency_digest = resolution.record.closure_digest;
-    lock.board_mapping_digest = jobs.firmware.digest("fixture board mapping");
-    const receipt = jobs.toolchain.Receipt{ .kind = .selected_installation, .compiler = helper, .distribution = distribution, .compiler_digest = lock.compiler_digest, .tree_digest = try jobs.preparation.treeDigest(t.allocator, t.io, compiler_dir) };
-    var receipt_cache = try tmp.dir.createDirPathOpen(t.io, ".zig-cache/toolchain", .{});
-    defer receipt_cache.close(t.io);
-    try jobs.toolchain.save(t.allocator, t.io, receipt_cache, receipt);
-    const receipt_path = try receipt_cache.realPathFileAlloc(t.io, jobs.toolchain.filename, t.allocator);
-    defer t.allocator.free(receipt_path);
-    const serialized = try receipt.serialize(t.allocator);
-    defer t.allocator.free(serialized);
-    const formatted = try std.fmt.allocPrint(t.allocator, "{s}\n", .{serialized});
-    defer t.allocator.free(formatted);
-    try receipt_cache.writeFile(t.io, .{ .sub_path = jobs.toolchain.filename, .data = formatted });
-    const environment_input = desktop.build_environment.Input{ .resolution = resolution.record, .compiler_receipt = receipt, .compiler_receipt_path = receipt_path, .companion_root = "fixture", .firmware_root = "fixture", .firmware_revision = lock.firmware_revision, .source_kind = .development, .board_id = model.board.id, .build_board = "lk7", .board_mapping = "fixture board mapping", .export_directory = exported, .install_directory = install };
-    var generated = try desktop.build_environment.prepare(t.allocator, t.io, environment_input);
-    defer generated.deinit();
-    try t.expectEqual(@as(u16, 2), generated.plan.config.request.selection.lock.version);
-    try t.expectEqual(jobs.firmware.digest(formatted), generated.plan.config.request.selection.lock.toolchain_receipt_digest);
-    var unverified_published = environment_input;
-    unverified_published.source_kind = .published;
-    try t.expectError(error.UnverifiedPublishedFirmware, desktop.build_environment.prepare(t.allocator, t.io, unverified_published));
-    var config = generated.plan.config;
+    var descriptor_text: std.Io.Writer.Allocating = .init(t.allocator);
+    defer descriptor_text.deinit();
+    try std.zon.stringify.serialize(jobs.application_bundle.Manifest{
+        .id = jobs.firmware.digest("controlled release payload"),
+        .firmware_revision = jobs.target_lock.fixture().firmware_revision,
+        .wrapper_hash = @splat(1),
+        .picotool_hash = @splat(2),
+    }, .{}, &descriptor_text.writer);
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "application.zon", .data = descriptor_text.written() });
+    var application = try jobs.application_bundle.Bundle.open(t.allocator, t.io, root);
+    defer application.deinit();
+    const generated = try desktop.application_bundle.plan(t.allocator, application, root, "lk7", model.board.id);
+    defer p.owned_zon.free(t.allocator, generated);
+    var config = generated.config;
+    config.request.selection.compiler_path = helper;
+    config.request.selection.compiler_distribution_path = distribution;
+    config.request.selection.build_root = root;
+    config.request.export_directory = exported;
+    config.request.install_directory = install;
     config.request.timeout_ms = 5000;
     var environment: std.process.Environ.Map = .init(t.allocator);
     defer environment.deinit();
@@ -944,28 +928,20 @@ test "build worker owns verified exports and accepts only the current editor pre
     const manifest = bundle_result.firmware;
     try bundle_result.runner.verifyFile(t.allocator, t.io, manifest.inputs);
     try t.expectEqual(captured, manifest.inputs.project_digest);
-    try t.expectEqual(.fast_prepared_inputs_no_fresh_full_provenance_audit, manifest.audit_mode);
+    try t.expectEqual(.bundled, manifest.audit_mode);
     try t.expectEqual(model.document().profile_id, manifest.inputs.profile_id);
     try t.expect(!std.mem.eql(u8, &manifest.inputs.source_digest, &@as([32]u8, @splat(0))));
     try t.expectError(error.BuildAlreadyCompleted, candidate.take(&model, candidate.ticket));
-    // The prepared claim reuses the receipt; deep capture independently audits selected sources.
+    // Snapshot revalidation is independent of package files and installation paths.
     var audit_request = try desktop.build_worker.Request.capture(&model, config, &environment, 44);
     defer audit_request.deinit();
     var fast_inputs = try audit_request.captureCurrentInputs(t.allocator, t.io, candidate.expected_export_tree);
     defer fast_inputs.deinit();
-    var deep_inputs = try audit_request.captureCurrentInputsMode(t.allocator, t.io, candidate.expected_export_tree, .deep);
-    defer deep_inputs.deinit();
-    try t.expectEqualDeep(deep_inputs.captured.receipt.digest(), fast_inputs.captured.receipt.digest());
     try t.expectEqualDeep(manifest.inputs.build_inputs_digest, fast_inputs.captured.inputs.build_inputs_digest);
     try tmp.dir.writeFile(t.io, .{ .sub_path = "build.zig.zon", .data = ".{ .dependencies = .{}, .name = .changed }" });
     var still_prepared = try audit_request.captureCurrentInputs(t.allocator, t.io, candidate.expected_export_tree);
     defer still_prepared.deinit();
     try t.expectEqualDeep(fast_inputs.captured.receipt.digest(), still_prepared.captured.receipt.digest());
-    if (audit_request.captureCurrentInputsMode(t.allocator, t.io, candidate.expected_export_tree, .deep)) |changed| {
-        var modified = changed;
-        defer modified.deinit();
-        try t.expect(!std.mem.eql(u8, &deep_inputs.captured.inputs.build_inputs_digest, &modified.captured.inputs.build_inputs_digest));
-    } else |_| {} // A changed package manifest can also fail deep resolution verification.
     try environment.put("ZIGMKAY_BUILD_FIXTURE", if (@import("builtin").os.tag == .windows) "hang" else "spawn-hang");
     const cancel_install = try std.fs.path.join(t.allocator, &.{ root, ".zig-cache/cancelled-build" });
     defer t.allocator.free(cancel_install);
