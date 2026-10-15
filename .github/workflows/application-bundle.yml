@@ -17,8 +17,12 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.17.0
+          # Windows exceeded the default 2 GiB limit and saved an empty cache.
+          cache-size-limit: 4096
+      - name: Check subprocess timeout and cancellation (no devices)
+        run: zig build test-jobs -j2 --test-timeout 60s
       - name: Assemble all runtime inputs
-        run: zig build bundle-application build-bundle-check -Dapplication-bundle=true -Ddesktop-dependencies=true -Ddesktop-vectors=true -j2
+        run: zig build bundle-application build-bundle-check -Dapplication-bundle=true -Ddesktop-dependencies=true -Ddesktop-vectors=true -j2 --summary all
       - name: Relocated macOS offline builds and practice
         if: runner.os == 'macOS'
         shell: bash
@@ -33,7 +37,7 @@ jobs:
           cd "$target"
           for pass in cold warm; do
             env -i HOME="$target/home" PATH=/usr/bin:/bin SDKROOT=/missing DEVELOPER_DIR=/missing ZIG_LOCAL_PKG_DIR=/missing \
-              sandbox-exec -p "$profile" ./check "$target/Zigmkay.app/Contents/Resources" "$target/cache" all
+              sandbox-exec -p "$profile" ./check "$target/Zigmkay.app/Contents/Resources" "$target/home/Library/Caches/zigmkay" all
           done
           env -i HOME="$target/home" PATH=/usr/bin:/bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software \
             sandbox-exec -p "$profile" "$target/Zigmkay.app/Contents/MacOS/zigmkay-companion" --offline-build-frames 30000
@@ -52,9 +56,9 @@ jobs:
           $env:ZIG_LIB_DIR = 'C:\missing'
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           Set-Location $target
-          & ./check.exe "$target/Zigmkay.exe" "$target/build-cache" all
+          & ./check.exe "$target/Zigmkay.exe" "$target/cache/zigmkay/cache" all
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          & ./check.exe "$target/Zigmkay.exe" "$target/build-cache" all
+          & ./check.exe "$target/Zigmkay.exe" "$target/cache/zigmkay/cache" all
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $env:SDL_VIDEODRIVER = 'dummy'
           $env:SDL_RENDER_DRIVER = 'software'

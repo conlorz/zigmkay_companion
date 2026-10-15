@@ -17,7 +17,9 @@ pub const Request = struct {
     expected_export_tree: jobs.firmware.Digest,
     install_directory: []const u8,
     development_firmware: ?[]const u8 = null,
-    timeout_ms: u32 = 300_000,
+    // Cold builds compile the shipped build runner, native runner and firmware.
+    // Hosted Windows runners can exceed five minutes without being hung.
+    timeout_ms: u32 = 900_000,
 };
 fn compilerCacheDirectory(a: std.mem.Allocator, request: Request) ![]u8 {
     return std.fs.path.join(a, &.{ request.install_directory, "compiler-cache", &std.fmt.bytesToHex(request.bundled.receipt.bundle_id, .lower) });

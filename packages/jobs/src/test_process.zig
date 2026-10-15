@@ -48,6 +48,15 @@ test "direct argv bounded output crash timeout cancellation and snapshot freshne
     try std.testing.expectError(error.JobAlreadyStarted, job.start());
 }
 
+test "timeout cleanup joins pending reads after both streams produce output" {
+    for (0..4) |_| try std.testing.expectError(error.Timeout, jobs.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ @import("options").helper_path, "output-hang" },
+        .cwd = ".",
+        .snapshot_id = @splat(0),
+        .timeout_ms = 200,
+    }));
+}
+
 test "completed jobs transfer result ownership once and cannot restart" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;

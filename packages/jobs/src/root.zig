@@ -60,8 +60,15 @@ fn execute(gpa: std.mem.Allocator, io: std.Io, spec: Spec) anyerror!std.process.
         if (comptime posix_groups) if (!succeeded and spec.isolated_group) if (child.id) |id| {
             _ = std.posix.system.kill(-id, std.posix.SIG.KILL);
         };
-        child.kill(io);
-        reader.deinit();
+        if (comptime @import("builtin").os.tag == .windows) {
+            // Cancel and join overlapped reads while their pipe handles are
+            // still valid. Child.kill closes those handles on Windows.
+            reader.deinit();
+            child.kill(io);
+        } else {
+            child.kill(io);
+            reader.deinit();
+        }
     }
     while (reader.fill(4096, deadline)) |_| {
         if (reader.reader(0).buffered().len > output_limit or reader.reader(1).buffered().len > output_limit) return error.StreamTooLong;

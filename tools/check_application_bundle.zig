@@ -19,6 +19,7 @@ pub fn main(init: std.process.Init) !void {
     } else try check(init, resources, args[2], args[3]);
 }
 fn check(init: std.process.Init, resources: jobs.application_bundle.Bundle, cache: []const u8, selector: []const u8) !void {
+    std.log.info("Offline bundle build starting: {s}", .{selector});
     const a = init.gpa;
     var board = try catalog.OwnedBoard.init(a, selector);
     defer board.deinit();
