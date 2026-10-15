@@ -61,10 +61,11 @@ fn execute(gpa: std.mem.Allocator, io: std.Io, spec: Spec) anyerror!std.process.
             _ = std.posix.system.kill(-id, std.posix.SIG.KILL);
         };
         if (comptime @import("builtin").os.tag == .windows) {
-            // Cancel and join overlapped reads while their pipe handles are
-            // still valid. Child.kill closes those handles on Windows.
+            if (!succeeded) stopWindowsProducerAndReads(&child);
             reader.deinit();
+            if (!succeeded) std.log.info("Windows subprocess cleanup: reads joined; closing handles", .{});
             child.kill(io);
+            if (!succeeded) std.log.info("Windows subprocess cleanup: complete", .{});
         } else {
             child.kill(io);
             reader.deinit();
@@ -83,6 +84,39 @@ fn execute(gpa: std.mem.Allocator, io: std.Io, spec: Spec) anyerror!std.process.
     const stderr = try reader.toOwnedSlice(1);
     succeeded = true;
     return .{ .stdout = stdout, .stderr = stderr, .term = term };
+}
+/// Child.kill also closes the pipes. Keep them open until MultiReader has
+/// consumed the cancellation APCs and released its read buffers. Zig 0.17's
+/// Windows batchCancel waits for an APC before submitting cancellation itself,
+/// so request cancellation here before entering that wait.
+fn stopWindowsProducerAndReads(child: *std.process.Child) void {
+    const windows = std.os.windows;
+    const Api = struct {
+        // Zig 0.17 has no CancelIoEx binding. A null request cancels all reads
+        // on this owned pipe; buffers must still be joined before release.
+        extern "kernel32" fn CancelIoEx(windows.HANDLE, ?*anyopaque) callconv(.winapi) windows.BOOL;
+    };
+    if (child.id) |handle| {
+        std.log.info("Windows subprocess cleanup: terminating producer", .{});
+        const status = windows.ntdll.NtTerminateProcess(handle, @fromBackingInt(@intCast(1)));
+        switch (status) {
+            .SUCCESS, .PROCESS_IS_TERMINATING => {},
+            // A process that has already exited may reject termination. The
+            // normal Child.kill below still owns reaping and handle closure.
+            .ACCESS_DENIED => {},
+            else => std.log.warn("Windows subprocess termination status: {t}", .{status}),
+        }
+    }
+    std.log.info("Windows subprocess cleanup: requesting pipe cancellation", .{});
+    for ([_]?std.Io.File{ child.stdout, child.stderr }) |optional_file| {
+        if (optional_file) |file| {
+            if (!Api.CancelIoEx(file.handle, null).toBool()) {
+                const status = windows.GetLastError();
+                if (status != .NOT_FOUND) std.log.warn("Windows pipe cancellation status: {t}", .{status});
+            }
+        }
+    }
+    std.log.info("Windows subprocess cleanup: joining pending reads", .{});
 }
 fn expire(io: std.Io, milliseconds: u32) anyerror!void {
     try std.Io.sleep(io, .fromMilliseconds(milliseconds), .awake);
