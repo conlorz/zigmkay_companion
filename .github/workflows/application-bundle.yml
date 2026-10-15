@@ -20,7 +20,7 @@ jobs:
           # Windows exceeded the default 2 GiB limit and saved an empty cache.
           cache-size-limit: 4096
       - name: Check subprocess timeout and cancellation (no devices)
-        run: zig build test-jobs -j2 --test-timeout 60s
+        run: zig build test-subprocess -j2 --test-timeout 30s --summary all
       - name: Assemble all runtime inputs
         run: zig build bundle-application build-bundle-check -Dapplication-bundle=true -Ddesktop-dependencies=true -Ddesktop-vectors=true -j2 --summary all
       - name: Relocated macOS offline builds and practice

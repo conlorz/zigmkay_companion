@@ -18,27 +18,56 @@ test "asynchronous jobs own explicit environment before caller mutation" {
     try std.testing.expect(result.successful());
     try std.testing.expectEqualStrings("captured", result.process.stdout);
 }
-test "direct argv bounded output crash timeout cancellation and snapshot freshness" {
+test "direct argv preserves literal arguments and snapshot freshness" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     const exe = @import("options").helper_path;
-    var spec = jobs.Spec{ .argv = &.{ exe, "literal;$(not-a-shell)" }, .cwd = ".", .snapshot_id = @splat(1), .timeout_ms = 1000 };
+    const spec = jobs.Spec{ .argv = &.{ exe, "literal;$(not-a-shell)" }, .cwd = ".", .snapshot_id = @splat(1), .timeout_ms = 1000 };
     var result = try jobs.run(gpa, io, spec);
     defer result.deinit(gpa);
     try std.testing.expectEqualStrings("literal;$(not-a-shell)", result.process.stdout);
     try std.testing.expect(result.successful());
     try std.testing.expect(!result.fresh(@splat(2)));
-    spec.argv = &.{ exe, "crash" };
-    var crashed = try jobs.run(gpa, io, spec);
+}
+
+test "crashed subprocess returns unsuccessful status" {
+    const gpa = std.testing.allocator;
+    var crashed = try jobs.run(gpa, std.testing.io, .{
+        .argv = &.{ @import("options").helper_path, "crash" },
+        .cwd = ".",
+        .snapshot_id = @splat(0),
+        .timeout_ms = 1000,
+    });
     defer crashed.deinit(gpa);
     try std.testing.expect(!crashed.successful());
-    spec.argv = &.{ exe, "flood" };
-    try std.testing.expectError(error.StreamTooLong, jobs.run(gpa, io, spec));
-    spec.argv = &.{ exe, "hang" };
-    spec.timeout_ms = 50;
-    try std.testing.expectError(error.Timeout, jobs.run(gpa, io, spec));
-    spec.timeout_ms = 10000;
-    var job = try jobs.Job.init(gpa, io, spec);
+}
+
+test "output limit terminates a flooding subprocess" {
+    try std.testing.expectError(error.StreamTooLong, jobs.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ @import("options").helper_path, "flood" },
+        .cwd = ".",
+        .snapshot_id = @splat(0),
+        .timeout_ms = 1000,
+    }));
+}
+
+test "timeout terminates a silent subprocess" {
+    try std.testing.expectError(error.Timeout, jobs.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ @import("options").helper_path, "hang" },
+        .cwd = ".",
+        .snapshot_id = @splat(0),
+        .timeout_ms = 50,
+    }));
+}
+
+test "explicit cancellation joins a running job and prevents restart" {
+    const io = std.testing.io;
+    var job = try jobs.Job.init(std.testing.allocator, io, .{
+        .argv = &.{ @import("options").helper_path, "hang" },
+        .cwd = ".",
+        .snapshot_id = @splat(0),
+        .timeout_ms = 10000,
+    });
     defer job.deinit();
     try job.start();
     try std.Io.sleep(io, .fromMilliseconds(30), .awake);

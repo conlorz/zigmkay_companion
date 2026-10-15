@@ -85,9 +85,17 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
     }) });
+    // Keep the bundle's process-lifecycle gate independent of imported firmware
+    // tests and Flash-tool fixtures. The complete test-jobs target stays intact.
+    const subprocess_tests = b.addTest(.{
+        .root_module = job_tests.root_module,
+        .filters = &.{"test_process."},
+    });
     const job_options = b.addOptions();
     job_options.addOptionPath("helper_path", job_fixture.getEmittedBin());
     job_tests.root_module.addOptions("options", job_options);
+    const subprocess_step = b.step("test-subprocess", "Run isolated subprocess lifecycle regressions offline");
+    subprocess_step.dependOn(&b.addRunArtifact(subprocess_tests).step);
     const jobs_step = b.step("test-jobs", "Run bounded subprocess, runner session and traversal regressions offline");
     const package_manifest_tests = b.addTest(.{
         .root_module = b.createModule(.{
