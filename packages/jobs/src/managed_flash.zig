@@ -27,6 +27,7 @@ pub const Job = struct {
             .snapshot_id = request.captured,
             .selection = selection,
             .discovery_ms = discovery_ms,
+            .backend = tools.record.backend,
         });
         return .{ .frozen = owned, .process = process };
     }

@@ -111,7 +111,7 @@ test "schema one migration preserves old record bytes and default-field identity
     const old_bytes = try std.fmt.allocPrint(t.allocator, ".{{ .id = {s}, .cohort = .{{}} }}", .{id});
     defer t.allocator.free(old_bytes);
     {
-        var db = try Database.open(t.allocator, path, false);
+        var db = try Database.open(t.allocator, t.io, path, false);
         defer db.deinit();
         try db.save(&record, null);
         var update = try db.prepare("UPDATE runs SET record=?1 WHERE id=?2");
@@ -121,7 +121,7 @@ test "schema one migration preserves old record bytes and default-field identity
         _ = try update.step();
         try db.exec("DROP INDEX runs_practice_chronological; ALTER TABLE runs DROP COLUMN practice_scope; ALTER TABLE events DROP COLUMN cue_visible; PRAGMA user_version=1");
     }
-    var migrated = try Database.open(t.allocator, path, false);
+    var migrated = try Database.open(t.allocator, t.io, path, false);
     defer migrated.deinit();
     try t.expectEqual(@as(i64, 3), try migrated.number("PRAGMA user_version"));
     try migrated.save(&record, null);
@@ -142,14 +142,14 @@ test "invalid legacy payload rolls back the complete scope migration" {
     const path = try std.fs.path.join(t.allocator, &.{ root, "invalid-old.sqlite3" });
     defer t.allocator.free(path);
     {
-        var db = try Database.open(t.allocator, path, false);
+        var db = try Database.open(t.allocator, t.io, path, false);
         defer db.deinit();
         const record: results.Record = .{ .id = @splat(1) };
         try db.save(&record, null);
         try db.exec("UPDATE runs SET record=CAST('.{ .version=999 }' AS BLOB); DROP INDEX runs_practice_chronological; ALTER TABLE runs DROP COLUMN practice_scope; ALTER TABLE events DROP COLUMN cue_visible; PRAGMA user_version=1");
     }
-    try t.expectError(error.UnsupportedPracticeHistory, Database.open(t.allocator, path, false));
-    var preserved = try Database.open(t.allocator, path, true);
+    try t.expectError(error.UnsupportedPracticeHistory, Database.open(t.allocator, t.io, path, false));
+    var preserved = try Database.open(t.allocator, t.io, path, true);
     defer preserved.deinit();
     try t.expectEqual(@as(i64, 1), try preserved.number("PRAGMA user_version"));
     try t.expectEqual(@as(i64, 0), try preserved.number("SELECT count(*) FROM pragma_table_info('runs') WHERE name='practice_scope'"));
@@ -166,7 +166,7 @@ test "older timing defaults remain idempotent without rewriting original payload
     defer t.allocator.free(root);
     const path = try std.fs.path.join(t.allocator, &.{ root, "old-timing.sqlite3" });
     defer t.allocator.free(path);
-    var db = try Database.open(t.allocator, path, false);
+    var db = try Database.open(t.allocator, t.io, path, false);
     defer db.deinit();
     var recorder = timing.Recorder.init(t.allocator);
     defer recorder.deinit();
@@ -191,12 +191,13 @@ pub const Database = struct {
     connection: zqlite.Conn,
     gpa: std.mem.Allocator,
     readonly: bool,
-    pub fn open(gpa: std.mem.Allocator, path: []const u8, readonly: bool) !Database {
+    io: std.Io,
+    pub fn open(gpa: std.mem.Allocator, io: std.Io, path: []const u8, readonly: bool) !Database {
         if (!std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, 0) != null) return error.AbsolutePracticeDatabasePathRequired;
         const name = try gpa.dupeSentinel(u8, path, 0);
         defer gpa.free(name);
         const connection = zqlite.open(name, if (readonly) zqlite.OpenFlags.ReadOnly else zqlite.OpenFlags.Create) catch |err| return databaseError(err);
-        var self = Database{ .connection = connection, .gpa = gpa, .readonly = readonly };
+        var self = Database{ .connection = connection, .gpa = gpa, .readonly = readonly, .io = io };
         errdefer self.deinit();
         self.connection.busyTimeout(1500) catch |err| return databaseError(err);
         try self.exec("PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON;");
@@ -206,7 +207,12 @@ pub const Database = struct {
         const app = try self.number("PRAGMA application_id");
         if (!readonly and version == 0 and app == 0 and try self.number("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'") == 0) {
             try self.exec("CREATE TABLE IF NOT EXISTS runs(id BLOB PRIMARY KEY CHECK(length(id)=16), timestamp INTEGER NOT NULL, record BLOB NOT NULL, timing BLOB, cohort BLOB NOT NULL) STRICT; CREATE INDEX IF NOT EXISTS runs_chronological ON runs(timestamp,id); CREATE INDEX IF NOT EXISTS runs_cohort_chronological ON runs(cohort,timestamp,id); CREATE TABLE IF NOT EXISTS events(run_id BLOB NOT NULL REFERENCES runs(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, elapsed_us INTEGER NOT NULL, active_us INTEGER NOT NULL, kind INTEGER NOT NULL, position INTEGER NOT NULL, expected INTEGER, typed INTEGER, batch INTEGER NOT NULL, input INTEGER NOT NULL, eligibility INTEGER NOT NULL, interval_us INTEGER, correct INTEGER NOT NULL, assistance INTEGER NOT NULL, observed_us INTEGER NOT NULL, clock INTEGER NOT NULL, PRIMARY KEY(run_id,ordinal)) STRICT; CREATE TABLE IF NOT EXISTS legacy_imports(id BLOB PRIMARY KEY, record BLOB NOT NULL) STRICT; PRAGMA application_id=0x5a4d5052; PRAGMA user_version=1;");
-        } else if ((version != 1 and version != 2 and version != 3) or app != application_id) return error.UnsupportedPracticeDatabase;
+        } else {
+            if ((version != 1 and version != 2 and version != 3) or app != application_id) return error.UnsupportedPracticeDatabase;
+            // BEGIN IMMEDIATE reserves the writer before inspecting the version.
+            // A separate reader sees all committed WAL frames and none of our changes.
+            if (!readonly and version < 3) self.backupBeforeMigration(path, version) catch return error.PracticeMigrationBackupFailed;
+        }
         if (!readonly and version < 2) try self.migrateScope();
         if (!readonly and version < 3) try self.exec("ALTER TABLE events ADD COLUMN cue_visible INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=3");
         if (!readonly) try self.exec("COMMIT");
@@ -234,11 +240,30 @@ pub const Database = struct {
         return try self.number("PRAGMA user_version") == 3;
     }
     /// Reopen only when migration or a deliberate mutation actually needs a writer.
-    pub fn makeWritable(self: *Database, path: []const u8) !void {
+    pub fn makeWritable(self: *Database, io: std.Io, path: []const u8) !void {
         if (!self.readonly) return;
-        const writable = try Database.open(self.gpa, path, false);
+        const writable = try Database.open(self.gpa, io, path, false);
         self.deinit();
         self.* = writable;
+    }
+    fn backupBeforeMigration(self: *Database, path: []const u8, version: i64) anyerror!void {
+        const directory = try std.fs.path.join(self.gpa, &.{ std.fs.path.dirname(path).?, "backups" });
+        defer self.gpa.free(directory);
+        try std.Io.Dir.cwd().createDirPath(self.io, directory);
+        var nonce: [16]u8 = undefined;
+        try std.Io.randomSecure(self.io, &nonce);
+        const backup_path = try std.fmt.allocPrint(self.gpa, "{s}/schema-{d}-{s}.sqlite3", .{ directory, version, std.fmt.bytesToHex(nonce, .lower) });
+        defer self.gpa.free(backup_path);
+        var source = try Database.open(self.gpa, self.io, path, true);
+        defer source.deinit();
+        try source.exportDatabase(self.io, backup_path);
+        // Publication is exclusive and durable. Verify the standalone file before DDL.
+        var backup = try Database.open(self.gpa, self.io, backup_path, true);
+        defer backup.deinit();
+        if (try backup.number("PRAGMA user_version") != version) return error.InvalidPracticeDatabase;
+        var integrity = try backup.prepare("PRAGMA integrity_check");
+        defer integrity.deinit();
+        if (!try integrity.step() or !std.mem.eql(u8, integrity.raw.text(0), "ok")) return error.InvalidPracticeDatabase;
     }
     pub fn legacyImported(self: *Database, record: *const results.Record) !bool {
         var stmt = try self.prepare("SELECT record FROM legacy_imports WHERE id=?1");
@@ -411,7 +436,7 @@ pub const Database = struct {
         try self.exec("COMMIT");
     }
     pub fn importDatabase(self: *Database, path: []const u8) !usize {
-        var source = try Database.open(self.gpa, path, true);
+        var source = try Database.open(self.gpa, self.io, path, true);
         defer source.deinit();
         try source.exec("BEGIN");
         defer source.exec("ROLLBACK") catch {};
@@ -493,6 +518,9 @@ pub const Database = struct {
         const finish_code = c.sqlite3_backup_finish(backup);
         finished = true;
         try check(finish_code);
+        // The backup copies page 1's WAL setting too. Make the published file
+        // standalone so read-only rollback needs no writable journal siblings.
+        destination.execNoArgs("PRAGMA journal_mode=DELETE") catch |err| return databaseError(err);
         destination.tryClose() catch |err| return databaseError(err);
         opened = false;
         var atomic = try std.Io.Dir.cwd().createFileAtomic(io, path, .{});
@@ -510,6 +538,136 @@ pub const Database = struct {
         try atomic.link(io);
     }
 };
+
+test "frozen schemas migrate once with a standalone WAL backup preserving record bytes and receipts" {
+    const t = std.testing;
+    for ([_]i64{ 1, 2 }) |version| {
+        var temp = t.tmpDir(.{});
+        defer temp.cleanup();
+        const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+        defer t.allocator.free(root);
+        const path = try std.fs.path.join(t.allocator, &.{ root, filename });
+        defer t.allocator.free(path);
+        const name = try t.allocator.dupeSentinel(u8, path, 0);
+        defer t.allocator.free(name);
+        const writer = try zqlite.open(name, zqlite.OpenFlags.Create);
+        defer writer.close();
+        try writer.execNoArgs("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;");
+        try writer.execNoArgs(@embedFile("fixtures/schema-v1.sql"));
+        if (version == 2) try writer.execNoArgs(@embedFile("fixtures/schema-v2.sql"));
+        const raw = @embedFile("fixtures/record-v1.zon");
+        const record = try decode(results.Record, t.allocator, raw);
+        {
+            const insert = try writer.prepare(if (version == 2) "INSERT INTO runs(id,timestamp,record,timing,cohort,practice_scope) VALUES(?1,42,?2,NULL,?3,?4)" else "INSERT INTO runs(id,timestamp,record,timing,cohort) VALUES(?1,42,?2,NULL,?3)");
+            defer insert.deinit();
+            const cohort = try cohortKey(t.allocator, record.cohort);
+            defer t.allocator.free(cohort);
+            const scope = practiceKey(record.cohort);
+            try insert.bindValue(zqlite.blob(&record.id), 0);
+            try insert.bindValue(zqlite.blob(raw), 1);
+            try insert.bindValue(zqlite.blob(cohort), 2);
+            if (version == 2) try insert.bindValue(zqlite.blob(&scope), 3);
+            _ = try insert.step();
+            try writer.execNoArgs("INSERT INTO legacy_imports SELECT id,record FROM runs");
+        }
+        // Keep the writer open: committed pages remain in its WAL during backup.
+        {
+            var db = try Database.open(t.allocator, t.io, path, false);
+            defer db.deinit();
+            try t.expect(try db.currentSchema());
+            var practice_rows = try db.rowsForPractice(record.cohort);
+            defer practice_rows.deinit();
+            try t.expect(try practice_rows.step());
+            try t.expectEqualStrings(raw, try practice_rows.blob(1));
+        }
+        var backups = try temp.dir.openDir(t.io, "backups", .{ .iterate = true });
+        defer backups.close(t.io);
+        var iterator = backups.iterate();
+        const entry = (try iterator.next(t.io)).?;
+        const backup_path = try std.fs.path.join(t.allocator, &.{ root, "backups", entry.name });
+        defer t.allocator.free(backup_path);
+        try t.expect(try iterator.next(t.io) == null);
+        var backup = try Database.open(t.allocator, t.io, backup_path, true);
+        defer backup.deinit();
+        try t.expectEqual(version, try backup.number("PRAGMA user_version"));
+        try t.expectEqual(@as(usize, 1), try backup.runCount());
+        try t.expectEqual(@as(i64, 1), try backup.number("SELECT count(*) FROM legacy_imports"));
+        var rows = try backup.rows();
+        defer rows.deinit();
+        try t.expect(try rows.step());
+        try t.expectEqualStrings(raw, try rows.blob(1));
+        try t.expectEqualSlices(u8, &record.id, try rows.blob(0));
+        var again = try Database.open(t.allocator, t.io, path, false);
+        defer again.deinit();
+        var second = backups.iterate();
+        _ = try second.next(t.io);
+        try t.expect(try second.next(t.io) == null);
+        // A standalone backup can be copied without its original WAL directory.
+        const restored = try std.fs.path.join(t.allocator, &.{ root, "restored.sqlite3" });
+        defer t.allocator.free(restored);
+        try std.Io.Dir.cwd().copyFile(backup_path, .cwd(), restored, t.io, .{});
+        var restored_db = try Database.open(t.allocator, t.io, restored, true);
+        defer restored_db.deinit();
+        try t.expectEqual(version, try restored_db.number("PRAGMA user_version"));
+        try t.expectEqual(@as(usize, 1), try restored_db.runCount());
+    }
+}
+
+test "backup publication failure leaves the old schema and bytes unchanged" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    const path = try std.fs.path.join(t.allocator, &.{ root, filename });
+    defer t.allocator.free(path);
+    {
+        var db = try Database.open(t.allocator, t.io, path, false);
+        defer db.deinit();
+        try db.exec("ALTER TABLE events DROP COLUMN cue_visible; PRAGMA user_version=2");
+    }
+    try temp.dir.writeFile(t.io, .{ .sub_path = "backups", .data = "a file blocks the backup directory" });
+    try t.expectError(error.PracticeMigrationBackupFailed, Database.open(t.allocator, t.io, path, false));
+    var preserved = try Database.open(t.allocator, t.io, path, true);
+    defer preserved.deinit();
+    try t.expectEqual(@as(i64, 2), try preserved.number("PRAGMA user_version"));
+    try t.expectEqual(@as(i64, 0), try preserved.number("SELECT count(*) FROM pragma_table_info('events') WHERE name='cue_visible'"));
+}
+
+test "concurrent upgrades reserve one writer and publish exactly one migration backup" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{});
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    const path = try std.fs.path.join(t.allocator, &.{ root, filename });
+    defer t.allocator.free(path);
+    {
+        const name = try t.allocator.dupeSentinel(u8, path, 0);
+        defer t.allocator.free(name);
+        const conn = try zqlite.open(name, zqlite.OpenFlags.Create);
+        defer conn.close();
+        try conn.execNoArgs(@embedFile("fixtures/schema-v1.sql"));
+    }
+    const Upgrade = struct {
+        fn run(io: std.Io, database_path: []const u8) !void {
+            var db = try Database.open(std.heap.page_allocator, io, database_path, false);
+            defer db.deinit();
+            if (!try db.currentSchema()) return error.InvalidPracticeDatabase;
+        }
+    };
+    var first = try std.Io.concurrent(t.io, Upgrade.run, .{ t.io, path });
+    defer first.cancel(t.io) catch {};
+    var second = try std.Io.concurrent(t.io, Upgrade.run, .{ t.io, path });
+    defer second.cancel(t.io) catch {};
+    try first.await(t.io);
+    try second.await(t.io);
+    var backups = try temp.dir.openDir(t.io, "backups", .{ .iterate = true });
+    defer backups.close(t.io);
+    var iterator = backups.iterate();
+    try t.expect(try iterator.next(t.io) != null);
+    try t.expect(try iterator.next(t.io) == null);
+}
 test "standalone export includes raw timing; imports are idempotent and conflicts roll back" {
     const t = std.testing;
     var temp = t.tmpDir(.{});
@@ -522,7 +680,7 @@ test "standalone export includes raw timing; imports are idempotent and conflict
     defer t.allocator.free(second);
     const exported = try std.fs.path.join(t.allocator, &.{ root, "portable.sqlite3" });
     defer t.allocator.free(exported);
-    var a = try Database.open(t.allocator, first, false);
+    var a = try Database.open(t.allocator, t.io, first, false);
     defer a.deinit();
     var r = timing.Recorder.init(t.allocator);
     defer r.deinit();
@@ -535,7 +693,7 @@ test "standalone export includes raw timing; imports are idempotent and conflict
     try a.save(&record, r.payload());
     try a.exportDatabase(t.io, exported);
     try t.expectError(error.PathAlreadyExists, a.exportDatabase(t.io, exported));
-    var b = try Database.open(t.allocator, second, false);
+    var b = try Database.open(t.allocator, t.io, second, false);
     defer b.deinit();
     try t.expectEqual(@as(usize, 1), try b.importDatabase(exported));
     try t.expectEqual(@as(usize, 1), try b.importDatabase(exported));
@@ -560,9 +718,9 @@ test "a conflicting import rolls back earlier rows and future databases remain u
     defer t.allocator.free(source_path);
     const target_path = try std.fs.path.join(t.allocator, &.{ root, "target.sqlite3" });
     defer t.allocator.free(target_path);
-    var source = try Database.open(t.allocator, source_path, false);
+    var source = try Database.open(t.allocator, t.io, source_path, false);
     defer source.deinit();
-    var target = try Database.open(t.allocator, target_path, false);
+    var target = try Database.open(t.allocator, t.io, target_path, false);
     defer target.deinit();
     var conflict = results.Record{ .id = @splat(1) };
     try source.save(&conflict, null);
@@ -586,7 +744,7 @@ test "native independent writers share a Unicode database and readonly handles c
     defer t.allocator.free(root);
     const Writer = struct {
         fn write(database_path: []const u8, id: u8) !void {
-            var db = try Database.open(std.heap.page_allocator, database_path, false);
+            var db = try Database.open(std.heap.page_allocator, std.testing.io, database_path, false);
             defer db.deinit();
             var record = results.Record{};
             record.id[0] = id;
@@ -604,7 +762,7 @@ test "native independent writers share a Unicode database and readonly handles c
         defer b.cancel(t.io) catch {};
         try a.await(t.io);
         try b.await(t.io);
-        var read = try Database.open(t.allocator, path, true);
+        var read = try Database.open(t.allocator, t.io, path, true);
         defer read.deinit();
         try t.expectEqual(@as(usize, 2), try read.runCount());
         const record = results.Record{ .id = @splat(3) };
