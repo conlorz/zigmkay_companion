@@ -2,7 +2,7 @@
 //! Explicit, bounded hardware acceptance. No arguments/help/offline never touch HID.
 const std = @import("std");
 const builtin = @import("builtin");
-const sdl = @import("sdl3");
+const sdl = @import("dvui_backend").c;
 const protocol = @import("device-protocol");
 const live = @import("live-adapter");
 const native = @import("native-hid");

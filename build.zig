@@ -69,44 +69,9 @@ pub fn build(b: *std.Build) void {
     const tray_lifecycle_tests = b.addTest(.{ .root_module = tray_lifecycle });
     desktop_tests_step.dependOn(&b.addRunArtifact(tray_lifecycle_tests).step);
     check.dependOn(&tray_lifecycle_tests.step);
-    const desktop_pins = b.dependency("dvui", .{}).module("pins");
-    const acquisition_imports: []const std.Build.Module.Import = &.{ .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = owned_zon } };
-    const acquisition = b.addExecutable(.{ .name = "desktop-dependency-acquisition", .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/desktop_dependency_acquisition.zig"),
-        .target = b.graph.host,
-        .imports = acquisition_imports,
-    }) });
-    acquisition.root_module.addImport("desktop-pins", desktop_pins);
-    const acquire_step = b.step("prepare-desktop-dependencies", "Explicitly acquire immutable desktop sources; no GUI execution");
-    if (b.option(bool, "desktop-acquisition", "Authorize explicit pinned desktop dependency acquisition") orelse false) {
-        const cache = b.option([]const u8, "desktop-source-cache", "Absolute dedicated desktop source cache") orelse @panic("Desktop acquisition requires desktop-source-cache");
-        const run = b.addRunArtifact(acquisition);
-        run.addFileArg2(.zig_exe, .{ .make_absolute = true });
-        run.addArg(cache);
-        if (b.option(bool, "desktop-vector-acquisition", "Include immutable reference icon and SVG/TinyVG sources in explicit acquisition") orelse false) run.addArg("--vector");
-        run.has_side_effects = true;
-        acquire_step.dependOn(&run.step);
-    } else acquire_step.dependOn(&b.addFail("Pass desktop-acquisition=true with absolute desktop-source-cache for explicit acquisition").step);
-    const acquisition_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/desktop_dependency_acquisition.zig"),
-        .target = b.graph.host,
-        .imports = acquisition_imports,
-    }) });
-    acquisition_tests.root_module.addImport("desktop-pins", desktop_pins);
-    desktop_tests_step.dependOn(&b.addRunArtifact(acquisition_tests).step);
-    check.dependOn(&acquisition_tests.step);
-    const adaptation_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("tools/desktop_source_adaptation.zig"),
-        .target = b.graph.host,
-        .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
-    }) });
-    adaptation_tests.root_module.addImport("desktop-pins", desktop_pins);
-    const adaptation_tests_step = b.step("test-desktop-adaptation", "Validate exact dependency adaptations and source drift rejection offline");
-    adaptation_tests_step.dependOn(&b.addRunArtifact(adaptation_tests).step);
-    tests.dependOn(adaptation_tests_step);
-    check.dependOn(&adaptation_tests.step);
     if (b.option(bool, "desktop-dependencies", "Prepare explicit desktop dependency compiler audit") orelse false) {
-        desktop_graph = @import("packages/platform/desktop_sources.zig").prepare(b, desktop_dependencies, jobs, desktop_pins, acquisition, flash_presenter, tray_lifecycle);
+        const vectors = b.option(bool, "desktop-vectors", "Enable TinyVG rendering and icons") orelse false;
+        desktop_graph = @import("packages/platform/desktop_build.zig").check(b, desktop_dependencies, flash_presenter, tray_lifecycle, vectors);
     } else desktop_dependencies.dependOn(&b.addFail("Pass desktop-dependencies=true to compile the native GUI").step);
     const job_fixture = b.addExecutable(.{ .name = "job-fixture", .root_module = b.createModule(.{
         .root_source_file = b.path("packages/jobs/src/fixture.zig"),
@@ -892,8 +857,7 @@ pub fn build(b: *std.Build) void {
             app.root_module.addImport("live-adapter", live);
         }
         if (b.option(bool, "native-hid", "Prepare pinned SDL native acceptance dependencies") orelse false) {
-            const sdl = b.lazyDependency("sdl3", .{ .target = b.graph.host, .optimize = .ReleaseSafe }) orelse return;
-            @import("packages/platform/sdl_build.zig").prepare(sdl.artifact("SDL3"));
+            const dvui = @import("packages/platform/desktop_build.zig").dependency(b, false) orelse return;
             const probe = b.addExecutable(.{ .name = "usb-acceptance", .root_module = b.createModule(.{
                 .root_source_file = b.path("tools/usb_acceptance.zig"),
                 .target = b.graph.host,
@@ -902,7 +866,7 @@ pub fn build(b: *std.Build) void {
                     .{ .name = "native-hid", .module = native },
                     .{ .name = "live-adapter", .module = live },
                     .{ .name = "device-protocol", .module = protocol },
-                    .{ .name = "sdl3", .module = sdl.module("sdl3") },
+                    .{ .name = "dvui_backend", .module = dvui.module("sdl3") },
                 },
             }) });
             hardware_client.dependOn(&b.addInstallArtifact(probe, .{}).step);

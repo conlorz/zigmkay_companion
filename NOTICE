@@ -56,8 +56,9 @@ sdl-1.0.3+3.4.16-i4QD0e0HqgDYP8m4T3rMJShyaDLy8ksp8qzCrCSncaPB.
 Upstream SDL 3.4.16 package hash N-V-__8AABHq9wIiTHGY4qR6mw45F_TX8FSvqsQQ-Wtq1tzY.
 SDL is distributed under the zlib license; retained dependency sources include
 their licenses. No SDL/C source is modified or copied into first-party code.
-packages/platform/sdl_build.zig removes five unused generated CMake values
-for Zig 0.17 strictness, scoped to this exact macOS build contract.
+The current desktop graph uses DVUI's upstream SDL3 and FreeType dependencies
+and build configuration directly; the local SDL configuration adjustment has
+been removed. DVUI, ztray, SVG/TinyVG and icons are pinned in build.zig.zon.
 Reference zig-flash/src/{main,transfer,uf2,volume}.zig -> packages/platform/flash/,
 GPL-2.0 from the same reference implementation baseline above. The historical
 filesystem transfer sources are retired; pure validation now lives in

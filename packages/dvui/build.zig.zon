@@ -1,7 +1,0 @@
-.{
-    .name = .dvui_compat,
-    .fingerprint = 0xf3e130f8ae367cd9,
-    .version = "0.1.0",
-    .minimum_zig_version = "0.17.0",
-    .paths = .{ "build.zig", "build.zig.zon", "sources.zon" },
-}

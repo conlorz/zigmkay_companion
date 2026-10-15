@@ -126,38 +126,28 @@ source tree to remain available; this is not a self-contained release bundle.
 
 ## Developer preparation
 
-Optional desktop source acquisition is separate from normal checks:
-
-```sh
-zig build prepare-desktop-dependencies \
-  -Ddesktop-acquisition=true -Ddesktop-source-cache=<absolute-cache-directory>
-```
-
-The resulting `source-inputs.zon` records verified immutable sources for explicit
-development audits. Normal desktop builds acquire and adapt their sources
-automatically; no source-directory arguments are required:
+Desktop builds resolve immutable dependencies through Zig's package manager;
+no source-directory arguments or source adaptation step is required:
 
 ```sh
 zig build build-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true
 zig build check-desktop-dependencies -Ddesktop-dependencies=true -Ddesktop-vectors=true
 ```
 
-The manifest's `dvui` dependency is a local
-[compatibility package](../packages/dvui/build.zig). Its
-[source manifest](../packages/dvui/sources.zon) is the single authority for pinned
-DVUI, ztray, SVG/TinyVG and icon revisions and hashes. Their retained upstream
-build scripts predate the required Zig 0.17 build APIs. The compatibility layer
-verifies immutable sources and applies counted Zig adaptations to generated cache
-copies, preserving the imported C and Objective-C sources. DVUI remains the UI
-toolkit; SDL3 supplies its window/rendering/input backend and FreeType supplies
-font rendering. Explicit absolute `desktop-*-source` overrides remain available
-for development audits and must match the pinned hashes.
+The root [manifest](../build.zig.zon) declares DVUI, ztray, SVG/TinyVG and icons
+as ordinary upstream dependencies, each pinned by revision and package hash.
+DVUI owns its SDL3 backend and FreeType dependency; the application consumes its
+exported `dvui_sdl3` and `sdl3` modules. ztray owns the native menu/tray compilation
+and framework linkage. Their Zig 0.17 build scripts run directly, without a local
+wrapper, hidden source manifest or patches to cached dependencies.
+The ztray pin uses the immutable head of its
+[Zig 0.17 upstream PR](https://github.com/StaffinityAI/ztray/pull/2), pending merge.
 
 Native desktop CI compiles and links the real application on macOS, then runs
-SDL dummy/software fixtures without keyboard access. The macOS SDL config
-adjustment is scoped to that platform; full Linux and Windows desktop/tray
-acceptance remains pending. Portable storage and keymap contracts have separate
-checks. A passing portable test does not establish GUI support on those hosts.
+SDL dummy/software fixtures without keyboard access. Full Linux and Windows
+desktop/tray acceptance remains pending. Portable storage and keymap contracts
+have separate checks. A passing portable test does not establish GUI support on
+those hosts.
 
 Practice persistence uses the immutable `zqlite` dependency declared in
 `build.zig.zon`, including its bundled SQLite implementation. Application code

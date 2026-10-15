@@ -14,11 +14,9 @@ description = "Require accepted compatibility gates (currently reports pending g
 run = "zig build check-compatibility"
 
 [tasks."desktop:prepare"]
-description = "Acquire missing pinned GUI sources without launching or accessing devices"
+description = "Resolve and compile pinned GUI dependencies without launching or accessing devices"
 dir = "{{config_root}}"
-sources = ["tools/desktop_dependency_acquisition.zig", "packages/dvui/sources.zon", ".zigversion"]
-outputs = [".zig-cache/desktop-acquired/source-inputs.zon"]
-run = 'zig build prepare-desktop-dependencies -Ddesktop-acquisition=true -Ddesktop-vector-acquisition=true "-Ddesktop-source-cache={{config_root}}/.zig-cache/desktop-acquired" -j4'
+run = "zig build check-desktop-dependencies -Ddesktop-dependencies=true -Ddesktop-vectors=true -j4"
 
 [tasks.editor]
 dir = "{{config_root}}"
