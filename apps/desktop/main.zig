@@ -691,9 +691,9 @@ pub fn main(init: std.process.Init) !void {
         }
         if (life.quit_requested and owner.close_requested == null and owner.pending == null and !owner.closed) life.cancelQuit();
         if (resources) |value| if (user_paths) |owned| {
-            var selected = try boards.OwnedBoard.fromDocument(gpa, model.document());
-            defer selected.deinit();
             if (build_plan == null or !std.mem.eql(u8, &build_plan.?.config.board_id, &model.board.id)) {
+                var selected = try boards.OwnedBoard.fromDocument(gpa, model.document());
+                defer selected.deinit();
                 if (build_plan) |old| project.owned_zon.free(gpa, old);
                 build_plan = try bundled.plan(gpa, value, owned.paths.cache, selected.entry.selector, model.board.id);
             }
