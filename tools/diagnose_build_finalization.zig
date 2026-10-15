@@ -5,8 +5,7 @@ const jobs = @import("companion-jobs");
 pub fn main(init: std.process.Init) !void {
     const a = init.gpa;
     const io = init.io;
-    const args = try init.minimal.args.toSlice(a);
-    defer a.free(args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 2) return error.ExpectedOutputDirectory;
     var output = try std.Io.Dir.cwd().createDirPathOpen(io, args[1], .{});
     defer output.close(io);
@@ -60,5 +59,13 @@ pub fn main(init: std.process.Init) !void {
     try jobs.sidecar.saveManifest(a, io, output, firmware, .create);
     std.log.info("diagnostic: verifying frozen runner", .{});
     try frozen.verifyFile(a, io, inputs);
+    std.log.info("diagnostic: checking read-only attributes and cache reuse", .{});
+    const frozen_stat = try std.Io.Dir.cwd().statFile(io, frozen.record.path, .{});
+    if (@import("builtin").os.tag == .windows) {
+        if (!frozen_stat.permissions.toAttributes().READONLY) return error.RunnerNotReadOnly;
+    }
+    var reused = try jobs.runner_artifact.freeze(a, io, cache, runner, inputs);
+    defer reused.deinit();
+    try reused.verifyFile(a, io, inputs);
     std.log.info("diagnostic: publication complete; entering cleanup", .{});
 }

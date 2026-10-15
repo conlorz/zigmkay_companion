@@ -6,8 +6,8 @@ const catalog = @import("catalog-project");
 const jobs = @import("companion-jobs");
 pub fn main(init: std.process.Init) !void {
     const a = init.gpa;
-    const args = try init.minimal.args.toSlice(a);
-    defer a.free(args);
+    // toSlice requires an arena: Windows returns a view into a larger allocation.
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 4) return error.Usage;
     var resources = if (@import("builtin").os.tag == .windows)
         try jobs.application_bundle.Bundle.fromExecutable(a, init.io, args[1], args[2])

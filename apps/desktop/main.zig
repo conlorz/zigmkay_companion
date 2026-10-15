@@ -311,8 +311,7 @@ fn bootloaderStatus(status: @TypeOf(@as(LiveDriver, undefined).session.bootloade
 }
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
-    const args = try init.minimal.args.toSlice(gpa);
-    defer gpa.free(args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     var frame_limit: ?usize = null;
     const physical_flash = args.len > 1 and std.mem.eql(u8, args[1], "--physical-flash-once");
     if (physical_flash) {
