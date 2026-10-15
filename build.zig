@@ -596,6 +596,11 @@ pub fn build(b: *std.Build) void {
                 launch_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
                 launch_fixture.setEnvironmentVariable("SDL_RENDER_DRIVER", "software");
                 b.step("test-desktop-launch", "Launch bounded dummy/software frames without native source or device access").dependOn(&launch_fixture.step);
+                const status_fixture = b.addRunArtifact(app);
+                status_fixture.addArgs(&.{ "--offline-status-frames", "24" });
+                status_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");
+                status_fixture.setEnvironmentVariable("SDL_RENDER_DRIVER", "software");
+                b.step("test-desktop-status", "Check editor activity bounds and capture build, Flash and error states offline").dependOn(&status_fixture.step);
                 const practice_fixture = b.addRunArtifact(app);
                 practice_fixture.addArgs(&.{ "--offline-practice-frames", "3" });
                 practice_fixture.setEnvironmentVariable("SDL_VIDEODRIVER", "dummy");

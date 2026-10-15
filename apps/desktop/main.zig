@@ -344,6 +344,8 @@ pub fn main(init: std.process.Init) !void {
     var companion_fixture = false;
     var native_tray_fixture = false;
     var source_refresh_fixture = false;
+    const native_status_fixture = args.len == 3 and std.mem.eql(u8, args[1], "--native-status-frames");
+    const status_fixture = native_status_fixture or (args.len == 3 and std.mem.eql(u8, args[1], "--offline-status-frames"));
     var draft_manifest: ?[]const u8 = null;
     var build_plan: ?desktop.build_worker.Plan = null;
     defer if (build_plan) |plan| project.owned_zon.free(gpa, plan);
@@ -356,7 +358,7 @@ pub fn main(init: std.process.Init) !void {
         companion_fixture = std.mem.eql(u8, args[1], "--offline-companion-frames");
         native_tray_fixture = std.mem.eql(u8, args[1], "--native-tray-frames");
         source_refresh_fixture = std.mem.eql(u8, args[1], "--offline-source-refresh-frames");
-        if (!rundown_fixture and !practice_fixture and !draft_fixture and !build_fixture and !companion_fixture and !native_tray_fixture and !source_refresh_fixture and !std.mem.eql(u8, args[1], "--offline-frames")) return error.Usage;
+        if (!rundown_fixture and !practice_fixture and !draft_fixture and !build_fixture and !companion_fixture and !native_tray_fixture and !source_refresh_fixture and !status_fixture and !std.mem.eql(u8, args[1], "--offline-frames")) return error.Usage;
         frame_limit = try std.fmt.parseInt(usize, args[2], 10);
         const minimum_frames: usize = if (rundown_fixture) 20 else if (companion_fixture) 9 else if (practice_fixture or native_tray_fixture or source_refresh_fixture) 3 else if (build_fixture) 2 else 1;
         const maximum_frames: usize = if (build_fixture) 30_000 else if (draft_fixture) 1000 else if (layout_preview) 200 else 100;
@@ -365,7 +367,7 @@ pub fn main(init: std.process.Init) !void {
             if (!std.fs.path.isAbsolute(args[3])) return error.AbsoluteRunnerManifestRequired;
             draft_manifest = args[3];
         }
-        if (native_tray_fixture or native_rundown) {
+        if (native_tray_fixture or native_rundown or native_status_fixture) {
             if (std.c.getenv("SDL_VIDEODRIVER")) |driver| if (std.mem.eql(u8, std.mem.span(driver), "dummy")) return error.NativeVideoRequired;
         } else {
             const driver = std.c.getenv("SDL_VIDEODRIVER") orelse return error.DummyVideoRequired;
@@ -1208,6 +1210,9 @@ pub fn main(init: std.process.Init) !void {
         };
         var board = try boards.OwnedBoard.fromDocument(gpa, model.document());
         defer board.deinit();
+        if (status_fixture and (count == 1 or count == 21)) {
+            _ = Backend.c.SDL_SetWindowSize(native.window, if (count == 21) 900 else 1440, if (count == 21) 600 else 1000);
+        }
         const available = window.backend.windowSize();
         const system_scale = window.backend.contentScale();
         // Match the reference editor: fit the whole design canvas, accounting
@@ -1220,11 +1225,14 @@ pub fn main(init: std.process.Init) !void {
         if (rundown_fixture) view.toolbar.light = count < (if (layout_preview) @as(usize, 19) else 7);
         window.themeSet(if (view.toolbar.light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark);
         try window.begin(if (frame_limit == null) window.beginWait(interrupted) else native.nanoTime());
+        // DVUI rounds its render scale to hundredths. Keep the fitted editor
+        // aligned with the exact pixel edge, including on Retina displays.
+        if (!practicing and window.data().rect.w > 0) window.natural_scale = window.rect_pixels.w / window.data().rect.w;
         var ended = false;
         errdefer if (!ended) {
             _ = window.end(.{ .manage_backend = frame_limit == null }) catch {};
         };
-        if (!fonts_installed and (frame_limit == null or native_rundown)) {
+        if (!fonts_installed and (frame_limit == null or native_rundown or status_fixture)) {
             try @import("editor-fonts").install(gpa, init.io);
             fonts_installed = true;
         }
@@ -1265,6 +1273,11 @@ pub fn main(init: std.process.Init) !void {
         const document = model.document();
         const can_build = if (build_plan) |plan| !jobs.busy() and std.mem.eql(u8, &plan.config.board_id, &model.board.id) and std.mem.eql(u8, plan.config.build_board, board.entry.selector) else false;
         const build_status: []const u8 = if (jobs.build) |job| (if (job.first_build) "First build: this can take a few minutes. Later builds are faster." else "Building") else if (built) |artifact| (if (std.mem.eql(u8, &artifact.inputs.project_digest, &(try model.id()))) "Built snapshot" else "Build outdated") else if (build_plan != null) "Ready to build and Flash" else "Application bundle is missing build resources";
+        const status_scene = if (status_fixture) (count - 1) / 4 else 0;
+        if (status_fixture) {
+            view.toolbar.auto_build = true;
+            view.toolbar.details_open = status_scene == 4;
+        }
         view.callback.busy = jobs.busy();
         practice_history.poll();
         if (practice_view.transfer != .none) {
@@ -1639,6 +1652,32 @@ pub fn main(init: std.process.Init) !void {
             _ = try window.addEventMouseMotion(.{ .pt = .{ .x = available.w * 0.75, .y = available.h * 0.65 } });
             _ = try window.addEventMouseWheel(-2000, .vertical, .mouse);
         }
+        var toolbar_frame: @FieldType(editor.Frame, "toolbar") = .{ .board_name = board.entry.selector, .connection = switch (liveStatus(if (live) |*driver| driver else null, live_frame)) {
+            .offline => "Offline editor",
+            .connecting => "Keyboard connecting",
+            .live => "Keyboard connected",
+            .stale => "Keyboard state stale",
+            .disconnected => "Keyboard disconnected",
+            .incompatible => "Keyboard layout mismatch",
+        }, .can_build = can_build, .can_flash = flash_tools != null and build_plan != null and can_build and frame_limit == null, .flash_active = flash != null and switch (flash.?.owner.phase) {
+            .ready, .failed, .cancelled, .reconnect_timeout, .stale => false,
+            else => true,
+        }, .build_active = jobs.build != null, .first_build = if (jobs.build) |job| job.first_build else false, .flash_succeeded = if (flash) |session| session.owner.phase == .ready else false, .flash_failed = flash_failure != null or (if (flash) |session| session.owner.phase == .failed or session.owner.phase == .reconnect_timeout else false), .now_ms = now_us / 1000, .flash_status = if (jobs.build != null) "" else if (flash) |session| try session.status(dvui.currentWindow().arena(), now_us / 1000) else if (pending_flash != null) "Building for Flash" else if (flash_failure != null) "Flash failed" else "", .build_status = build_status, .profiles = if (std.mem.eql(u8, &model.board.id, &project.profiles.board.id)) &.{ .{ .id = "danish\x00\x00".*, .name = project.profiles.names[0] }, .{ .id = "qwerty\x00\x00".*, .name = project.profiles.names[1] }, .{ .id = "eurkey\x00\x00".*, .name = project.profiles.names[2] }, .{ .id = "eurmac\x00\x00".*, .name = project.profiles.names[3] } } else &.{} };
+        if (status_fixture) {
+            toolbar_frame.can_build = true;
+            toolbar_frame.can_flash = true;
+            toolbar_frame.build_active = status_scene == 0;
+            toolbar_frame.first_build = status_scene == 0;
+            toolbar_frame.flash_active = status_scene == 1;
+            toolbar_frame.flash_succeeded = status_scene == 2;
+            toolbar_frame.flash_failed = status_scene >= 3;
+            toolbar_frame.flash_status = switch (status_scene) {
+                0 => "",
+                1 => "Transferring firmware to keyboard…",
+                2 => "Matching firmware reconnected",
+                else => "Flash failed: the selected firmware could not be verified against the current project snapshot. Review the complete diagnostic here before starting a new transfer.",
+            };
+        }
         var rendered = if (practicing) tutor_frame: {
             const theme = ui.Theme.get(view.toolbar.light);
             const canvas = dvui.box(@src(), .{}, .{ .expand = .both, .padding = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
@@ -1667,17 +1706,7 @@ pub fn main(init: std.process.Init) !void {
             practice_input_effect = drawn.input_effect;
             break :tutor_frame editor.Result{ .effect = .none };
         } else if (!life.editor_visible) editor.Result{ .effect = .none } else editor.draw(&view, &owner, &model, .{
-            .toolbar = .{ .board_name = board.entry.selector, .connection = switch (liveStatus(if (live) |*driver| driver else null, live_frame)) {
-                .offline => "Offline editor",
-                .connecting => "Keyboard connecting",
-                .live => "Keyboard connected",
-                .stale => "Keyboard state stale",
-                .disconnected => "Keyboard disconnected",
-                .incompatible => "Keyboard layout mismatch",
-            }, .can_build = can_build, .can_flash = flash_tools != null and build_plan != null and can_build and frame_limit == null, .flash_active = flash != null and switch (flash.?.owner.phase) {
-                .ready, .failed, .cancelled, .reconnect_timeout, .stale => false,
-                else => true,
-            }, .flash_status = if (jobs.build != null) "" else if (flash) |session| try session.status(dvui.currentWindow().arena(), now_us / 1000) else if (pending_flash != null) "Building for Flash" else if (flash_failure != null) "Flash failed" else "", .build_status = build_status, .profiles = if (std.mem.eql(u8, &model.board.id, &project.profiles.board.id)) &.{ .{ .id = "danish\x00\x00".*, .name = project.profiles.names[0] }, .{ .id = "qwerty\x00\x00".*, .name = project.profiles.names[1] }, .{ .id = "eurkey\x00\x00".*, .name = project.profiles.names[2] }, .{ .id = "eurmac\x00\x00".*, .name = project.profiles.names[3] } } else &.{} },
+            .toolbar = toolbar_frame,
             .keyboard = .{ .snapshot = try model.id(), .board_id = document.board_id, .physical_layout = document.physical_layout, .geometry = board.entry.geometry, .labels = &captions.labels, .board_name = board.entry.selector, .fidelity = "Catalog geometry · physical acceptance pending" },
             .host = &captions.host,
             .paths = .{ .exported = exported, .can_choose = frame_limit == null and !dialog.active(), .busy = jobs.busy() },
@@ -1792,6 +1821,25 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         tray.update(.{ .live_mode = live_enabled, .status = liveStatus(if (live) |*driver| driver else null, live_frame), .companion_visible = life.companion_visible });
+        if (status_fixture and count % 4 == 0) {
+            const activity = dvui.tagGet("editor.activity") orelse return error.ActivityRowMissing;
+            const toolbar_bounds = dvui.tagGet("toolbar") orelse return error.ToolbarMissing;
+            if (activity.rect.x < toolbar_bounds.rect.x or activity.rect.x + activity.rect.w > toolbar_bounds.rect.x + toolbar_bounds.rect.w + 1 or activity.rect.y + activity.rect.h > toolbar_bounds.rect.y + toolbar_bounds.rect.h + 1) return error.ActivityRowOverflow;
+            if (toolbar_bounds.rect.x + toolbar_bounds.rect.w < dvui.windowRectPixels().w - 3) {
+                std.log.err("Activity bounds: toolbar={any}, window={any}, natural={any}, scale={d}", .{ toolbar_bounds.rect, dvui.windowRectPixels(), dvui.windowRect(), window.content_scale });
+                return error.ActivityToolbarGutter;
+            }
+            const message = dvui.tagGet("editor.activity.message") orelse return error.ActivityMessageMissing;
+            const automatic = dvui.tagGet("firmware.auto_build") orelse return error.AutoBuildControlMissing;
+            if (message.rect.x + message.rect.w > automatic.rect.x) return error.ActivityControlsOverlap;
+            if (dvui.tagGet("system.status") != null) return error.SeparateStatusBarRetained;
+            window.endRendering(.{ .manage_backend = false });
+            try std.Io.Dir.cwd().createDirPath(init.io, ".zig-cache/editor-status");
+            const surface = Backend.c.SDL_RenderReadPixels(native.renderer, null) orelse return error.StatusScreenshotRead;
+            defer Backend.c.SDL_DestroySurface(surface);
+            const file = try std.fmt.allocPrintSentinel(window.arena(), ".zig-cache/editor-status/{d}.bmp", .{status_scene}, 0);
+            if (!Backend.c.SDL_SaveBMP(surface, file)) return error.StatusScreenshotSave;
+        }
         if (rundown_fixture) {
             if (!practice_view.drawn_panel) return error.PracticePanelNotDrawn;
             if (dvui.tagGet(if (practice_view.review_open) "practice.review" else if (practice_view.help_open) "practice.help.title" else if (practice_view.curriculum_open) "practice.curriculum" else if (practice_view.diagnostics_open) "practice.diagnostics" else if (practice_view.progress_open) "practice.progress" else if (practice_view.data_open) "practice.data.title" else if (practice.completed != null) "practice.rundown" else "practice.word") == null) return error.PracticeRundownNotDrawn;

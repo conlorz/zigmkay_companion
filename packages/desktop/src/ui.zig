@@ -61,7 +61,11 @@ pub fn buttonData(t: Theme, text: []const u8, tag: []const u8, r: dvui.Rect, dat
     return dvui.button(@src(), text, .{}, opts);
 }
 pub fn panel(t: Theme, which: geometry.Panel) *dvui.BoxWidget {
-    var opts = options(t, rect(geometry.panel(which)), 14);
+    var bounds = rect(geometry.panel(which));
+    const width = @max(@as(f32, 1536), dvui.parentGet().data().contentRect().w);
+    if (which == .toolbar) bounds.w = width;
+    if (which == .inspector) bounds.w = width - bounds.x - 15;
+    var opts = options(t, bounds, 14);
     opts.tag = @tagName(which);
     opts.id_extra = @backingInt(which);
     opts.color_fill = .{ .color = t.panel };

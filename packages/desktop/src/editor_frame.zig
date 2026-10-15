@@ -46,15 +46,15 @@ pub fn draw(view: *View, owner: *dispatch.State, model: *desktop.model.Model, fr
     const column = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both, .padding = .{}, .margin = .{} });
     defer column.deinit();
     const diagnostic = std.mem.sliceTo(&view.diagnostic, 0);
-    const message = if (diagnostic.len != 0) diagnostic else if (frame.toolbar.flash_status.len != 0) frame.toolbar.flash_status else frame.toolbar.build_status;
-    drawSystemBar(theme, if (message.len != 0) message else "Ready");
     // Retained panels use a fixed design canvas. Scroll the canvas rather than
     // clipping controls when the host window is smaller than that design.
     const scroll = dvui.scrollArea(@src(), .{ .scroll_info = &view.scroll }, .{ .expand = .both, .padding = .{}, .border = .{}, .background = false });
     defer scroll.deinit();
-    const canvas = dvui.box(@src(), .{}, .{ .min_size_content = .{ .w = 1536, .h = 1024 }, .padding = .{}, .margin = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
+    const canvas = dvui.box(@src(), .{}, .{ .expand = .horizontal, .min_size_content = .{ .w = 1536, .h = 1024 + desktop.geometry.status_height }, .padding = .{}, .margin = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
     defer canvas.deinit();
-    var requested = try toolbar.draw(&view.toolbar, model, frame.toolbar);
+    var toolbar_frame = frame.toolbar;
+    toolbar_frame.diagnostic = diagnostic;
+    var requested = try toolbar.draw(&view.toolbar, model, toolbar_frame);
     if (try layers.draw(&view.layers, model, theme)) |action| if (requested == null) {
         requested = dispatch.Request.fromLayer(action, model);
     };
@@ -209,34 +209,4 @@ pub fn draw(view: *View, owner: *dispatch.State, model: *desktop.model.Model, fr
         else => {},
     };
     return .{ .effect = effect };
-}
-
-/// Stays outside the scrolling design canvas. Messages wrap rather than being
-/// reduced to the tiny space under Build/Flash, and remain copyable in full.
-fn drawSystemBar(theme: ui.Theme, message: []const u8) void {
-    const bar = dvui.box(@src(), .{}, .{
-        .expand = .horizontal,
-        .padding = .{},
-        .margin = .{},
-        .background = true,
-        .color_fill = .{ .color = theme.panel },
-        .min_size_content = .{ .h = desktop.geometry.status_height },
-        .tag = "system.status",
-    });
-    defer bar.deinit();
-    // Fixed bounds prevent long text from contributing an unbounded minimum
-    // width to the whole window. Copy always retains the complete message.
-    {
-        const slot = dvui.box(@src(), .{}, .{ .rect = .{ .x = 15, .y = 4, .w = 1410, .h = 40 }, .padding = .{}, .margin = .{} });
-        defer slot.deinit();
-        var options = ui.options(theme, .{}, 15);
-        options.rect = null;
-        options.expand = .horizontal;
-        options.gravity_y = 0.5;
-        options.padding = .{};
-        const text = dvui.textLayout(@src(), .{ .break_lines = true }, options);
-        text.addText(message, .{});
-        text.deinit();
-    }
-    if (ui.button(theme, "Copy", "system.copy", .{ .x = 1440, .y = 8, .w = 81, .h = 32 })) dvui.clipboardTextSet(message);
 }
