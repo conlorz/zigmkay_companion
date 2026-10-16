@@ -54,6 +54,7 @@ fn addPlatformSources(b: *std.Build, root: std.Build.LazyPath, module: *std.Buil
         .linux => {
             module.addCSourceFile(.{ .file = root.path(b, "src/platform/linux.c"), .flags = &.{"-std=c11"} });
             module.linkSystemLibrary("xkbcommon", .{});
+            @import("../platform/desktop_build.zig").nativeLinuxLibraryPaths(b, module, target);
             module.link_libc = true;
         },
         else => {},

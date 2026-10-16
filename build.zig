@@ -219,7 +219,9 @@ pub fn build(b: *std.Build) void {
     test_picotool.dependOn(&b.addRunArtifact(uf2_tests).step);
     const firmware = b.lazyDependency("zigmkay_firmware", .{}) orelse return;
     const api = b.lazyImport(@This(), "zigmkay_firmware") orelse return;
-    if (@hasDecl(api, "flash_wrapper_contract_version") and api.flash_wrapper_contract_version == 1) {
+    // The cancellation test uses POSIX PIDs and skips Windows. Its unused
+    // firmware fixtures must not be compiled there either.
+    if (app_target.result.os.tag != .windows and @hasDecl(api, "flash_wrapper_contract_version") and api.flash_wrapper_contract_version == 1) {
         const wrapper_fixture = b.addExecutable(.{ .name = "firmware-wrapper-offline", .root_module = b.createModule(.{
             .root_source_file = firmware.path("zigmkay/tools/picotool_flash.zig"),
             .target = app_target,

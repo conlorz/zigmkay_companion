@@ -1,5 +1,23 @@
 //! Shared native desktop graph used by the application and offline compile checks.
 const std = @import("std");
+pub fn nativeLinuxLibraryPaths(b: *std.Build, root: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    const host = b.graph.host.result;
+    if (host.os.tag != .linux or target.result.os.tag != .linux or
+        host.cpu.arch != target.result.cpu.arch or host.abi != target.result.abi) return;
+    // Explicit release OS/glibc minimums disable Zig's automatic native paths,
+    // while pkg-config omits standard library directories from its output.
+    // Add only library paths so C headers still come from the target libc.
+    const paths = std.zig.system.NativePaths.detect(b.allocator, b.graph.io, &host, &b.graph.environ_map) catch
+        @panic("Unable to detect native Linux library paths");
+    for (paths.lib_dirs.items) |path| {
+        const dir = std.Io.Dir.cwd().openDir(b.graph.io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => continue,
+            else => @panic("Unable to open native Linux library directory"),
+        };
+        dir.close(b.graph.io);
+        root.addLibraryPath(.{ .cwd_relative = path });
+    }
+}
 pub fn sdkPaths(b: *std.Build, root: *std.Build.Module, sdk: []const u8) void {
     var seen: std.AutoHashMap(*std.Build.Module, void) = .init(b.allocator);
     addSdk(b, root, sdk, &seen);
@@ -80,6 +98,7 @@ pub fn check(b: *std.Build, step: *std.Build.Step, flash_presenter: *std.Build.M
         .imports = &.{ .{ .name = "dvui", .module = dvui }, .{ .name = "flash-presenter", .module = flash_presenter } },
     });
     const tray = tray_dep.module("ztray");
+    nativeLinuxLibraryPaths(b, tray, target);
     const native_tray = b.createModule(.{
         .root_source_file = b.path("packages/desktop/src/tray_native.zig"),
         .target = target,
