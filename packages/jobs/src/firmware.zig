@@ -209,7 +209,11 @@ test "firmware argv preserves literal metacharacters and selects build only" {
     defer command.deinit();
     try std.testing.expectEqualStrings("-Dproject-export=/export ; $(touch nope)", command.argv[6]);
     try std.testing.expectEqualStrings("/cache ; output", command.argv[11]);
-    try std.testing.expectEqualStrings("/cache ; output/firmware/project.uf2", command.uf2_path);
+    const expected_uf2 = if (@import("builtin").os.tag == .windows)
+        "/cache ; output\\firmware\\project.uf2"
+    else
+        "/cache ; output/firmware/project.uf2";
+    try std.testing.expectEqualStrings(expected_uf2, command.uf2_path);
     try std.testing.expectEqual(@as(usize, 12), command.argv.len);
     try std.testing.expectError(error.InvalidBuildPath, Command.init(std.testing.allocator, inputs(), "zig", "/repo", "/export", "/cache", "/firmware"));
     try std.testing.expectError(error.FirmwareOverrideMismatch, Command.init(std.testing.allocator, inputs(), "/zig", "/repo", "/export", "/cache", null));
@@ -224,7 +228,7 @@ test "development fork canonicalizes symlinked cwd and sibling with spaces" {
     defer temp.cleanup();
     try temp.dir.createDir(io, "companion checkout", .default_dir);
     try temp.dir.createDir(io, "firmware checkout", .default_dir);
-    try temp.dir.symLink(io, "companion checkout", "companion link", .{});
+    try temp.dir.symLink(io, "companion checkout", "companion link", .{ .is_directory = true });
     const root = try temp.dir.realPathFileAlloc(io, ".", a);
     defer a.free(root);
     const repo = try std.fs.path.join(a, &.{ root, "companion link" });
@@ -237,7 +241,8 @@ test "development fork canonicalizes symlinked cwd and sibling with spaces" {
     defer a.free(canonical_repo);
     try std.testing.expectEqualStrings(canonical_repo, command.cwd);
     try std.testing.expectEqualStrings("--fork", command.argv[12]);
-    try std.testing.expectEqualStrings("../firmware checkout", command.argv[13]);
+    const expected_fork = if (@import("builtin").os.tag == .windows) "..\\firmware checkout" else "../firmware checkout";
+    try std.testing.expectEqualStrings(expected_fork, command.argv[13]);
 }
 
 test "manifest rejects failures cancellation stale input and corrupt artifact" {
