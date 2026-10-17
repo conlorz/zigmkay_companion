@@ -5,6 +5,7 @@ pub const output_limit = 64 * 1024;
 /// picotool-info discovery; it must only follow explicit user confirmation.
 pub const Selection = union(enum) { bus_address: struct { bus: u8, address: u8 }, serial: []const u8, unique_bootsel };
 pub const Spec = struct {
+    backend: @import("flash_inputs.zig").Backend = .picotool,
     wrapper: []const u8,
     picotool: []const u8,
     firmware: []const u8,
@@ -15,6 +16,7 @@ pub const Spec = struct {
     command_ms: u32 = 60_000,
 };
 pub const Result = struct {
+    backend: @import("flash_inputs.zig").Backend = .picotool,
     process: std.process.RunResult,
     snapshot_id: [32]u8,
     cancelled: bool,
@@ -62,6 +64,7 @@ pub const Job = struct {
             },
             .unique_bootsel => {},
         }
+        if (spec.backend == .windows_bootsel and spec.selection != .unique_bootsel) return error.UnsupportedBootselSelection;
         var arena = std.heap.ArenaAllocator.init(gpa);
         errdefer arena.deinit();
         const a = arena.allocator();
@@ -71,7 +74,9 @@ pub const Job = struct {
         copied.firmware = try a.dupe(u8, spec.firmware);
         var args: std.ArrayList([]const u8) = .empty;
         const digest = std.fmt.bytesToHex(spec.expected_sha256, .lower);
-        try args.appendSlice(a, &.{ copied.wrapper, copied.picotool, copied.firmware, "--sha256", try a.dupe(u8, &digest), "--discovery-ms", try std.fmt.allocPrint(a, "{d}", .{spec.discovery_ms}), "--command-ms", try std.fmt.allocPrint(a, "{d}", .{spec.command_ms}), "--cancel-stdin" });
+        try args.append(a, copied.wrapper);
+        if (spec.backend == .picotool) try args.append(a, copied.picotool);
+        try args.appendSlice(a, &.{ copied.firmware, "--sha256", try a.dupe(u8, &digest), "--discovery-ms", try std.fmt.allocPrint(a, "{d}", .{spec.discovery_ms}), "--command-ms", try std.fmt.allocPrint(a, "{d}", .{spec.command_ms}), "--cancel-stdin" });
         switch (spec.selection) {
             .bus_address => |s| try args.appendSlice(a, &.{ "--bus", try std.fmt.allocPrint(a, "{d}", .{s.bus}), "--address", try std.fmt.allocPrint(a, "{d}", .{s.address}) }),
             .serial => |s| {
@@ -104,7 +109,8 @@ pub const Job = struct {
     fn monitor(self: *Job, stdin: std.Io.File) anyerror!void {
         defer stdin.close(self.io);
         const start_time = std.Io.Clock.awake.now(self.io);
-        const budget: i96 = (@as(i96, self.spec.discovery_ms) + 3 * @as(i96, self.spec.command_ms) + 1000) * std.time.ns_per_ms;
+        const command_count: i96 = if (self.spec.backend == .windows_bootsel) 1 else 3;
+        const budget: i96 = (@as(i96, self.spec.discovery_ms) + command_count * @as(i96, self.spec.command_ms) + 1000) * std.time.ns_per_ms;
         while (!self.requested.load(.acquire)) {
             if (start_time.durationTo(std.Io.Clock.awake.now(self.io)).nanoseconds >= budget) {
                 self.timed_out.store(true, .release);
@@ -162,7 +168,8 @@ pub const Job = struct {
         const stdout = try outputs[0].toOwnedSlice(self.gpa);
         errdefer self.gpa.free(stdout);
         const stderr = try outputs[1].toOwnedSlice(self.gpa);
-        return .{ .process = .{ .term = term, .stdout = stdout, .stderr = stderr }, .snapshot_id = self.spec.snapshot_id, .cancelled = self.requested.load(.acquire), .timed_out = self.timed_out.load(.acquire), .diagnostics_truncated = truncated };
+        const helper_timeout = self.spec.backend == .windows_bootsel and term == .exited and term.exited == 3;
+        return .{ .backend = self.spec.backend, .process = .{ .term = term, .stdout = stdout, .stderr = stderr }, .snapshot_id = self.spec.snapshot_id, .cancelled = self.requested.load(.acquire), .timed_out = self.timed_out.load(.acquire) or helper_timeout, .diagnostics_truncated = truncated };
     }
     pub fn poll(self: *Job) ?anyerror!Result {
         if (self.future == null or !self.done.load(.acquire)) return null;
@@ -207,4 +214,14 @@ test "unique BOOTSEL emits no selector arguments for wrapper discovery" {
         try std.testing.expect(!std.mem.eql(u8, arg, "--address"));
     }
     try std.testing.expectEqualStrings("--cancel-stdin", job.argv[job.argv.len - 1]);
+}
+
+test "Windows backend invokes only the helper and refuses picotool selectors" {
+    var spec: Spec = .{ .backend = .windows_bootsel, .wrapper = "/helper", .picotool = "/unused", .firmware = "/frozen.uf2", .expected_sha256 = @splat(0), .snapshot_id = @splat(0), .selection = .unique_bootsel };
+    var job = try Job.init(std.testing.allocator, std.testing.io, spec);
+    defer job.deinit();
+    try std.testing.expectEqualStrings("/helper", job.argv[0]);
+    try std.testing.expectEqualStrings("/frozen.uf2", job.argv[1]);
+    spec.selection = .{ .serial = "unsupported" };
+    try std.testing.expectError(error.UnsupportedBootselSelection, Job.init(std.testing.allocator, std.testing.io, spec));
 }

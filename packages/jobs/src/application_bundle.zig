@@ -3,13 +3,15 @@ const std = @import("std");
 const firmware = @import("firmware.zig");
 pub const Manifest = struct {
     version: u16 = 1,
+    backend: @import("flash_inputs.zig").Backend = .picotool,
     zig_version: []const u8 = "0.17.0",
     id: firmware.Digest,
     firmware_revision: []const u8,
     wrapper_hash: firmware.Digest,
     picotool_hash: firmware.Digest,
     pub fn validate(self: Manifest) !void {
-        if (self.version != 1 or !std.mem.eql(u8, self.zig_version, "0.17.0")) return error.UnsupportedApplicationBundle;
+        if ((self.version != 1 and self.version != 2) or !std.mem.eql(u8, self.zig_version, "0.17.0")) return error.UnsupportedApplicationBundle;
+        if (self.version == 1 and self.backend != .picotool) return error.UnsupportedApplicationBundle;
         if (self.firmware_revision.len != 40) return error.InvalidFirmwareRevision;
         for (self.firmware_revision) |c| if (!std.ascii.isHex(c)) return error.InvalidFirmwareRevision;
     }

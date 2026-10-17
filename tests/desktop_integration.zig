@@ -844,7 +844,7 @@ test "owned document edits invalidate desktop build intent without dispatching f
     try project.validate(parsed, model.board);
     // Shared owned-ZON helpers are analyzed in both owning modules in one graph.
     const record: jobs.flash_inputs.Record = .{
-        .version = 2,
+        .version = 999,
         .firmware_revision = "01a6368ca5f49a47ce770cd603cc98b90b8298de",
         .firmware_source_digest = @splat(0),
         .source_kind = .development,

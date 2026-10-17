@@ -9,10 +9,13 @@ pub fn main(init: std.process.Init) !void {
     // toSlice requires an arena: Windows returns a view into a larger allocation.
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 4) return error.Usage;
-    var resources = if (@import("builtin").os.tag == .windows)
-        try jobs.application_bundle.Bundle.fromExecutable(a, init.io, args[1], args[2])
+    var resources = (if (@import("builtin").os.tag == .windows)
+        jobs.application_bundle.Bundle.fromExecutable(a, init.io, args[1], args[2])
     else
-        try jobs.application_bundle.Bundle.open(a, init.io, args[1]);
+        jobs.application_bundle.Bundle.open(a, init.io, args[1])) catch |err| {
+        std.log.err("Unable to open application bundle '{s}': {t}", .{ args[1], err });
+        return err;
+    };
     defer resources.deinit();
     if (std.mem.eql(u8, args[3], "all")) {
         for (@import("catalog-inventory").entries) |entry| try check(init, resources, args[2], entry.selector);

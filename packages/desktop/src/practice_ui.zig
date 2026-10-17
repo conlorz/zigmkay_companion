@@ -563,6 +563,8 @@ fn dataPanel(view: *View, theme: ui.Theme, bounds: dvui.Rect, input: Input) !voi
         error.PracticeRunCollision => "Conflicting run data. The import was rolled back.",
         error.UnsupportedPracticeDatabase => "This file is not a supported practice database.",
         error.PracticeDatabaseBusy => "Database busy. Wait for other writes and retry.",
+        error.PracticeMigrationBackupFailed => "History upgrade paused: could not create or validate a backup. Check free space and permissions in typing-practice/backups, then retry.",
+        error.UnsupportedPracticeHistory, error.UnsupportedPracticeTiming => "This history uses a newer data format. Open it with a compatible Zigmkay version; the stored data has been kept.",
         else => "Practice data could not be saved or read. Your in-memory results remain available.",
     } else if (input.history_saving) "Working on practice data…" else if (input.history) |data| (if (data.exported) "Database exported." else if (data.imported != null) "Database imported. Matching runs were kept." else "") else "";
     const status_y: f32 = if (wide) left_height + 128 else right_y + 398;

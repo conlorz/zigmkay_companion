@@ -202,9 +202,9 @@ pub const Request = struct {
             if (!legacy) return .{};
         }
         const mutating = self.record != null or self.clearing or self.transfer == .import_database;
-        var db = try database.Database.open(gpa, path, existing != null and !mutating);
+        var db = try database.Database.open(gpa, io, path, existing != null and !mutating);
         defer db.deinit();
-        if (!try db.currentSchema()) try db.makeWritable(path);
+        if (!try db.currentSchema()) try db.makeWritable(io, path);
         var rejected: usize = 0;
         var iterator = directory.iterate();
         while (try iterator.next(io)) |entry| {
@@ -214,7 +214,8 @@ pub const Request = struct {
                 continue;
             };
             defer gpa.free(bytes);
-            const legacy = parse(gpa, bytes) catch {
+            const legacy = parse(gpa, bytes) catch |err| {
+                if (err == error.UnsupportedPracticeHistory) return err;
                 rejected += 1;
                 continue;
             };
@@ -231,7 +232,7 @@ pub const Request = struct {
                 return err;
             };
             if (!imported) {
-                try db.makeWritable(path);
+                try db.makeWritable(io, path);
                 db.importLegacy(&legacy) catch |err| {
                     if (err == error.PracticeRunCollision) {
                         rejected += 1;
@@ -272,7 +273,8 @@ pub const Request = struct {
         var newest: [10]Record = @splat(.{});
         var newest_count: usize = 0;
         while (try rows.step()) {
-            const record = parse(gpa, try rows.blob(1)) catch {
+            const record = parse(gpa, try rows.blob(1)) catch |err| {
+                if (err == error.UnsupportedPracticeHistory) return err;
                 output.rejected += 1;
                 continue;
             };
@@ -311,7 +313,10 @@ pub const Request = struct {
         var curriculum_rows = try db.rowsForPractice(self.cohort);
         defer curriculum_rows.deinit();
         while (try curriculum_rows.step()) {
-            const candidate = parse(gpa, try curriculum_rows.blob(1)) catch continue;
+            const candidate = parse(gpa, try curriculum_rows.blob(1)) catch |err| {
+                if (err == error.UnsupportedPracticeHistory) return err;
+                continue;
+            };
             if (!std.mem.eql(u8, &candidate.id, try curriculum_rows.blob(0)) or !std.meta.eql(database.practiceKey(candidate.cohort), database.practiceKey(self.cohort))) continue;
             if (candidate.cohort.verified == self.cohort.verified) output.retention.?.add(&candidate);
             if (output.latest_curriculum == null and candidate.cohort.curriculum.version == 1 and candidate.scored and candidate.status == .completed and candidate.cohort.mode == .normal) {
@@ -326,6 +331,29 @@ pub const Request = struct {
     }
 };
 pub const Worker = @import("owned_worker.zig").Owner(Request, Query, error.InvalidPracticeGeneration);
+test "frozen legacy ZON imports unchanged and unsupported current payloads remain visible as errors" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{ .iterate = true });
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    const raw = @embedFile("fixtures/record-v1.zon");
+    const record = try parse(t.allocator, raw);
+    var name: [36]u8 = undefined;
+    try temp.dir.writeFile(t.io, .{ .sub_path = filename(record.id, &name), .data = raw });
+    var request = try Request.init(t.allocator, root, .{});
+    defer request.deinit();
+    var loaded = try request.prepare(t.allocator, t.io);
+    defer loaded.deinit();
+    try t.expectEqual(@as(usize, 1), loaded.database_runs);
+    const path = try std.fs.path.join(t.allocator, &.{ root, database.filename });
+    defer t.allocator.free(path);
+    var db = try database.Database.open(t.allocator, t.io, path, false);
+    defer db.deinit();
+    try db.exec("UPDATE runs SET record=CAST('.{ .version=999 }' AS BLOB)");
+    try t.expectError(error.UnsupportedPracticeHistory, request.prepare(t.allocator, t.io));
+    try t.expectEqual(@as(usize, 1), try db.runCount());
+}
 test "immutable publication restart pages cohorts weighted history and corrupt preservation" {
     const t = std.testing;
     var temp = t.tmpDir(.{ .iterate = true });
@@ -394,7 +422,7 @@ test "history refresh stays read-only while another instance holds the writer lo
     defer migrated.deinit();
     const path = try std.fs.path.join(t.allocator, &.{ root, database.filename });
     defer t.allocator.free(path);
-    var writer = try database.Database.open(t.allocator, path, false);
+    var writer = try database.Database.open(t.allocator, t.io, path, false);
     defer writer.deinit();
     try writer.exec("BEGIN IMMEDIATE");
     defer writer.exec("ROLLBACK") catch {};

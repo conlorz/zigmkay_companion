@@ -264,7 +264,7 @@ test "queued timing is frozen across new exercises; migration and clear do not r
     try t.expectEqual(@as(usize, 0), runtime.data.analysis.?.eligible);
     const db_path = try std.fs.path.join(t.allocator, &.{ runtime.path.?, "practice.sqlite3" });
     defer t.allocator.free(db_path);
-    var db = try @import("practice_database.zig").Database.open(t.allocator, db_path, true);
+    var db = try @import("practice_database.zig").Database.open(t.allocator, t.io, db_path, true);
     defer db.deinit();
     var saved = (try db.timingFor(record.id, t.allocator)).?;
     defer saved.deinit();

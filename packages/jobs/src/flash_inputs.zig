@@ -6,8 +6,10 @@ pub const Digest = firmware.Digest;
 pub const tools_name = "flash-tools.zon";
 pub const picotool_revision = "d8df33801dbea792128baaab516291720d400a91";
 pub const picotool_package_hash = "picotool-2.3.1-PtJrRaJNAAA3xRwGctKAdomuKCJXz5UwMOrhzQ_Z2f-e";
+pub const Backend = enum { picotool, windows_bootsel };
 pub const Record = struct {
     version: u16 = 1,
+    backend: Backend = .picotool,
     wrapper_contract_version: u16 = 1,
     picotool_dependency_revision: []const u8 = picotool_revision,
     picotool_dependency_hash: []const u8 = picotool_package_hash,
@@ -21,7 +23,8 @@ pub const Record = struct {
     picotool_hash: Digest,
 
     pub fn validate(self: Record) !void {
-        if (self.version != 1) return error.UnsupportedToolsVersion;
+        if (self.version != 1 and self.version != 2) return error.UnsupportedToolsVersion;
+        if (self.version == 1 and self.backend != .picotool) return error.UnsupportedToolsVersion;
         if (self.wrapper_contract_version != 1) return error.UnsupportedWrapperContract;
         if (!std.mem.eql(u8, self.picotool_dependency_revision, picotool_revision) or !std.mem.eql(u8, self.picotool_dependency_hash, picotool_package_hash)) return error.UnsupportedPicotoolDependency;
         if (!std.mem.eql(u8, self.firmware_repository, target.repository)) return error.UnsupportedFirmwareRepository;
@@ -29,7 +32,7 @@ pub const Record = struct {
         for (self.firmware_revision) |c| if (!std.ascii.isDigit(c) and (c < 'a' or c > 'f')) return error.InvalidFirmwareRevision;
         try path(self.wrapper_path);
         try path(self.picotool_path);
-        if (std.mem.eql(u8, self.wrapper_path, self.picotool_path)) return error.AliasedFlashTools;
+        if (self.backend == .picotool and std.mem.eql(u8, self.wrapper_path, self.picotool_path)) return error.AliasedFlashTools;
     }
 };
 fn path(value: []const u8) !void {
@@ -207,6 +210,22 @@ test "tools provenance and frozen artifact reject edits stale requests and cance
     var parsed = try Tools.parse(gpa, encoded);
     defer parsed.deinit();
     try parsed.verify(gpa, io);
+    try std.testing.expectEqual(Backend.picotool, parsed.record.backend);
+    var backend_record = parsed.record;
+    backend_record.version = 2;
+    backend_record.backend = .windows_bootsel;
+    backend_record.picotool_path = backend_record.wrapper_path;
+    backend_record.picotool_hash = backend_record.wrapper_hash;
+    var backend_tools = try Tools.clone(gpa, backend_record);
+    defer backend_tools.deinit();
+    const backend_bytes = try backend_tools.serialize(gpa);
+    defer gpa.free(backend_bytes);
+    var backend_parsed = try Tools.parse(gpa, backend_bytes);
+    defer backend_parsed.deinit();
+    try backend_parsed.verify(gpa, io);
+    try std.testing.expectEqual(Backend.windows_bootsel, backend_parsed.record.backend);
+    backend_record.version = 1;
+    try std.testing.expectError(error.UnsupportedToolsVersion, backend_record.validate());
     var unsupported = parsed.record;
     unsupported.wrapper_contract_version = 2;
     try std.testing.expectError(error.UnsupportedWrapperContract, unsupported.validate());
