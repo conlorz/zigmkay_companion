@@ -122,6 +122,7 @@ jobs:
             sandbox-exec -p "$profile" "$target/Zigmkay.app/Contents/MacOS/zigmkay-companion" --offline-build-frames 30000
       - name: Single Windows executable builds and practice
         if: runner.os == 'Windows'
+        timeout-minutes: 20
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -143,7 +144,18 @@ jobs:
           $denied = @($env:GITHUB_WORKSPACE, $env:RUNNER_TOOL_CACHE)
           $denied += @("${env:ProgramFiles(x86)}/Windows Kits", "${env:ProgramFiles(x86)}/Microsoft Visual Studio", "$env:ProgramFiles/Microsoft Visual Studio") | Where-Object { Test-Path $_ }
           $profiles = Get-NetFirewallProfile | Select-Object Name, Enabled, DefaultOutboundAction
+          # Keep logs, cancellation and step timeouts connected while the test
+          # executables and their descendants remain under outbound isolation.
+          $runnerPrograms = @(Get-Process -Name Runner.Listener,Runner.Worker -ErrorAction Stop | ForEach-Object { $_.Path } | Sort-Object -Unique)
+          if ($runnerPrograms.Count -lt 2 -or $runnerPrograms -contains $null) { throw 'Could not identify the runner control processes' }
+          $runnerRules = @()
           try {
+            foreach ($program in $runnerPrograms) {
+              $rule = "zigmkay-runner-$([guid]::NewGuid())"
+              New-NetFirewallRule -Name $rule -DisplayName 'Zigmkay CI runner control' -Direction Outbound -Program $program -Protocol TCP -RemotePort 443 -Action Allow -Profile Any | Out-Null
+              $runnerRules += $rule
+            }
+            Write-Host 'Enabling offline isolation; runner HTTPS remains allowed'
             Set-NetFirewallProfile -All -Enabled True -DefaultOutboundAction Block
             if (Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { !$_.Enabled -or $_.DefaultOutboundAction -ne 'Block' }) { throw 'Outbound network isolation is not effective' }
             foreach ($path in $denied) {
@@ -156,20 +168,25 @@ jobs:
             if ($LASTEXITCODE) { throw 'Could not make extracted resources read-only' }
             Set-Location $target
             if ('${{ inputs.mode }}' -ne 'gui') {
+              Write-Host 'Starting cold offline bundle verification'
               & ./check.exe "$target/install/Zigmkay.exe" "$target/cache/zigmkay/cache" all
               if ($LASTEXITCODE) { throw "Cold bundle check failed: $LASTEXITCODE" }
+              Write-Host 'Starting warm offline bundle verification'
               & ./check.exe "$target/install/Zigmkay.exe" "$target/cache/zigmkay/cache" all
               if ($LASTEXITCODE) { throw "Warm bundle check failed: $LASTEXITCODE" }
             }
             $env:SDL_VIDEODRIVER = 'dummy'
             $env:SDL_RENDER_DRIVER = 'software'
+            Write-Host 'Starting offline GUI verification'
             & "$target/install/Zigmkay.exe" --offline-build-frames 30000
             if ($LASTEXITCODE) { throw "Offline GUI failed: $LASTEXITCODE" }
+            Write-Host 'Windows offline verification completed'
           } finally {
+            foreach ($profile in $profiles) { Set-NetFirewallProfile -Name $profile.Name -Enabled $profile.Enabled -DefaultOutboundAction $profile.DefaultOutboundAction }
+            foreach ($rule in $runnerRules) { Remove-NetFirewallRule -Name $rule }
             foreach ($path in $denied) { & icacls $path /remove:d $identity }
             & icacls "$target/install" /remove:d $identity
             if (Test-Path "$target/cache/zigmkay/cache/runtime") { & icacls "$target/cache/zigmkay/cache/runtime" /remove:d $identity }
-            foreach ($profile in $profiles) { Set-NetFirewallProfile -Name $profile.Name -Enabled $profile.Enabled -DefaultOutboundAction $profile.DefaultOutboundAction }
           }
       - name: Preserve downloads and corresponding dependency sources
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
