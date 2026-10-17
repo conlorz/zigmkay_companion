@@ -159,12 +159,14 @@ jobs:
             Set-NetFirewallProfile -All -Enabled True -DefaultOutboundAction Block
             if (Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { !$_.Enabled -or $_.DefaultOutboundAction -ne 'Block' }) { throw 'Outbound network isolation is not effective' }
             foreach ($path in $denied) {
-              & icacls $path /deny "${identity}:(OI)(CI)(RX)"
+              # Block contents/execution, retaining metadata and ACL access for cleanup.
+              & icacls $path /deny "${identity}:(OI)(CI)(RD,X)"
               if ($LASTEXITCODE) { throw "Could not enforce access isolation: $path" }
             }
-            & icacls "$target/install" /deny "${identity}:(OI)(CI)(W,D,DC)"
+            # Generic W includes SYNCHRONIZE, which read handles also need.
+            & icacls "$target/install" /deny "${identity}:(OI)(CI)(WD,AD,WEA,WA,D,DC)"
             if ($LASTEXITCODE) { throw 'Could not make the installation read-only' }
-            & icacls "$target/cache/zigmkay/cache/runtime" /deny "${identity}:(OI)(CI)(W,D,DC)"
+            & icacls "$target/cache/zigmkay/cache/runtime" /deny "${identity}:(OI)(CI)(WD,AD,WEA,WA,D,DC)"
             if ($LASTEXITCODE) { throw 'Could not make extracted resources read-only' }
             Set-Location $target
             if ('${{ inputs.mode }}' -ne 'gui') {
