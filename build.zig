@@ -10,6 +10,10 @@ pub fn build(b: *std.Build) void {
     const native_only = b.option(bool, "native-only", "Skip embedded preparation for native tools") orelse false;
     const selected_export = b.option([]const u8, "project-export", "Absolute frozen project export directory");
     const selected_board = b.option([]const u8, "project-board", "Authoritative selected firmware board selector");
+    const prepare_firmware = b.option(bool, "firmware-check", "Prepare downstream embedded build dependencies") orelse false;
+    const prepare_imports = b.option(bool, "import-check", "Compile the pinned import firmware matrix") orelse false;
+    const prepare_catalog = b.option(bool, "catalog-check", "Prepare all-board synthetic project firmware matrix explicitly") orelse false;
+    const actual_defaults = b.option(bool, "catalog-defaults", "Compile actual selected defaults instead of synthetic catalog fixtures") orelse false;
 
     const check = b.step("check", "Compile downstream processor contract without device access");
     b.default_step = check;
@@ -870,14 +874,14 @@ pub fn build(b: *std.Build) void {
     const catalog_firmware = b.step("catalog-firmware-check", "Compile all selected boards with schema-1 synthetic indexed exports offline");
     const imported_firmware = b.step("import-firmware-check", "Compile both pinned imports for Keycaprio 0.6 and 0.7 without devices");
     const candidate = b.step("prepare-usb-candidate", "Prepare offline LK7 telemetry UF2 and identity/hash inventory");
-    if (b.option(bool, "firmware-check", "Prepare downstream embedded build dependencies") orelse false) {
+    if (prepare_firmware) {
         if (@hasDecl(api, "addKeyboardFirmware")) {
             const mz = b.lazyImport(@This(), "microzig") orelse return;
             const mz_dep = b.lazyDependency("microzig", .{}) orelse return;
             const MicroBuild = mz.MicroBuild(.{ .rp2xxx = true });
             const mb = MicroBuild.init(b, mz_dep) orelse return;
             const target = mb.ports.rp2xxx.boards.raspberrypi.pico.*;
-            if (b.option(bool, "import-check", "Compile the pinned import firmware matrix") orelse false) {
+            if (prepare_imports) {
                 for (import_fixtures) |fixture| {
                     const board = api.boards.find(fixture.selector).?;
                     const item = api.addKeyboardFirmware(b, mb, &target, .ReleaseSafe, "imported", board, .{ .keyboards = firmware.path("keyboards"), .processor = firmware.path("zigmkay/src/root.zig"), .keycodes = firmware.path("zkeycodes/root.zig"), .companion_enabled = true }, null);
@@ -890,7 +894,7 @@ pub fn build(b: *std.Build) void {
                     imported_firmware.dependOn(&item.exe.step);
                 }
             }
-            if (b.option(bool, "catalog-check", "Prepare all-board synthetic project firmware matrix explicitly") orelse false) {
+            if (prepare_catalog) {
                 const catalog_project = b.modules.get("catalog-project") orelse @panic("Catalog firmware check requires the board inventory");
                 const exporter = b.addExecutable(.{ .name = "catalog-firmware-export", .root_module = b.createModule(.{
                     .root_source_file = b.path("tools/catalog_export.zig"),
@@ -898,7 +902,6 @@ pub fn build(b: *std.Build) void {
                     .imports = &.{ .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "project", .module = project_module.? } },
                 }) });
                 const matrix = b.addWriteFiles();
-                const actual_defaults = b.option(bool, "catalog-defaults", "Compile actual selected defaults instead of synthetic catalog fixtures") orelse false;
                 for (api.boards.entries) |board| {
                     const generate = b.addRunArtifact(exporter);
                     generate.addArg(board.name);
