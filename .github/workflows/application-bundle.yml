@@ -126,38 +126,65 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          zig build-exe tools/check_windows_isolation.zig -OReleaseSafe -lws2_32 -femit-bin=zig-out/bin/check-windows-isolation.exe
+          if ($LASTEXITCODE) { throw 'Could not build the isolation preflight' }
           $target = Join-Path $env:RUNNER_TEMP 'Zigmkay offline ü'
-          New-Item -ItemType Directory -Force "$target/install", "$target/home", "$target/config", "$target/cache" | Out-Null
+          New-Item -ItemType Directory -Force "$target/install", "$target/home", "$target/config", "$target/cache", "$target/tmp" | Out-Null
           Copy-Item release-assets/*.exe "$target/install/Zigmkay.exe"
           Copy-Item zig-out/bin/check-application-bundle.exe "$target/check.exe"
+          Copy-Item zig-out/bin/check-windows-isolation.exe "$target/isolation.exe"
           Copy-Item zig-out/bin/release.exe "$target/release.exe"
           & "$target/release.exe" extract-windows "$target/install/Zigmkay.exe" "$target/cache/zigmkay/cache"
           if ($LASTEXITCODE) { throw 'Could not extract the runtime' }
           $env:HOME = "$target/home"
           $env:APPDATA = "$target/config"
           $env:LOCALAPPDATA = "$target/cache"
+          $env:USERPROFILE = "$target/home"
+          $env:TEMP = "$target/tmp"
+          $env:TMP = "$target/tmp"
           $env:ZIG_LOCAL_PKG_DIR = 'C:\missing'
           $env:ZIG_LIB_DIR = 'C:\missing'
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-          # Enforce isolation for the checker and every descendant, including bundled Zig.
-          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          # A separate, unprivileged account scopes isolation to the test tree.
+          # Never change the machine's default outbound policy: hosted runner
+          # management uses more processes and services than Runner.Worker.
+          $username = "zigmkay-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+          $password = ConvertTo-SecureString "Z!$([guid]::NewGuid().ToString('N'))a9" -AsPlainText -Force
+          $credential = [pscredential]::new("$env:COMPUTERNAME\$username", $password)
           $denied = @($env:GITHUB_WORKSPACE, $env:RUNNER_TOOL_CACHE)
           $denied += @("${env:ProgramFiles(x86)}/Windows Kits", "${env:ProgramFiles(x86)}/Microsoft Visual Studio", "$env:ProgramFiles/Microsoft Visual Studio") | Where-Object { Test-Path $_ }
-          $profiles = Get-NetFirewallProfile | Select-Object Name, Enabled, DefaultOutboundAction
-          # Keep logs, cancellation and step timeouts connected while the test
-          # executables and their descendants remain under outbound isolation.
-          $runnerPrograms = @(Get-Process -Name Runner.Listener,Runner.Worker -ErrorAction Stop | ForEach-Object { $_.Path } | Sort-Object -Unique)
-          if ($runnerPrograms.Count -lt 2 -or $runnerPrograms -contains $null) { throw 'Could not identify the runner control processes' }
-          $runnerRules = @()
-          try {
-            foreach ($program in $runnerPrograms) {
-              $rule = "zigmkay-runner-$([guid]::NewGuid())"
-              New-NetFirewallRule -Name $rule -DisplayName 'Zigmkay CI runner control' -Direction Outbound -Program $program -Protocol TCP -RemotePort 443 -Action Allow -Profile Any | Out-Null
-              $runnerRules += $rule
+          $profiles = Get-NetFirewallProfile | Select-Object Name, Enabled
+          $rule = "zigmkay-offline-$([guid]::NewGuid())"
+          $identity = $null
+          function Invoke-Isolated([string]$Phase, [string]$Executable, [string[]]$Arguments, [int]$TimeoutSeconds) {
+            Write-Host "Starting $Phase"
+            $stdout = "$target/$Phase.stdout.log"
+            $stderr = "$target/$Phase.stderr.log"
+            $quoted = @($Arguments | ForEach-Object { '"' + $_ + '"' })
+            $process = Start-Process -FilePath $Executable -ArgumentList $quoted -Credential $credential -WorkingDirectory $target -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            try {
+              while (!$process.WaitForExit(10000)) {
+                Write-Host "$Phase running for $([int]$timer.Elapsed.TotalSeconds)s"
+                if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) { throw "$Phase timed out" }
+              }
+              if ($process.ExitCode -ne 0) { throw "$Phase failed: $($process.ExitCode)" }
+            } finally {
+              if (!$process.HasExited) { & "$env:SystemRoot/System32/taskkill.exe" /PID $process.Id /T /F }
+              if (Test-Path $stdout) { Get-Content $stdout }
+              if (Test-Path $stderr) { Get-Content $stderr }
+              $process.Dispose()
             }
-            Write-Host 'Enabling offline isolation; runner HTTPS remains allowed'
-            Set-NetFirewallProfile -All -Enabled True -DefaultOutboundAction Block
-            if (Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { !$_.Enabled -or $_.DefaultOutboundAction -ne 'Block' }) { throw 'Outbound network isolation is not effective' }
+          }
+          try {
+            $user = New-LocalUser -Name $username -Password $password -AccountNeverExpires -PasswordNeverExpires
+            Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user
+            $identity = "*$($user.SID.Value)"
+            & icacls $target /grant "${identity}:(OI)(CI)(M)"
+            if ($LASTEXITCODE) { throw 'Could not grant access to the isolated test directory' }
+            New-NetFirewallRule -Name $rule -DisplayName 'Zigmkay isolated test account' -Direction Outbound -LocalUser "D:(A;;CC;;;$($user.SID.Value))" -Action Block -Profile Any | Out-Null
+            Set-NetFirewallProfile -All -Enabled True
+            if (Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object { !$_.Enabled }) { throw 'Firewall is not enabled' }
             foreach ($path in $denied) {
               # Block contents/execution, retaining metadata and ACL access for cleanup.
               & icacls $path /deny "${identity}:(OI)(CI)(RD,X)"
@@ -175,28 +202,33 @@ jobs:
               }
               if ($deniedSync) { throw "Read-only isolation denies SYNCHRONIZE: $path" }
             }
-            Set-Location $target
+            Invoke-Isolated -Phase preflight -Executable "$target/isolation.exe" -Arguments @("$target/install/Zigmkay.exe", "$env:GITHUB_WORKSPACE/build.zig") -TimeoutSeconds 30
             if ('${{ inputs.mode }}' -ne 'gui') {
-              Write-Host 'Starting cold offline bundle verification'
-              & ./check.exe "$target/install/Zigmkay.exe" "$target/cache/zigmkay/cache" all
-              if ($LASTEXITCODE) { throw "Cold bundle check failed: $LASTEXITCODE" }
-              Write-Host 'Starting warm offline bundle verification'
-              & ./check.exe "$target/install/Zigmkay.exe" "$target/cache/zigmkay/cache" all
-              if ($LASTEXITCODE) { throw "Warm bundle check failed: $LASTEXITCODE" }
+              Invoke-Isolated -Phase cold -Executable "$target/check.exe" -Arguments @("$target/install/Zigmkay.exe", "$target/cache/zigmkay/cache", 'all') -TimeoutSeconds 420
+              Invoke-Isolated -Phase warm -Executable "$target/check.exe" -Arguments @("$target/install/Zigmkay.exe", "$target/cache/zigmkay/cache", 'all') -TimeoutSeconds 300
             }
             $env:SDL_VIDEODRIVER = 'dummy'
             $env:SDL_RENDER_DRIVER = 'software'
-            Write-Host 'Starting offline GUI verification'
-            & "$target/install/Zigmkay.exe" --offline-build-frames 30000
-            if ($LASTEXITCODE) { throw "Offline GUI failed: $LASTEXITCODE" }
+            Invoke-Isolated -Phase gui -Executable "$target/install/Zigmkay.exe" -Arguments @('--offline-build-frames', '30000') -TimeoutSeconds 120
             Write-Host 'Windows offline verification completed'
           } finally {
-            foreach ($profile in $profiles) { Set-NetFirewallProfile -Name $profile.Name -Enabled $profile.Enabled -DefaultOutboundAction $profile.DefaultOutboundAction }
-            foreach ($rule in $runnerRules) { Remove-NetFirewallRule -Name $rule }
-            foreach ($path in $denied) { & icacls $path /remove:d $identity }
-            & icacls "$target/install" /remove:d $identity
-            if (Test-Path "$target/cache/zigmkay/cache/runtime") { & icacls "$target/cache/zigmkay/cache/runtime" /remove:d $identity }
+            Remove-NetFirewallRule -Name $rule -ErrorAction Continue
+            foreach ($profile in $profiles) { Set-NetFirewallProfile -Name $profile.Name -Enabled $profile.Enabled }
+            if ($identity) {
+              foreach ($path in $denied) { & icacls $path /remove:d $identity }
+              & icacls "$target/install" /remove:d $identity
+              & icacls "$target/cache/zigmkay/cache/runtime" /remove:d $identity
+              & icacls $target /remove:g $identity
+            }
+            Remove-LocalUser -Name $username -ErrorAction Continue
           }
+      - name: Preserve Windows isolation diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-isolation-diagnostics
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/Zigmkay offline ü/*.log
       - name: Preserve downloads and corresponding dependency sources
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
