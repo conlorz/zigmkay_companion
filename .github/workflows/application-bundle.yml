@@ -126,7 +126,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          zig build-exe tools/check_windows_isolation.zig -OReleaseSafe -lws2_32 -femit-bin=zig-out/bin/check-windows-isolation.exe
+          zig build-exe tools/check_windows_isolation.zig -OReleaseSafe -lws2_32 '-femit-bin=zig-out/bin/check-windows-isolation.exe'
           if ($LASTEXITCODE) { throw 'Could not build the isolation preflight' }
           $target = Join-Path $env:RUNNER_TEMP 'Zigmkay offline ü'
           New-Item -ItemType Directory -Force "$target/install", "$target/home", "$target/config", "$target/cache", "$target/tmp" | Out-Null
