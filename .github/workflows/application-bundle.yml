@@ -163,11 +163,18 @@ jobs:
               & icacls $path /deny "${identity}:(OI)(CI)(RD,X)"
               if ($LASTEXITCODE) { throw "Could not enforce access isolation: $path" }
             }
-            # Generic W includes SYNCHRONIZE, which read handles also need.
-            & icacls "$target/install" /deny "${identity}:(OI)(CI)(WD,AD,WEA,WA,D,DC)"
+            # W and D both include SYNCHRONIZE, which read handles also need.
+            # Use the specific delete right DE rather than the D shorthand.
+            & icacls "$target/install" /deny "${identity}:(OI)(CI)(WD,AD,WEA,WA,DE,DC)"
             if ($LASTEXITCODE) { throw 'Could not make the installation read-only' }
-            & icacls "$target/cache/zigmkay/cache/runtime" /deny "${identity}:(OI)(CI)(WD,AD,WEA,WA,D,DC)"
+            & icacls "$target/cache/zigmkay/cache/runtime" /deny "${identity}:(OI)(CI)(WD,AD,WEA,WA,DE,DC)"
             if ($LASTEXITCODE) { throw 'Could not make extracted resources read-only' }
+            foreach ($path in @("$target/install/Zigmkay.exe", "$target/cache/zigmkay/cache/runtime")) {
+              $deniedSync = (Get-Acl $path).Access | Where-Object {
+                $_.AccessControlType -eq 'Deny' -and ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Synchronize)
+              }
+              if ($deniedSync) { throw "Read-only isolation denies SYNCHRONIZE: $path" }
+            }
             Set-Location $target
             if ('${{ inputs.mode }}' -ne 'gui') {
               Write-Host 'Starting cold offline bundle verification'
