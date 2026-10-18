@@ -277,14 +277,26 @@ jobs:
         run: |
           set -euo pipefail
           target="$RUNNER_TEMP/Zigmkay offline ü"
-          mkdir -p "$target/install" "$target/home" "$target/cache" "$target/config" "$target/data"
+          mkdir -p "$target/install" "$target/home" "$target/cache" "$target/config" "$target/data" "$target/tmp"
           cp downloads/*.AppImage "$target/install/Zigmkay.AppImage"
           cp verifier/check-application-bundle "$target/check"
           chmod +x "$target/install/Zigmkay.AppImage" "$target/check"
           cd "$target/install"
           ./Zigmkay.AppImage --appimage-mount > "$target/mountpoint" &
           mount_pid=$!
-          trap 'kill "$mount_pid" 2>/dev/null || true' EXIT
+          cleanup() {
+            status=$?
+            kill "$mount_pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              for log in "$target"/cache/zigmkay/builds/build-*/build.{stdout,stderr}.log; do
+                if [ -f "$log" ]; then
+                  printf 'Compiler diagnostic: %s\n' "$log"
+                  cat "$log"
+                fi
+              done
+            fi
+          }
+          trap cleanup EXIT
           for i in $(seq 1 30); do
             if [ -s "$target/mountpoint" ]; then break; fi
             kill -0 "$mount_pid"
@@ -294,7 +306,8 @@ jobs:
           test -f "$mount/usr/share/zigmkay/application.zon"
           ./Zigmkay.AppImage --appimage-extract >/dev/null
           chmod -R a-w squashfs-root
-          sandbox=(bwrap --unshare-net --ro-bind / / --dev /dev --proc /proc --tmpfs "$GITHUB_WORKSPACE" --tmpfs "$RUNNER_TOOL_CACHE" --tmpfs /usr/include --bind "$target" "$target" --setenv HOME "$target/home" --setenv XDG_CONFIG_HOME "$target/config" --setenv XDG_DATA_HOME "$target/data" --setenv XDG_CACHE_HOME "$target/cache" --setenv PATH /usr/bin:/bin --setenv ZIG_LIB_DIR /missing --setenv ZIG_LOCAL_PKG_DIR /missing --setenv SDL_VIDEODRIVER dummy --setenv SDL_RENDER_DRIVER software --chdir "$target")
+          # Give Clang writable temporary space without hiding the FUSE mount in /tmp.
+          sandbox=(bwrap --unshare-net --ro-bind / / --dev /dev --proc /proc --tmpfs "$GITHUB_WORKSPACE" --tmpfs "$RUNNER_TOOL_CACHE" --tmpfs /usr/include --bind "$target" "$target" --setenv TMPDIR "$target/tmp" --setenv HOME "$target/home" --setenv XDG_CONFIG_HOME "$target/config" --setenv XDG_DATA_HOME "$target/data" --setenv XDG_CACHE_HOME "$target/cache" --setenv PATH /usr/bin:/bin --setenv ZIG_LIB_DIR /missing --setenv ZIG_LOCAL_PKG_DIR /missing --setenv SDL_VIDEODRIVER dummy --setenv SDL_RENDER_DRIVER software --chdir "$target")
           if [ -d /usr/lib/gcc ]; then sandbox+=(--tmpfs /usr/lib/gcc); fi
           for root in "$mount" "$target/install/squashfs-root"; do
             for pass in cold warm; do
@@ -303,6 +316,13 @@ jobs:
             "${sandbox[@]}" "$root/AppRun" --offline-build-frames 30000
             rm -rf "$target/cache/zigmkay"
           done
+      - name: Preserve Linux runtime diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-runtime-diagnostics-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/Zigmkay offline ü/cache/zigmkay/builds/build-*/build.*.log
 
   source:
     if: github.event_name != 'workflow_dispatch' || inputs.mode == 'full'
