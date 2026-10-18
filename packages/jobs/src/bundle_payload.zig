@@ -38,15 +38,16 @@ pub fn materialize(gpa: std.mem.Allocator, io: std.Io, executable: []const u8, r
     defer arena.deinit();
     const a = arena.allocator();
     const info = try header(a, io, executable);
+    const marker = try std.fs.path.join(a, &.{ root, ".complete" });
+    // Completed resources are immutable and may be mounted or ACL-protected
+    // read-only. Inspect them before attempting any extraction writes.
+    if (try complete(a, io, marker, info.manifest.id)) return;
     const parent = std.fs.path.dirname(root) orelse return error.InvalidBundlePath;
     try std.Io.Dir.cwd().createDirPath(io, parent);
     const lock = try std.Io.Dir.cwd().createFile(io, try std.fmt.allocPrint(a, "{s}.lock", .{root}), .{ .truncate = false, .lock = .exclusive });
     defer lock.close(io);
-    const marker = try std.fs.path.join(a, &.{ root, ".complete" });
-    if (std.Io.Dir.cwd().readFileAlloc(io, marker, a, .limited(64))) |bytes| {
-        if (std.mem.eql(u8, bytes, &info.manifest.id)) return;
-        return error.InvalidApplicationPayload;
-    } else |err| if (err != error.FileNotFound) return err;
+    // Another extractor may have completed while this caller waited for the lock.
+    if (try complete(a, io, marker, info.manifest.id)) return;
     const staging = try std.fmt.allocPrint(a, "{s}.unpacking", .{root});
     try std.Io.Dir.cwd().deleteTree(io, staging);
     try std.Io.Dir.cwd().createDirPath(io, staging);
@@ -86,6 +87,14 @@ pub fn materialize(gpa: std.mem.Allocator, io: std.Io, executable: []const u8, r
     // Only an incomplete, application-owned extraction may be replaced.
     try std.Io.Dir.cwd().deleteTree(io, root);
     try std.Io.Dir.renameAbsolute(staging, root, io);
+}
+fn complete(a: std.mem.Allocator, io: std.Io, marker: []const u8, id: [32]u8) !bool {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, marker, a, .limited(64)) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    if (!std.mem.eql(u8, bytes, &id)) return error.InvalidApplicationPayload;
+    return true;
 }
 fn addTree(a: std.mem.Allocator, io: std.Io, writer: *std.Io.Writer, root: []const u8, relative: []const u8) anyerror!void {
     const path = try std.fs.path.join(a, &.{ root, relative });
@@ -168,6 +177,14 @@ test "single executable materializes shipped bytes once and recovers an interrup
     try t.expectEqualStrings("shipped compiler input", input);
     // A warm call reads only the completion marker, rather than rewriting inputs.
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = try application.path(a, "retained"), .data = "warm" });
+    // A directory at the lock path makes opening a write lock fail on every
+    // platform, including Windows, without relying on POSIX chmod semantics.
+    const lock_path = try std.fmt.allocPrint(a, "{s}.lock", .{application.root});
+    try std.Io.Dir.cwd().deleteFile(io, lock_path);
+    try std.Io.Dir.cwd().createDir(io, lock_path, .default_dir);
     try materialize(t.allocator, io, executable, application.root);
     try t.expectEqualStrings("warm", try std.Io.Dir.cwd().readFileAlloc(io, try application.path(a, "retained"), a, .limited(64)));
+    const marker = try application.path(a, ".complete");
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = marker, .data = "invalid bundle identity" });
+    try t.expectError(error.InvalidApplicationPayload, materialize(t.allocator, io, executable, application.root));
 }

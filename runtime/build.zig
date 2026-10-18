@@ -2,6 +2,12 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     if (!std.mem.eql(u8, @import("builtin").zig_version_string, "0.17.0")) @panic("Requires Zig 0.17.0");
+    // An explicit Linux ABI makes host tools use Zig's shipped libc inputs.
+    // Otherwise a detectable system compiler with unavailable SDK headers can
+    // make native libc discovery fail before Zig uses its bundled fallback.
+    if (b.graph.host.result.os.tag == .linux) {
+        b.graph.host.query.abi = b.graph.host.result.abi;
+    }
     const step = b.step("build-project", "Build the exported firmware and native runner offline");
     b.default_step = step;
     const export_option = b.option([]const u8, "project-export", "Frozen project export");

@@ -39,12 +39,14 @@ pub fn tools(gpa: std.mem.Allocator, bundle: Bundle) !jobs.flash_inputs.Tools {
     defer arena.deinit();
     const a = arena.allocator();
     return jobs.flash_inputs.Tools.clone(gpa, .{
+        .version = bundle.manifest.version,
+        .backend = bundle.manifest.backend,
         .firmware_revision = bundle.manifest.firmware_revision,
         .firmware_source_digest = bundle.manifest.id,
         .source_kind = .published,
-        .wrapper_path = try bundle.path(a, "tools/picotool_flash" ++ if (@import("builtin").os.tag == .windows) ".exe" else ""),
+        .wrapper_path = try bundle.path(a, if (bundle.manifest.backend == .windows_bootsel) "tools/bootsel-transfer.exe" else "tools/picotool_flash" ++ if (@import("builtin").os.tag == .windows) ".exe" else ""),
         .wrapper_hash = bundle.manifest.wrapper_hash,
-        .picotool_path = try bundle.path(a, "tools/picotool" ++ if (@import("builtin").os.tag == .windows) ".exe" else ""),
+        .picotool_path = try bundle.path(a, if (bundle.manifest.backend == .windows_bootsel) "tools/bootsel-transfer.exe" else "tools/picotool" ++ if (@import("builtin").os.tag == .windows) ".exe" else ""),
         .picotool_hash = bundle.manifest.picotool_hash,
     });
 }

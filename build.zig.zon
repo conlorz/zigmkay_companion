@@ -1,6 +1,6 @@
 .{
     .name = .zigmkay_companion,
-    .version = "0.1.0",
+    .version = "0.1.0-preview.1",
     .fingerprint = 0xf34c18ab8685e700,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
@@ -39,5 +39,5 @@
             .lazy = true,
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "mise.toml", "AGENTS.md", "README.md", "LICENSE", "NOTICE", "compatibility", "tests", "packages", "tools", "apps", "runtime" },
+    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "mise.toml", "AGENTS.md", "README.md", "LICENSE", "NOTICE", "compatibility", "tests", "packages", "tools", "apps", "runtime", "packaging" },
 }

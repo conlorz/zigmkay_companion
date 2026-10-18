@@ -85,6 +85,7 @@ pub const Controller = struct {
     operation_id: u64 = 0,
     phase: Phase = .idle,
     failure: ?Failure = null,
+    transfer_backend: jobs.flash_inputs.Backend = .picotool,
     artifact: ?Frozen = null,
     selected: ?Selection = null,
     /// Presenter must capture this alongside the displayed selection and pass it
@@ -287,7 +288,8 @@ pub const Controller = struct {
                     self.phase = if (completed.result.cancelled) .cancelled else .failed;
                     return .none;
                 }
-                // Contract-1 success verifies load and reboot, not HID readiness.
+                // Backend completion is transfer evidence, never HID readiness.
+                self.transfer_backend = completed.result.backend;
                 self.phase = .reconnecting;
                 self.reconnect_deadline = now +| self.reconnect_timeout_ms;
                 return .{ .watch_reconnect = .{ .operation = self.operation(), .expected = self.artifact.?.expected_identity, .deadline = self.reconnect_deadline } };
@@ -411,6 +413,25 @@ test "managed transfer completion requires fresh full-identity live reconnection
     try std.testing.expectEqual(Phase.reconnecting, controller.phase);
     _ = try controller.receive(.{ .reconnected = .{ .operation_id = controller.operation_id, .session_token = 11, .coherent = true, .identity = test_identity } }, 104);
     try std.testing.expectEqual(Phase.ready, controller.phase);
+}
+test "Windows copy completion rejects incorrect live firmware identity" {
+    const t = std.testing;
+    var controller = Controller.init(t.allocator, test_context);
+    defer controller.deinit();
+    try reachFrozen(&controller);
+    _ = try controller.dispatch(.{ .select = .unique_bootsel });
+    _ = try controller.dispatch(.{ .confirm = .{ .operation_id = controller.operation_id, .uf2_hash = @splat(4), .selection_revision = controller.selection_revision } });
+    var result = successfulResult();
+    result.backend = .windows_bootsel;
+    _ = try controller.receive(.{ .managed_result = .{ .operation_id = controller.operation_id, .result = &result } }, 100);
+    try t.expectEqual(Phase.reconnecting, controller.phase);
+    try t.expectEqual(jobs.flash_inputs.Backend.windows_bootsel, controller.transfer_backend);
+    var wrong = test_identity;
+    wrong.digest[0] ^= 1;
+    _ = try controller.receive(.{ .reconnected = .{ .operation_id = controller.operation_id, .session_token = 11, .coherent = true, .identity = wrong } }, 101);
+    try t.expectEqual(Phase.reconnecting, controller.phase);
+    _ = try controller.receive(.{ .reconnected = .{ .operation_id = controller.operation_id, .session_token = 11, .coherent = true, .identity = test_identity } }, 102);
+    try t.expectEqual(Phase.ready, controller.phase);
 }
 test "edits cancel managed work and successful late results cannot restore authorization" {
     var controller = Controller.init(std.testing.allocator, test_context);

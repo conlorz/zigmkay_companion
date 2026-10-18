@@ -24,10 +24,11 @@ is shown offline; tutor exercises and history use deterministic sample data.
 
 ## Get started with mise
 
-The current way to install and run Zigmkay is from source with
-[mise](https://mise.jdx.dev/getting-started). Downloadable executables are planned
-for the future. Native macOS captures are available here; Windows and Linux
-desktop acceptance is still in progress. See [compatibility status](compatibility/README.md).
+Run Zigmkay from source with [mise](https://mise.jdx.dev/getting-started), or use
+an unsigned executable preview once published. The [preview release workflow](docs/preview-releases.md)
+packages macOS DMGs, a portable Windows EXE and a Linux AppImage with Zig and the
+offline runtime included. Native Windows and Linux release acceptance runs in CI;
+device acceptance remains separate. See [compatibility status](compatibility/README.md).
 
 Install [mise](https://mise.jdx.dev/installing-mise.html) and Git, then:
 

@@ -104,6 +104,8 @@ pub fn resolve(gpa: std.mem.Allocator, options: Options) !OwnedPaths {
         break :blk try normalize(a, platform, &.{root});
     } else if (platform == .macos and std.mem.endsWith(u8, exe_dir, "/Contents/MacOS"))
         try normalize(a, platform, &.{ exe_dir, "../Resources" })
+    else if (platform == .linux and exe_dir.len > "/usr/bin".len and std.mem.endsWith(u8, exe_dir, "/usr/bin"))
+        try normalize(a, platform, &.{ exe_dir, "../share/zigmkay" })
     else
         try normalize(a, platform, &.{ exe_dir, "resources" });
     const installation_root = if (options.installation_root) |root| blk: {
@@ -112,6 +114,8 @@ pub fn resolve(gpa: std.mem.Allocator, options: Options) !OwnedPaths {
         if (!inside(platform, executable, prefix) or !inside(platform, resources, prefix)) return error.InvalidInstallationRoot;
         break :blk prefix;
     } else if (platform == .macos and std.mem.endsWith(u8, exe_dir, "/Contents/MacOS"))
+        try normalize(a, platform, &.{ exe_dir, "../.." })
+    else if (platform == .linux and exe_dir.len > "/usr/bin".len and std.mem.endsWith(u8, exe_dir, "/usr/bin"))
         try normalize(a, platform, &.{ exe_dir, "../.." })
     else
         try a.dupe(u8, exe_dir);
@@ -249,6 +253,17 @@ test "Windows relocated smoke test separates installation from user storage" {
     defer paths.deinit();
     try std.testing.expectEqualStrings("C:\\temp\\Zigmkay offline ü\\install", paths.paths.installation_root);
     try std.testing.expectEqualStrings("C:\\temp\\Zigmkay offline ü\\cache\\zigmkay\\cache", paths.paths.cache);
+}
+
+test "mounted and extracted Linux AppDirs resolve resources without writable mount storage" {
+    for ([_][]const u8{ "/tmp/.mount_Zig ü/usr/bin/zigmkay-companion", "/home/user/Downloads/Zigmkay ü/squashfs-root/usr/bin/zigmkay-companion" }) |executable| {
+        var paths = try resolve(std.testing.allocator, .{ .platform = .linux, .env = .{ .home = "/home/user" }, .executable_path = executable });
+        defer paths.deinit();
+        try std.testing.expect(std.mem.endsWith(u8, paths.paths.resources, "/usr/share/zigmkay"));
+        try std.testing.expect(!std.mem.endsWith(u8, paths.paths.installation_root, "/usr/bin"));
+        try std.testing.expectEqualStrings("/home/user/.cache/zigmkay/builds", paths.paths.builds);
+        try std.testing.expectEqualStrings("/home/user/.local/share/zigmkay/projects", paths.paths.projects);
+    }
 }
 
 test "XDG values and UNC user directories are injected and validated" {
