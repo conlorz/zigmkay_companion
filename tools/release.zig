@@ -24,14 +24,30 @@ fn decimal(value: []const u8) !void {
     _ = std.fmt.parseInt(u32, value, 10) catch return error.InvalidPreviewTag;
 }
 fn run(io: std.Io, argv: []const []const u8) ![]const u8 {
-    const result = try std.process.run(a, io, .{ .argv = argv, .stdout_limit = .limited(8 * 1024 * 1024), .stderr_limit = .limited(1024 * 1024), .timeout = .{ .duration = .{ .raw = .fromSeconds(600), .clock = .awake } } });
-    defer a.free(result.stderr);
-    errdefer a.free(result.stdout);
-    if (!result.term.success()) {
+    var attempt: u8 = 0;
+    while (true) : (attempt += 1) {
+        const result = try std.process.run(a, io, .{ .argv = argv, .stdout_limit = .limited(8 * 1024 * 1024), .stderr_limit = .limited(1024 * 1024), .timeout = .{ .duration = .{ .raw = .fromSeconds(600), .clock = .awake } } });
+        defer a.free(result.stderr);
+        var retained = false;
+        defer if (!retained) a.free(result.stdout);
+        if (result.term.success()) {
+            retained = true;
+            return result.stdout;
+        }
+        // DiskImages can briefly retain the source volume while creating a DMG.
+        // Retry only the observed busy failure; never mask other packaging errors.
+        if (attempt < 2 and argv.len > 1 and
+            std.mem.eql(u8, std.fs.path.basename(argv[0]), "hdiutil") and
+            std.mem.eql(u8, argv[1], "create") and
+            std.mem.indexOf(u8, result.stderr, "hdiutil: create failed - Resource busy") != null)
+        {
+            std.log.warn("Disk image creation is busy; retrying in 5 seconds (attempt {d}/3)", .{attempt + 2});
+            try std.Io.sleep(io, .fromSeconds(5), .awake);
+            continue;
+        }
         std.debug.print("release command failed: {s}\n{s}\n{s}\n", .{ argv[0], result.stdout, result.stderr });
         return error.ReleaseCommandFailed;
     }
-    return result.stdout;
 }
 fn join(parts: []const []const u8) ![]const u8 {
     return std.fs.path.join(a, parts);
