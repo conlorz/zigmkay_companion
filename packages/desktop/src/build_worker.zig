@@ -25,7 +25,9 @@ pub const Request = struct {
         errdefer arena.deinit();
         const a = arena.allocator();
         const owned = try p.owned_zon.clone(a, config);
-        const path = try std.fs.path.join(a, &.{ owned.request.export_directory, &std.fmt.bytesToHex(digest, .lower) });
+        // Exports never overwrite files, so keep each export format in its own directory.
+        const format = try std.fmt.allocPrint(a, "v{d}", .{p.exporter.contract.version});
+        const path = try std.fs.path.join(a, &.{ owned.request.export_directory, format, &std.fmt.bytesToHex(digest, .lower) });
         var file = try files.Request.capture(model, .export_zig, path);
         errdefer file.deinit();
         const copied_environment = try environment.clone(a);
