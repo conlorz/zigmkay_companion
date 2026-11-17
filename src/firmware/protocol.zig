@@ -16,8 +16,10 @@
 //!   0x21 state  [1] seq [2] top layer [3] modifiers [4..6] active-layer mask
 //!               (u16 little endian, bit 0 always set) [6..22] pressed keys
 //!   0x22 key    [1] seq [2] pressed [3] key index [4] layer [5] modifiers
+//!   0x23 signal [1] seq [2] kind (1 log toggle, 2 overlay toggle, 3 shutdown)
+//!               [3] pressed
 //!
-//! State and key reports share a u8 sequence that wraps. Key reports carry the
+//! State, key and signal reports share a u8 sequence that wraps. Key reports carry the
 //! layer and modifiers at scan time, before processing. Unknown report ids,
 //! for example the legacy 0x03 trace, are ignored. Bytes after a message's
 //! fields are not interpreted.

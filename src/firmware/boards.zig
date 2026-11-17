@@ -40,7 +40,10 @@ const full_declarations = [_][]const u8{
 
 // Tucky Two Times builds its own dimensions from `key_count` and `keymap`.
 const tucky_declarations = [_][]const u8{ "key_count", "keymap", "combos", "sides", "custom_functions" };
-// Dasbob reads only `key_count` and `keymap`; it passes no callbacks or sides.
+// Dasbob reads only `key_count` and `keymap`; it passes no combos, callbacks or
+// sides. Its entrypoint therefore ignores the forwarded `custom_functions`, and
+// the firmware reports the unknown (all-zero) keymap id, which the live session
+// refuses as `unknown_keymap`.
 const dasbob_declarations = [_][]const u8{ "key_count", "keymap", "custom_functions" };
 
 const rollercole_28: Shim = .{ .file_name = "shared_keymap_28_1.zig", .declarations = &full_declarations };

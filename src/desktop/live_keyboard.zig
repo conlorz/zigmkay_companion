@@ -80,8 +80,8 @@ pub const Presenter = struct {
     }
 };
 
-/// Companion-owned overlay intent. The keyboard protocol has no signal
-/// messages, so callers derive these on the host; the live session supplies none.
+/// Companion-owned overlay intent. The live session reports keyboard signal
+/// messages (`fromKeyboard`); the draft runner derives them on the host.
 pub const SignalKind = enum { log_toggle, overlay_toggle, shutdown };
 pub const Signal = struct { kind: SignalKind, pressed: bool };
 pub const max_signals = 32;
