@@ -181,11 +181,17 @@ pub const Session = struct {
             self.expected.dimensions,
         ) catch |err| return self.malformed(now, err);
         const message = decoded orelse return .{};
-        return self.apply(message, now);
+        return self.applyValid(message, now);
     }
 
+    /// Validates and applies one decoded keyboard message.
     pub fn apply(self: *Session, message: protocol.Message, now: u64) Outcome {
         protocol.validate(message, self.expected.dimensions) catch |err| return self.malformed(now, err);
+        return self.applyValid(message, now);
+    }
+
+    /// Applies a message already validated against the expected dimensions.
+    fn applyValid(self: *Session, message: protocol.Message, now: u64) Outcome {
         switch (self.phase) {
             .disconnected, .incompatible => return .{},
             .negotiating, .synchronizing, .live => {},
