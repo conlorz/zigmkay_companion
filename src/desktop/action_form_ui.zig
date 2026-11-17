@@ -5,13 +5,35 @@ const desktop = @import("desktop-core");
 const p = @import("project");
 const types = @import("layout-model");
 const labels = desktop.labels;
+
 pub const Draft = desktop.action_form.Draft;
+
 fn number(comptime T: type, value: *T, title: []const u8) void {
     const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .id_extra = std.hash.Wyhash.hash(0, title) });
     defer row.deinit();
     dvui.labelNoFmt(@src(), title, .{}, .{ .min_size_content = .{ .w = 200 } });
     _ = dvui.textEntryNumber(@src(), T, .{ .value = value }, .{ .min_size_content = .{ .w = 110, .h = 26 }, .padding = .all(6) });
 }
+
+const modifier_fields = .{ "left_ctrl", "left_shift", "left_alt", "left_gui", "right_ctrl", "right_shift", "right_alt", "right_gui" };
+
+/// The running host's name for modifier bit `bit`, left side first.
+fn modifierLabel(comptime bit: usize) []const u8 {
+    const side = if (bit < 4) "L " else "R ";
+    return switch (bit % 4) {
+        0 => side ++ "Control",
+        1 => side ++ "Shift",
+        2 => if (labels.running_host == .macos) side ++ "Option" else side ++ "Alt",
+        3 => switch (labels.running_host) {
+            .macos => side ++ "Command",
+            .windows => side ++ "Windows",
+            .linux => side ++ "Super",
+        },
+        else => unreachable,
+    };
+}
+
+/// Left and right modifier checkboxes, one row per side.
 fn modifiers(mods: *types.Modifiers, title: []const u8) void {
     const box = dvui.box(@src(), .{}, .{ .id_extra = std.hash.Wyhash.hash(0, title), .expand = .horizontal });
     defer box.deinit();
@@ -19,32 +41,15 @@ fn modifiers(mods: *types.Modifiers, title: []const u8) void {
     inline for (0..2) |side| {
         const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = side });
         defer row.deinit();
-        inline for (.{ "left_ctrl", "left_shift", "left_alt", "left_gui", "right_ctrl", "right_shift", "right_alt", "right_gui" }, 0..) |field, i| {
+        inline for (modifier_fields, 0..) |field, i| {
             if (i / 4 == side) {
                 var checked = @field(mods, field);
-                if (dvui.checkbox(@src(), &checked, switch (i) {
-                    0 => "L Control",
-                    1 => "L Shift",
-                    2 => if (labels.running_host == .macos) "L Option" else "L Alt",
-                    3 => switch (labels.running_host) {
-                        .macos => "L Command",
-                        .windows => "L Windows",
-                        .linux => "L Super",
-                    },
-                    4 => "R Control",
-                    5 => "R Shift",
-                    6 => if (labels.running_host == .macos) "R Option" else "R Alt",
-                    7 => switch (labels.running_host) {
-                        .macos => "R Command",
-                        .windows => "R Windows",
-                        .linux => "R Super",
-                    },
-                    else => unreachable,
-                }, .{ .id_extra = i })) @field(mods, field) = checked;
+                if (dvui.checkbox(@src(), &checked, modifierLabel(i), .{ .id_extra = i })) @field(mods, field) = checked;
             }
         }
     }
 }
+
 pub fn hold(value: *p.Hold, doc: p.Document, title: []const u8) !void {
     if (doc.layers.len == 0 or doc.layers.len > p.Limits.layers) return error.InvalidActionFormLayers;
     const box = dvui.box(@src(), .{}, .{ .id_extra = std.hash.Wyhash.hash(0, title), .expand = .horizontal });
@@ -58,11 +63,17 @@ pub fn hold(value: *p.Hold, doc: p.Document, title: []const u8) !void {
         names[i + 1] = layer.name;
         if (value.layer_id == layer.id) selected = i + 1;
     }
-    if (dvui.dropdown(@src(), names[0 .. doc.layers.len + 1], .{ .choice = &selected }, .{}, .{ .expand = .horizontal })) value.layer_id = if (selected == 0) null else doc.layers[selected - 1].id;
+    if (dvui.dropdown(@src(), names[0 .. doc.layers.len + 1], .{ .choice = &selected }, .{}, .{ .expand = .horizontal })) {
+        value.layer_id = if (selected == 0) null else doc.layers[selected - 1].id;
+    }
     var has_custom = value.custom != null;
     if (dvui.checkbox(@src(), &has_custom, "Custom hold callback / reserved signal", .{})) value.custom = if (has_custom) 1 else null;
     if (value.custom) |*id| customChoice(id, "Hold callback ID");
 }
+
+/// Reserved companion signals use custom IDs 253 to 255; other IDs are callbacks.
+const signals = [_][]const u8{ "Custom callback", "Toggle companion logging", "Quit companion", "Show / hide companion" };
+
 fn customChoice(id: *u8, title: []const u8) void {
     var selected: usize = switch (id.*) {
         253 => 1,
@@ -70,7 +81,7 @@ fn customChoice(id: *u8, title: []const u8) void {
         255 => 3,
         else => 0,
     };
-    if (dvui.dropdown(@src(), &.{ "Custom callback", "Toggle companion logging", "Quit companion", "Show / hide companion" }, .{ .choice = &selected }, .{}, .{ .expand = .horizontal })) id.* = switch (selected) {
+    if (dvui.dropdown(@src(), &signals, .{ .choice = &selected }, .{}, .{ .expand = .horizontal })) id.* = switch (selected) {
         1 => 253,
         2 => 254,
         3 => 255,
@@ -78,6 +89,7 @@ fn customChoice(id: *u8, title: []const u8) void {
     };
     if (selected == 0) number(u8, id, title);
 }
+
 pub fn tap(value: *p.Tap, doc: p.Document) !void {
     dvui.label(@src(), "Tap fields may coexist; uncheck a field only to remove it.", .{}, .{});
     var has_key = value.key_press != null;
@@ -99,10 +111,22 @@ pub fn tap(value: *p.Tap, doc: p.Document) !void {
     if (value.media_key) |*media| _ = dvui.dropdownEnum(@src(), types.MediaCode, .{ .choice = media }, .{}, .{ .expand = .horizontal });
     var has_mouse = value.mouse_action != null;
     if (dvui.checkbox(@src(), &has_mouse, "Mouse action", .{})) value.mouse_action = if (has_mouse) .WheelDown else null;
-    if (value.mouse_action) |*mouse| _ = dvui.dropdownEnum(@src(), types.MouseAction, .{ .choice = mouse }, .{}, .{ .expand = .horizontal });
+    if (value.mouse_action) |*mouse| _ = dvui.dropdownEnum(
+        @src(),
+        types.MouseAction,
+        .{ .choice = mouse },
+        .{},
+        .{ .expand = .horizontal },
+    );
 }
+
+/// A searchable HID usage picker. The combo box text shows the current usage
+/// until the user types, then filters by name, host label or code.
 fn keyChoice(code: *u8) void {
-    const combo = dvui.comboBox(@src(), .{ .placeholder = "Type a key name or HID code…" }, .{ .expand = .horizontal, .tag = "action.key.search" });
+    const combo = dvui.comboBox(@src(), .{ .placeholder = "Type a key name or HID code…" }, .{
+        .expand = .horizontal,
+        .tag = "action.key.search",
+    });
     defer combo.deinit();
     const id = combo.te.data().id;
     const previous = dvui.dataGet(null, id, "selected_code", u8);
@@ -124,12 +148,15 @@ fn keyChoice(code: *u8) void {
     var codes: [256]u8 = undefined;
     var count: usize = 0;
     for (0..256) |candidate| {
+        const usage: u8 = @intCast(candidate);
         var buffer: [64]u8 = undefined;
-        const name = labels.usage(@intCast(candidate), &buffer);
+        const name = labels.usage(usage, &buffer);
         const caption = std.fmt.bufPrint(&name_buffers[count], "{s} ({d})", .{ name, candidate }) catch unreachable;
-        if (query.len != 0 and !labels.containsIgnoreCase(caption, query) and !labels.matchesUsage(labels.running_host, @intCast(candidate), query)) continue;
+        const matches = query.len == 0 or labels.containsIgnoreCase(caption, query) or
+            labels.matchesUsage(labels.running_host, usage, query);
+        if (!matches) continue;
         names[count] = caption;
-        codes[count] = @intCast(candidate);
+        codes[count] = usage;
         count += 1;
     }
     if (combo.entries(names[0..count])) |choice| {
@@ -141,19 +168,42 @@ fn keyChoice(code: *u8) void {
     dvui.dataSet(null, id, "selected_code", code.*);
     dvui.dataSet(null, id, "filtering", filtering);
 }
+
+const home_row_mods = [_][]const u8{
+    "Set home row mod…",
+    "Hold left Control",
+    "Hold left Shift",
+    "Hold left Alt / Option",
+    "Hold left GUI / Command",
+    "Hold right Control",
+    "Hold right Shift",
+    "Hold right Alt / Option",
+    "Hold right GUI / Command",
+};
+
+/// Indexed by `Draft.mode`.
+const modes = [_][]const u8{
+    "Transparent / inherited",
+    "Explicit no action",
+    "Tap only",
+    "Hold only",
+    "Tap / hold",
+    "Tap with autofire",
+};
+
 pub fn draw(draft: *Draft, doc: p.Document) !void {
     try draft.validate();
     if (doc.layers.len == 0 or doc.layers.len > p.Limits.layers) return error.InvalidActionFormLayers;
     if (draft.tap.key_press != null and (draft.mode == 2 or draft.mode == 4)) {
         var choice: usize = 0;
-        if (dvui.dropdown(@src(), &.{ "Set home row mod…", "Hold left Control", "Hold left Shift", "Hold left Alt / Option", "Hold left GUI / Command", "Hold right Control", "Hold right Shift", "Hold right Alt / Option", "Hold right GUI / Command" }, .{ .choice = &choice }, .{}, .{ .expand = .horizontal })) {
+        if (dvui.dropdown(@src(), &home_row_mods, .{ .choice = &choice }, .{}, .{ .expand = .horizontal })) {
             if (choice > 0) draft.homeRowMod(@as(u8, 1) << @intCast(choice - 1));
         }
         if (draft.mode == 4) {
             dvui.label(@src(), "Home row mod: keep the tap key, choose hold modifiers below.", .{}, .{});
         }
     }
-    _ = dvui.dropdown(@src(), &.{ "Transparent / inherited", "Explicit no action", "Tap only", "Hold only", "Tap / hold", "Tap with autofire" }, .{ .choice = &draft.mode }, .{}, .{ .expand = .horizontal });
+    _ = dvui.dropdown(@src(), &modes, .{ .choice = &draft.mode }, .{}, .{ .expand = .horizontal });
     if (draft.mode == 2 or draft.mode == 4 or draft.mode == 5) try tap(&draft.tap, doc);
     if (draft.mode == 3 or draft.mode == 4) try hold(&draft.hold, doc, "Hold fields");
     if (draft.mode == 4) {

@@ -25,10 +25,13 @@ fn makePng() [raw_len + 68]u8 {
         const key = inside and x >= 4 and x <= 19 and y >= 8 and y <= 15 and
             (if (y >= 14) x >= 7 and x <= 16 else (x - 4) % 4 < 3 and (y - 8) % 3 < 2);
         const pixel = raw[y * (1 + width * 4) + 1 + x * 4 ..][0..4];
-        if (inside) @memcpy(pixel, &[_]u8{ if (key) 255 else 24, if (key) 255 else 24, if (key) 255 else 24, if (border or key) 255 else 220 });
+        const shade: u8 = if (key) 255 else 24;
+        if (inside) @memcpy(pixel, &[_]u8{ shade, shade, shade, if (border or key) 255 else 220 });
     };
+    // A zlib stream holding one uncompressed deflate block, then its Adler-32.
     var compressed: [raw_len + 11]u8 = undefined;
-    @memcpy(compressed[0..7], &[_]u8{ 0x78, 0x01, 0x01, raw_len & 255, raw_len >> 8, (~@as(u16, raw_len)) & 255, (~@as(u16, raw_len)) >> 8 });
+    const stored_len: u16 = raw_len;
+    @memcpy(compressed[0..7], &[_]u8{ 0x78, 0x01, 0x01, stored_len & 255, stored_len >> 8, ~stored_len & 255, ~stored_len >> 8 });
     @memcpy(compressed[7..][0..raw_len], &raw);
     var a: u32 = 1;
     var b: u32 = 0;

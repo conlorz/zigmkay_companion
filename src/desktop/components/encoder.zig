@@ -1,8 +1,8 @@
+//! A round encoder indicator showing the last action's caption.
 const dvui = @import("dvui");
 const key_component = @import("key.zig");
 const desktop = @import("desktop-core");
 const cache = desktop.label_cache;
-
 const core = @import("layout-model");
 const Modifiers = core.Modifiers;
 
@@ -13,36 +13,46 @@ pub const EncoderComponent = struct {
     pub fn handleSignal(self: *EncoderComponent, action_index: usize, action_count: usize, now_ms: u64) !void {
         try self.state.observe(action_index, action_count, now_ms);
     }
+
     pub fn reset(self: *EncoderComponent) void {
         self.state = .{};
     }
 
-    pub fn draw(self: *const EncoderComponent, current_layer: usize, label_cache: *const cache.EncoderCache, physical_mods: Modifiers, now_ms: u64, center_x: f32, y: f32, size: f32, scale: f32) !void {
+    pub fn draw(
+        self: *const EncoderComponent,
+        current_layer: usize,
+        label_cache: *const cache.EncoderCache,
+        physical_mods: Modifiers,
+        now_ms: u64,
+        center_x: f32,
+        y: f32,
+        size: f32,
+        scale: f32,
+    ) !void {
         const active = self.state.active(now_ms);
         const radius = size / 2.0;
         const x = center_x - radius;
 
-        const layer_color = if (current_layer < key_component.layer_colors.len) key_component.layer_colors[current_layer] else dvui.Color.white;
+        const layer_color = if (current_layer < key_component.layer_colors.len)
+            key_component.layer_colors[current_layer]
+        else
+            dvui.Color.white;
         const muted_layer_color = key_component.getMutedColor(layer_color);
-
-        const bg_color = if (active) muted_layer_color else dvui.Color.black;
-        const border_color = if (active) layer_color else muted_layer_color;
         const text_color = dvui.Color.white;
-
-        const content = if (self.state.last_action_index) |index| (label_cache.lookup(index, physical_mods) catch null) else null;
 
         var b = dvui.box(@src(), .{}, .{
             .id_extra = self.instance_id,
             .rect = .{ .x = x, .y = y, .w = size, .h = size },
             .background = true,
-            .color_fill = .{ .color = bg_color },
-            .color_border = .{ .color = border_color },
+            .color_fill = .{ .color = if (active) muted_layer_color else dvui.Color.black },
+            .color_border = .{ .color = if (active) layer_color else muted_layer_color },
             .border = dvui.Rect.all(1.5 * scale),
             .corners = .all(radius),
         });
         defer b.deinit();
 
-        const entry = content orelse return;
+        const index = self.state.last_action_index orelse return;
+        const entry = label_cache.lookup(index, physical_mods) catch return;
         if (entry.icon) |icon_bytes| {
             dvui.icon(@src(), entry.icon_name, icon_bytes, .{}, .{
                 .id_extra = 1,

@@ -13,7 +13,14 @@ const callbacks = @import("callback-ui");
 const paths = @import("paths-ui");
 const encoders = @import("encoder-ui");
 const dispatch = desktop.editor_dispatch;
-pub const Frame = struct { toolbar: toolbar.Frame, keyboard: keyboard.Frame, host: *const desktop.host_palette.Cache, paths: paths.Frame = .{} };
+
+pub const Frame = struct {
+    toolbar: toolbar.Frame,
+    keyboard: keyboard.Frame,
+    host: *const desktop.host_palette.Cache,
+    paths: paths.Frame = .{},
+};
+
 pub const View = struct {
     scroll: dvui.ScrollInfo = .{ .horizontal = .auto },
     toolbar: toolbar.View = .{},
@@ -27,6 +34,7 @@ pub const View = struct {
     callback: callbacks.View = .{},
     paths: paths.View = .{},
     diagnostic: [512]u8 = @splat(0),
+
     pub fn report(self: *View, failure: anyerror) void {
         self.diagnostic = @splat(0);
         const name = @errorName(failure);
@@ -34,7 +42,30 @@ pub const View = struct {
         @memcpy(self.diagnostic[0..len], name[0..len]);
     }
 };
+
 pub const Result = union(enum) { effect: dispatch.Effect, callback: callbacks.Action, paths: paths.Action };
+
+const none: Result = .{ .effect = .none };
+
+/// What the panels requested this frame. At most one request is kept; earlier
+/// panels win.
+const Requests = struct {
+    request: ?dispatch.Request = null,
+    inspector: ?desktop.inspector_action.Action = null,
+    recovery: ?dispatch.Recovery = null,
+
+    fn offer(self: *Requests, request: dispatch.Request) void {
+        if (self.request == null) self.request = request;
+    }
+};
+
+const Modal = union(enum) {
+    combo: combos.Result,
+    callback: callbacks.Action,
+    paths: paths.Action,
+    encoders: encoders.Result,
+};
+
 pub fn draw(view: *View, owner: *dispatch.State, model: *desktop.model.Model, frame: Frame) !Result {
     var stale = false;
     owner.sync(model) catch |err| switch (err) {
@@ -48,165 +79,215 @@ pub fn draw(view: *View, owner: *dispatch.State, model: *desktop.model.Model, fr
     const diagnostic = std.mem.sliceTo(&view.diagnostic, 0);
     // Retained panels use a fixed design canvas. Scroll the canvas rather than
     // clipping controls when the host window is smaller than that design.
-    const scroll = dvui.scrollArea(@src(), .{ .scroll_info = &view.scroll }, .{ .expand = .both, .padding = .{}, .border = .{}, .background = false });
+    const scroll = dvui.scrollArea(@src(), .{ .scroll_info = &view.scroll }, .{
+        .expand = .both,
+        .padding = .{},
+        .border = .{},
+        .background = false,
+    });
     defer scroll.deinit();
-    const canvas = dvui.box(@src(), .{}, .{ .expand = .horizontal, .min_size_content = .{ .w = 1536, .h = 1024 + desktop.geometry.status_height }, .padding = .{}, .margin = .{}, .background = true, .color_fill = .{ .color = theme.bg } });
+    const canvas = dvui.box(@src(), .{}, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = 1536, .h = 1024 + desktop.geometry.status_height },
+        .padding = .{},
+        .margin = .{},
+        .background = true,
+        .color_fill = .{ .color = theme.bg },
+    });
     defer canvas.deinit();
+
+    const requests = try drawPanels(view, owner, model, frame, theme, diagnostic, stale);
+    const modal: ?Modal = switch (view.modal) {
+        .none => null,
+        .combo => if (try combos.draw(&view.combo.?, model, theme, diagnostic)) |result| .{ .combo = result } else null,
+        .callback => if (try callbacks.draw(&view.callback, model, theme, diagnostic)) |action| .{ .callback = action } else null,
+        .paths => if (try paths.draw(&view.paths, model, frame.paths, theme, diagnostic)) |action| .{ .paths = action } else null,
+        .encoders => if (try encoders.draw(&view.encoders.?, model, theme, diagnostic)) |result| .{ .encoders = result } else null,
+    };
+
+    // Every document mutation below happens after drawing all retained controls.
+    if (requests.recovery) |rendered| {
+        try owner.discardStale(model, rendered);
+        return none;
+    }
+    if (modal) |result| return applyModal(view, owner, model, result, stale);
+    if (stale or view.modal != .none) return none;
+    const effect = if (requests.inspector) |action|
+        try owner.inspect(model, action)
+    else if (requests.request) |captured|
+        try owner.request(model, captured)
+    else
+        dispatch.Effect.none;
+    if (effect == .open and try openModal(view, model, effect.open)) return none;
+    return .{ .effect = effect };
+}
+
+fn drawPanels(
+    view: *View,
+    owner: *dispatch.State,
+    model: *desktop.model.Model,
+    frame: Frame,
+    theme: ui.Theme,
+    diagnostic: []const u8,
+    stale: bool,
+) !Requests {
+    var requests: Requests = .{};
     var toolbar_frame = frame.toolbar;
     toolbar_frame.diagnostic = diagnostic;
-    var requested = try toolbar.draw(&view.toolbar, model, toolbar_frame);
-    if (try layers.draw(&view.layers, model, theme)) |action| if (requested == null) {
-        requested = dispatch.Request.fromLayer(action, model);
-    };
-    // Validate before forwarding an old drag into either target panel.
-    if (view.host.source_revision != null and view.host.source_revision.? != frame.host.revision) {
-        view.host.drag = null;
-        if (dvui.dragName("key_chord")) dvui.dragEnd();
-    }
-    if (view.host.drag) |drag| drag.validate(model) catch {
-        view.host.drag = null;
-        if (dvui.dragName("key_chord")) dvui.dragEnd();
-    };
+    requests.request = try toolbar.draw(&view.toolbar, model, toolbar_frame);
+    if (try layers.draw(&view.layers, model, theme)) |action| requests.offer(dispatch.Request.fromLayer(action, model));
+    dropStaleHostDrag(view, model, frame.host);
     view.keyboard.drag = view.host.drag;
-    const physical = try keyboard.draw(&view.keyboard, model, frame.keyboard, theme, view.toolbar.light);
-    if (physical) |action| switch (action) {
-        .select => |selected| if (requested == null) {
-            requested = dispatch.Request.fromKey(selected);
-        },
+    if (try keyboard.draw(&view.keyboard, model, frame.keyboard, theme, view.toolbar.light)) |action| switch (action) {
+        .select => |selected| requests.offer(dispatch.Request.fromKey(selected)),
         .chord => |chord| {
             view.host.drag = null;
-            if (requested == null) requested = dispatch.Request.fromChord(chord);
+            requests.offer(dispatch.Request.fromChord(chord));
         },
-        .combo, .encoders => |captured| if (requested == null) {
+        .combo, .encoders => |captured| if (requests.request == null) {
             var opened = dispatch.Request.fromKey(captured);
             opened.intent = .{ .open = if (action == .combo) .combo else .encoders };
-            requested = opened;
+            requests.request = opened;
         },
     };
-    var inspector_result: ?desktop.inspector_action.Action = null;
-    var recovery: ?dispatch.Recovery = null;
     if (stale) {
-        const rendered = try owner.recovery(model);
-        const box = ui.panel(theme, .inspector);
-        defer box.deinit();
-        dvui.label(@src(), "Project changed · staged edits are preserved", .{}, .{});
-        for (owner.inspector.selected, 0..) |selected, index| if (selected) {
-            var summary: [1024]u8 = undefined;
-            dvui.label(@src(), "{s}: {s}", .{ owner.inspector.key_storage[index], desktop.labels.action(owner.inspector.drafts[index], &summary) }, .{});
-        };
-        if (dvui.button(@src(), "Discard stale staged edits", .{}, .{})) recovery = rendered;
+        requests.recovery = try drawStaleRecovery(owner, model, theme);
     } else {
         view.inspector.pending = owner.pending != null;
         view.inspector.close_requested = owner.close_requested != null;
         view.inspector.drag_chord = if (view.host.drag) |drag| drag.chord else null;
-        inspector_result = try inspector.draw(&owner.inspector, model, &view.inspector, theme, view.toolbar.light);
+        requests.inspector = try inspector.draw(&owner.inspector, model, &view.inspector, theme, view.toolbar.light);
         if (view.host.drag != null and view.inspector.drag_chord == null) view.host.drag = null;
     }
-    if (try host.draw(&view.host, model, frame.host, theme)) |action| if (requested == null) {
-        requested = dispatch.Request.fromChord(action);
+    if (try host.draw(&view.host, model, frame.host, theme)) |action| requests.offer(dispatch.Request.fromChord(action));
+    const practice_open = launcher(theme, .testing, .{
+        .title = "Try it out",
+        .subtitle = "Choose OS typing or explicitly prepare the draft runner",
+        .button = "Open tutor",
+        .tag = "practice.open",
+    });
+    if (practice_open and requests.request == null) requests.request = try dispatch.Request.capture(model, .{ .open = .practice });
+    const callbacks_open = launcher(theme, .callbacks, .{
+        .title = "Callbacks",
+        .subtitle = if (model.document().callbacks.len == 0)
+            "No attached source · external Zig files"
+        else
+            "Source snapshot preserved · refresh explicitly",
+        .button = "Manage source",
+        .tag = "callback.attach",
+    });
+    if (callbacks_open and requests.request == null) requests.request = try dispatch.Request.capture(model, .{ .open = .callback });
+    return requests;
+}
+
+/// Validates a host-palette drag before either target panel sees it.
+fn dropStaleHostDrag(view: *View, model: *desktop.model.Model, palette: *const desktop.host_palette.Cache) void {
+    if (view.host.source_revision != null and view.host.source_revision.? != palette.revision) cancelHostDrag(view);
+    if (view.host.drag) |drag| drag.validate(model) catch cancelHostDrag(view);
+}
+
+fn cancelHostDrag(view: *View) void {
+    view.host.drag = null;
+    if (dvui.dragName("key_chord")) dvui.dragEnd();
+}
+
+/// Replaces the inspector while its session is stale. Returns the recovery to
+/// apply when the user discards the staged edits.
+fn drawStaleRecovery(owner: *dispatch.State, model: *desktop.model.Model, theme: ui.Theme) !?dispatch.Recovery {
+    const rendered = try owner.recovery(model);
+    const box = ui.panel(theme, .inspector);
+    defer box.deinit();
+    dvui.label(@src(), "Project changed · staged edits are preserved", .{}, .{});
+    for (owner.inspector.selected, 0..) |selected, index| if (selected) {
+        var summary: [1024]u8 = undefined;
+        const action = desktop.labels.action(owner.inspector.drafts[index], &summary);
+        dvui.label(@src(), "{s}: {s}", .{ owner.inspector.key_storage[index], action }, .{});
     };
-    {
-        const box = ui.panel(theme, .testing);
-        defer box.deinit();
-        ui.label(theme, "Try it out", .{ .x = 18, .y = 12, .w = 200, .h = 24 }, 16);
-        ui.label(theme, "Choose OS typing or explicitly prepare the draft runner", .{ .x = 18, .y = 49, .w = 750, .h = 24 }, 12);
-        if (ui.button(theme, "Open tutor", "practice.open", .{ .x = 623, .y = 9, .w = 150, .h = 31 }) and requested == null) requested = try dispatch.Request.capture(model, .{ .open = .practice });
+    if (dvui.button(@src(), "Discard stale staged edits", .{}, .{})) return rendered;
+    return null;
+}
+
+const Launcher = struct { title: []const u8, subtitle: []const u8, button: []const u8, tag: []const u8 };
+
+/// A panel with a title, a subtitle and one button that opens another view.
+fn launcher(theme: ui.Theme, which: desktop.geometry.Panel, content: Launcher) bool {
+    const box = ui.panel(theme, which);
+    defer box.deinit();
+    ui.label(theme, content.title, .{ .x = 18, .y = 12, .w = 200, .h = 24 }, 16);
+    ui.label(theme, content.subtitle, .{ .x = 18, .y = 49, .w = 750, .h = 24 }, 12);
+    return ui.button(theme, content.button, content.tag, .{ .x = 623, .y = 9, .w = 150, .h = 31 });
+}
+
+fn ensureIdle(owner: *const dispatch.State) !void {
+    if (owner.inspector.dirty() or owner.pending != null) return error.PendingEditorRequest;
+}
+
+fn applyModal(view: *View, owner: *dispatch.State, model: *desktop.model.Model, modal: Modal, stale: bool) !Result {
+    switch (modal) {
+        .combo => |result| try applySession(view, owner, model, stale, "combo", result),
+        .encoders => |result| try applySession(view, owner, model, stale, "encoders", result),
+        .callback => |action| {
+            try callbacks.validate(action, view.callback, model);
+            return try forwardAction(view, owner, stale, action, .{ .callback = action });
+        },
+        .paths => |action| {
+            try paths.validate(action, view.paths, model);
+            return try forwardAction(view, owner, stale, action, .{ .paths = action });
+        },
     }
-    {
-        const box = ui.panel(theme, .callbacks);
-        defer box.deinit();
-        ui.label(theme, "Callbacks", .{ .x = 18, .y = 12, .w = 200, .h = 24 }, 16);
-        ui.label(theme, if (model.document().callbacks.len == 0) "No attached source · external Zig files" else "Source snapshot preserved · refresh explicitly", .{ .x = 18, .y = 49, .w = 750, .h = 24 }, 12);
-        if (ui.button(theme, "Manage source", "callback.attach", .{ .x = 623, .y = 9, .w = 150, .h = 31 }) and requested == null) requested = try dispatch.Request.capture(model, .{ .open = .callback });
-    }
-    var combo_result: ?combos.Result = null;
-    var callback_result: ?callbacks.Action = null;
-    var paths_result: ?paths.Action = null;
-    var encoder_result: ?encoders.Result = null;
-    switch (view.modal) {
-        .none => {},
-        .combo => combo_result = try combos.draw(&view.combo.?, model, theme, diagnostic),
-        .callback => callback_result = try callbacks.draw(&view.callback, model, theme, diagnostic),
-        .paths => paths_result = try paths.draw(&view.paths, model, frame.paths, theme, diagnostic),
-        .encoders => encoder_result = try encoders.draw(&view.encoders.?, model, theme, diagnostic),
-    }
-    // Every document mutation below happens after drawing all retained controls.
-    if (recovery) |rendered| {
-        try owner.discardStale(model, rendered);
-        return .{ .effect = .none };
-    }
-    if (combo_result) |action| {
-        switch (action) {
-            .close => {
-                view.modal = .none;
-                view.combo = null;
-            },
-            .action => |rendered| {
-                if (stale) return .{ .effect = .none };
-                if (owner.inspector.dirty() or owner.pending != null) return error.PendingEditorRequest;
-                try view.combo.?.dispatch(model, rendered);
-            },
-        }
-        return .{ .effect = .none };
-    }
-    if (callback_result) |action| {
-        try callbacks.validate(action, view.callback, model);
-        if (action.kind == .close) {
+    return none;
+}
+
+/// Closes an editing session or dispatches its rendered action into the model.
+fn applySession(
+    view: *View,
+    owner: *dispatch.State,
+    model: *desktop.model.Model,
+    stale: bool,
+    comptime field: []const u8,
+    result: anytype,
+) !void {
+    switch (result) {
+        .close => {
             view.modal = .none;
-            return .{ .effect = .none };
-        }
-        if (action.kind == .cancel) return .{ .callback = action };
-        if (stale) return .{ .effect = .none };
-        if (owner.inspector.dirty() or owner.pending != null) return error.PendingEditorRequest;
-        return .{ .callback = action };
+            @field(view, field) = null;
+        },
+        .action => |rendered| {
+            if (stale) return;
+            try ensureIdle(owner);
+            try @field(view, field).?.dispatch(model, rendered);
+        },
     }
-    if (paths_result) |action| {
-        try paths.validate(action, view.paths, model);
-        if (action.kind == .close) {
-            view.modal = .none;
-            return .{ .effect = .none };
-        }
-        if (action.kind == .cancel) return .{ .paths = action };
-        if (stale) return .{ .effect = .none };
-        if (owner.inspector.dirty() or owner.pending != null) return error.PendingEditorRequest;
-        return .{ .paths = action };
+}
+
+/// Closes the modal, or forwards its action to the application once no editor
+/// request is outstanding. Cancellation is always forwarded.
+fn forwardAction(view: *View, owner: *dispatch.State, stale: bool, action: anytype, forwarded: Result) !Result {
+    if (action.kind == .close) {
+        view.modal = .none;
+        return none;
     }
-    if (encoder_result) |action| {
-        switch (action) {
-            .close => {
-                view.modal = .none;
-                view.encoders = null;
-            },
-            .action => |rendered| {
-                if (stale) return .{ .effect = .none };
-                if (owner.inspector.dirty() or owner.pending != null) return error.PendingEditorRequest;
-                try view.encoders.?.dispatch(model, rendered);
-            },
-        }
-        return .{ .effect = .none };
-    }
-    if (stale or view.modal != .none) return .{ .effect = .none };
-    const effect = if (inspector_result) |action| try owner.inspect(model, action) else if (requested) |captured| try owner.request(model, captured) else dispatch.Effect.none;
-    if (effect == .open) switch (effect.open) {
+    if (action.kind == .cancel) return forwarded;
+    if (stale) return none;
+    try ensureIdle(owner);
+    return forwarded;
+}
+
+/// Opens the modal named by a dispatch effect. Returns false for effects that
+/// the application handles.
+fn openModal(view: *View, model: *desktop.model.Model, target: @FieldType(dispatch.Effect, "open")) !bool {
+    switch (target) {
         .combo => {
             view.combo = try desktop.combo_editor.Session.init(model);
             view.modal = .combo;
-            return .{ .effect = .none };
         },
-        .callback => {
-            view.modal = .callback;
-            return .{ .effect = .none };
-        },
-        .paths => {
-            view.modal = .paths;
-            return .{ .effect = .none };
-        },
+        .callback => view.modal = .callback,
+        .paths => view.modal = .paths,
         .encoders => {
             view.encoders = try desktop.encoder_editor.Session.init(model);
             view.modal = .encoders;
-            return .{ .effect = .none };
         },
-        else => {},
-    };
-    return .{ .effect = effect };
+        else => return false,
+    }
+    return true;
 }

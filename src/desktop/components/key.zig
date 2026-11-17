@@ -1,3 +1,4 @@
+//! Retained keycap rendering: caption, icon, layer and modifier indicators.
 const std = @import("std");
 const testing = std.testing;
 const dvui = @import("dvui");
@@ -5,14 +6,9 @@ const desktop = @import("desktop-core");
 const zkeymap = @import("zkeymap");
 const labels = desktop.labels;
 const fonts = @import("editor-fonts");
-
-const log = std.log.scoped(.companion);
-
 const core = @import("layout-model");
+const CachedKeyContent = desktop.label_cache.CachedKeyContent;
 
-const cache = desktop.label_cache;
-pub const CachedKeyContent = cache.CachedKeyContent;
-pub const LabelCache = cache.LabelCache;
 pub const Resources = struct { gui_icon: ?[]const u8 = null };
 
 /// Vibrant color palette for up to 9 layers.
@@ -41,32 +37,9 @@ pub fn getMutedColor(color: dvui.Color) dvui.Color {
 /// Color for layers not present in the keymap.
 pub const empty_layer_color = dvui.Color{ .r = 40, .g = 40, .b = 40, .a = 255 };
 
-/// Content representation for a keyboard key, supporting main label/icon
-/// and secondary indicators for layers and modifiers.
-pub const KeyContent = struct {
-    label: ?[]const u8 = null,
-    icon: ?[]const u8 = null,
-    icon_name: []const u8 = "",
-    /// If non-null, show a layer indicator in the top right
-    hold_layer: ?core.LayerIndex = null,
-    /// If non-null, show modifier icons on the left
-    hold_mods: ?core.Modifiers = null,
-    /// HID keycode decoded from firmware
-    hid_code: ?u8 = null,
-
-    pub fn withIcon(self: KeyContent, icon: []const u8, name: []const u8) KeyContent {
-        var c = self;
-        c.icon = icon;
-        c.icon_name = name;
-        return c;
-    }
-
-    pub fn withLabel(self: KeyContent, label: []const u8) KeyContent {
-        var c = self;
-        c.label = label;
-        return c;
-    }
-};
+fn layerColor(layer: usize) dvui.Color {
+    return if (layer < layer_colors.len) layer_colors[layer] else dvui.Color.white;
+}
 
 /// Renders a 3x3 grid representing layers.
 pub fn drawLayerGrid(active_layer: usize, total_layers: usize, size: f32, scale: f32) !void {
@@ -87,9 +60,9 @@ pub fn drawLayerGrid(active_layer: usize, total_layers: usize, size: f32, scale:
         const color = if (i >= total_layers)
             empty_layer_color
         else if (i == active_layer)
-            (if (i < layer_colors.len) layer_colors[i] else dvui.Color.white)
+            layerColor(i)
         else
-            getMutedColor(if (i < layer_colors.len) layer_colors[i] else dvui.Color.white);
+            getMutedColor(layerColor(i));
 
         var cell = dvui.box(@src(), .{}, .{
             .id_extra = i + 9000,
@@ -107,92 +80,86 @@ pub fn drawLayerGrid(active_layer: usize, total_layers: usize, size: f32, scale:
     }
 }
 
-/// Renders a single keyboard key box with its associated label or icon.
-pub fn drawKey(current_layer: usize, index: usize, x: f32, y: f32, size: f32, scale: f32, content: CachedKeyContent, active: bool, resources: Resources) !void {
-    const rect = dvui.Rect{ .x = x, .y = y, .w = size, .h = size };
-    return drawPhysicalKey(current_layer, index, rect, 0, scale, content, active, resources);
-}
+const Palette = struct {
+    background: dvui.Color,
+    border: dvui.Color,
+    text: dvui.Color,
+    modifier: dvui.Color,
 
-pub fn drawPhysicalKey(current_layer: usize, index: usize, rect: dvui.Rect, rotation: f32, scale: f32, content: CachedKeyContent, active: bool, resources: Resources) !void {
-    return drawGuidedKey(current_layer, index, rect, rotation, scale, content, active, false, resources);
-}
-pub fn drawGuidedKey(current_layer: usize, index: usize, rect: dvui.Rect, rotation: f32, scale: f32, content: CachedKeyContent, active: bool, target: bool, resources: Resources) !void {
-    return drawPracticeKey(current_layer, index, rect, rotation, scale, content, active, target, false, resources);
-}
-pub fn drawPracticeKey(current_layer: usize, index: usize, rect: dvui.Rect, rotation: f32, scale: f32, content: CachedKeyContent, active: bool, target: bool, hold: bool, resources: Resources) !void {
+    fn init(layer: usize, active: bool, target: bool, hold: bool) Palette {
+        const layer_color = layerColor(layer);
+        const muted = getMutedColor(layer_color);
+        const dark = dvui.themeGet().dark;
+        const target_fill = if (dark)
+            dvui.Color{ .r = 58, .g = 47, .b = 22, .a = 255 }
+        else
+            dvui.Color{ .r = 255, .g = 240, .b = 192, .a = 255 };
+        return .{
+            .background = if (active) muted else if (target) target_fill else dvui.Color{ .r = 0, .g = 0, .b = 0, .a = 0 },
+            .border = if (hold)
+                dvui.Color{ .r = 80, .g = 210, .b = 255, .a = 255 }
+            else if (target)
+                dvui.Color{ .r = 255, .g = 201, .b = 83, .a = 255 }
+            else if (active)
+                layer_color
+            else
+                muted,
+            .text = if (dark or active) dvui.Color.white else dvui.Color{ .r = 32, .g = 36, .b = 42, .a = 255 },
+            .modifier = if (dark)
+                dvui.Color{ .r = 0, .g = 255, .b = 255, .a = 255 }
+            else
+                dvui.Color{ .r = 0, .g = 112, .b = 136, .a = 255 },
+        };
+    }
+};
+
+/// Renders one key. Practice guidance marks the next key to `target` (tap) or
+/// `hold`; `active` keys are currently pressed.
+pub fn drawPracticeKey(
+    current_layer: usize,
+    index: usize,
+    rect: dvui.Rect,
+    rotation: f32,
+    scale: f32,
+    content: CachedKeyContent,
+    active: bool,
+    target: bool,
+    hold: bool,
+    resources: Resources,
+) !void {
     const size = @min(rect.w, rect.h);
-
-    const layer_color = if (current_layer < layer_colors.len) layer_colors[current_layer] else dvui.Color.white;
-    const muted_layer_color = getMutedColor(layer_color);
-
-    const dark = dvui.themeGet().dark;
-    const bg_color = if (active) muted_layer_color else if (target) (if (dark) dvui.Color{ .r = 58, .g = 47, .b = 22, .a = 255 } else dvui.Color{ .r = 255, .g = 240, .b = 192, .a = 255 }) else dvui.Color{ .r = 0, .g = 0, .b = 0, .a = 0 };
-    const border_color = if (hold) dvui.Color{ .r = 80, .g = 210, .b = 255, .a = 255 } else if (target) dvui.Color{ .r = 255, .g = 201, .b = 83, .a = 255 } else if (active) layer_color else muted_layer_color;
-    const text_color = if (dark or active) dvui.Color.white else dvui.Color{ .r = 32, .g = 36, .b = 42, .a = 255 };
-    const mod_color = if (dark) dvui.Color{ .r = 0, .g = 255, .b = 255, .a = 255 } else dvui.Color{ .r = 0, .g = 112, .b = 136, .a = 255 };
+    const palette: Palette = .init(current_layer, active, target, hold);
+    const guided = target or hold;
 
     var b = dvui.box(@src(), .{}, .{
         .id_extra = index,
         .rect = rect,
         .rotation = rotation,
-        .background = active or target or hold,
-        .color_fill = .{ .color = bg_color },
-        .color_border = .{ .color = border_color },
-        .border = dvui.Rect.all((if (target or hold) @as(f32, 3) else 1.5) * scale),
+        .background = active or guided,
+        .color_fill = .{ .color = palette.background },
+        .color_border = .{ .color = palette.border },
+        .border = dvui.Rect.all((if (guided) @as(f32, 3) else 1.5) * scale),
         .corners = .all(8 * scale),
         .padding = .{},
     });
     defer b.deinit();
-    if (target or hold) dvui.label(@src(), "{s}", .{if (hold) "HOLD" else "TAP"}, .{
+    if (guided) dvui.label(@src(), "{s}", .{if (hold) "HOLD" else "TAP"}, .{
         .gravity_x = 0.5,
         .gravity_y = 1,
         .font = dvui.Font.theme(.body).larger(-3 * scale),
-        .color_text = .{ .color = border_color },
+        .color_text = .{ .color = palette.border },
     });
 
-    // 1. Main Content (Center)
+    // A precomputed caption replaces every other indicator.
     if (content.caption) |caption| {
-        const count = std.unicode.utf8CountCodepoints(caption) catch caption.len;
-        const font_size: f32 = if (std.mem.indexOfScalar(u8, caption, '\n') != null) 13 else if (count > 9) 9 else if (count >= 4) 13 else 20;
-        var caption_font = fonts.font(caption, font_size * scale);
-        const measured = caption_font.textSize(caption);
-        const available_width = @max(1, rect.w - 8 * scale);
-        const available_height = @max(1, rect.h - (if (target or hold) @as(f32, 18) else 8) * scale);
-        const fit = @min(1, @min(available_width / @max(1, measured.w), available_height / @max(1, measured.h)));
-        caption_font = caption_font.withSize(caption_font.size * fit);
-        // Pixel-snapped font metrics are not proportional to point size. Check
-        // the fitted font again so the hold line cannot become an ellipsis.
-        for (0..8) |_| {
-            const actual = caption_font.textSize(caption);
-            if (actual.w <= available_width and actual.h <= available_height) break;
-            caption_font = caption_font.withSize(caption_font.size * 0.95);
-        }
-        dvui.labelNoFmt(@src(), caption, .{ .align_x = 0.5, .align_y = 0.5 }, .{
-            .id_extra = index,
-            .color_text = .{ .color = text_color },
-            .font = caption_font,
-            .rect = .{ .x = 3 * scale, .y = 3 * scale, .w = available_width, .h = available_height },
-            .padding = .{},
-            .margin = .{},
-        });
-        if (content.hold_signal) |id| if (id >= 253) {
-            const last_line = caption[(if (std.mem.lastIndexOfScalar(u8, caption, '\n')) |newline| newline + 1 else 0)..];
-            const text_size = caption_font.textSize(caption);
-            const line_size = caption_font.textSize(last_line);
-            const icon_size = caption_font.size;
-            dvui.icon(@src(), "hold_signal", if (id == 254) dvui.entypo.cross else dvui.entypo.eye, .{}, .{
-                .color_text = .{ .color = text_color },
-                .rect = .{ .x = 3 * scale + (available_width + line_size.w) / 2 - icon_size, .y = 3 * scale + (available_height + text_size.h) / 2 - line_size.h + (line_size.h - icon_size) / 2, .w = icon_size, .h = icon_size },
-                .padding = .{},
-                .margin = .{},
-            });
-        };
+        const reserved: f32 = if (guided) 18 else 8;
+        drawCaption(caption, content.hold_signal, index, rect, scale, reserved, palette.text);
         return;
     }
     if (content.icon) |icon_bytes| {
         dvui.icon(@src(), content.icon_name, icon_bytes, .{}, .{
             .id_extra = index,
-            .color_text = .{ .color = text_color },
+            .color_text = .{ .color = palette.text },
             .gravity_x = 0.5,
             .gravity_y = 0.5,
             .min_size_content = .{ .w = size * 0.4, .h = size * 0.4 },
@@ -201,94 +168,125 @@ pub fn drawPracticeKey(current_layer: usize, index: usize, rect: dvui.Rect, rota
         if (std.unicode.utf8ValidateSlice(l)) {
             dvui.label(@src(), "{s}", .{l}, .{
                 .id_extra = index,
-                .color_text = .{ .color = text_color },
+                .color_text = .{ .color = palette.text },
                 .font = dvui.Font.theme(.body).larger(if (l.len <= 2) 4 * scale else 0),
                 .gravity_x = 0.5,
                 .gravity_y = 0.5,
             });
         }
     }
+    if (content.hold_layer) |layer| drawLayerIndicator(layer, index, size, scale);
+    if (content.hold_mods) |mods| drawModifierIndicators(mods, index, size, scale, palette.modifier, resources);
+}
 
-    // 2. Layer Indicator (Top Right)
-    if (content.hold_layer) |l| {
-        const icon_size = size * 0.3;
-        const padding = 4 * scale;
-        const color = if (l < layer_colors.len) layer_colors[l] else dvui.Color.white;
+/// Draws a caption scaled down to fit the keycap, with an optional hold-signal
+/// icon after its last line.
+fn drawCaption(caption: []const u8, hold_signal: ?u8, index: usize, rect: dvui.Rect, scale: f32, reserved: f32, color: dvui.Color) void {
+    const count = std.unicode.utf8CountCodepoints(caption) catch caption.len;
+    const font_size: f32 = if (std.mem.indexOfScalar(u8, caption, '\n') != null) 13 else if (count > 9) 9 else if (count >= 4) 13 else 20;
+    var font = fonts.font(caption, font_size * scale);
+    const measured = font.textSize(caption);
+    const available_width = @max(1, rect.w - 8 * scale);
+    const available_height = @max(1, rect.h - reserved * scale);
+    const fit = @min(1, @min(available_width / @max(1, measured.w), available_height / @max(1, measured.h)));
+    font = font.withSize(font.size * fit);
+    // Pixel-snapped font metrics are not proportional to point size. Check
+    // the fitted font again so the hold line cannot become an ellipsis.
+    for (0..8) |_| {
+        const actual = font.textSize(caption);
+        if (actual.w <= available_width and actual.h <= available_height) break;
+        font = font.withSize(font.size * 0.95);
+    }
+    dvui.labelNoFmt(@src(), caption, .{ .align_x = 0.5, .align_y = 0.5 }, .{
+        .id_extra = index,
+        .color_text = .{ .color = color },
+        .font = font,
+        .rect = .{ .x = 3 * scale, .y = 3 * scale, .w = available_width, .h = available_height },
+        .padding = .{},
+        .margin = .{},
+    });
+    // Companion hold signals get an icon: 253 toggles logging (eye), 254 quits (cross).
+    const id = hold_signal orelse return;
+    if (id < 253) return;
+    const last_line = caption[(if (std.mem.lastIndexOfScalar(u8, caption, '\n')) |newline| newline + 1 else 0)..];
+    const text_size = font.textSize(caption);
+    const line_size = font.textSize(last_line);
+    const icon_size = font.size;
+    dvui.icon(@src(), "hold_signal", if (id == 254) dvui.entypo.cross else dvui.entypo.eye, .{}, .{
+        .color_text = .{ .color = color },
+        .rect = .{
+            .x = 3 * scale + (available_width + line_size.w) / 2 - icon_size,
+            .y = 3 * scale + (available_height + text_size.h) / 2 - line_size.h + (line_size.h - icon_size) / 2,
+            .w = icon_size,
+            .h = icon_size,
+        },
+        .padding = .{},
+        .margin = .{},
+    });
+}
 
-        dvui.icon(@src(), "layer_ind", dvui.entypo.layers, .{}, .{
-            .id_extra = index + 1000,
+/// A layer icon in the top-right corner, in the color of the held layer.
+fn drawLayerIndicator(layer: usize, index: usize, size: f32, scale: f32) void {
+    const icon_size = size * 0.3;
+    const padding = 4 * scale;
+    dvui.icon(@src(), "layer_ind", dvui.entypo.layers, .{}, .{
+        .id_extra = index + 1000,
+        .color_text = .{ .color = layerColor(layer) },
+        .rect = .{ .x = size - icon_size - padding, .y = padding, .w = icon_size, .h = icon_size },
+    });
+}
+
+/// Held modifiers stacked down the left side: GUI, Ctrl, Alt, then Shift.
+fn drawModifierIndicators(mods: core.Modifiers, index: usize, size: f32, scale: f32, color: dvui.Color, resources: Resources) void {
+    const column: ModifierColumn = .{ .x = 2 * scale, .w = size * 0.6, .item_h = size * 0.25, .color = color };
+    var offset_y: f32 = 2 * scale;
+    const step = column.item_h + 1 * scale;
+    var buffer: [32]u8 = undefined;
+    if (mods.left_gui or mods.right_gui) {
+        const icon_size = column.item_h * 0.8;
+        if (resources.gui_icon) |icon| dvui.icon(@src(), "gui_ind", icon, .{}, .{
+            .id_extra = index + 6000,
             .color_text = .{ .color = color },
-            .rect = .{ .x = size - icon_size - padding, .y = padding, .w = icon_size, .h = icon_size },
+            .rect = .{
+                .x = column.x + (column.w - icon_size) / 2.0,
+                .y = offset_y + (column.item_h - icon_size) / 2.0,
+                .w = icon_size,
+                .h = icon_size,
+            },
+        }) else {
+            column.label(labels.keycapModifiers(labels.runningHost(), 8, &buffer), index + 6000, offset_y);
+        }
+        offset_y += step;
+    }
+    if (mods.left_ctrl or mods.right_ctrl) {
+        column.label("ctrl", index + 3000, offset_y);
+        offset_y += step;
+    }
+    if (mods.left_alt or mods.right_alt) {
+        column.label(labels.keycapModifiers(labels.runningHost(), 4, &buffer), index + 4000, offset_y);
+        offset_y += step;
+    }
+    if (mods.left_shift or mods.right_shift) column.label("shft", index + 5000, offset_y);
+}
+
+const ModifierColumn = struct {
+    x: f32,
+    w: f32,
+    item_h: f32,
+    color: dvui.Color,
+
+    fn label(self: ModifierColumn, text: []const u8, id_extra: usize, y: f32) void {
+        dvui.label(@src(), "{s}", .{text}, .{
+            .id_extra = id_extra,
+            .color_text = .{ .color = self.color },
+            .font = dvui.Font.theme(.body),
+            // A taller rect than the slot prevents clipping; slots still advance by item_h.
+            .rect = .{ .x = self.x, .y = y, .w = self.w, .h = self.item_h * 1.5 },
+            .gravity_x = 0.5,
+            .gravity_y = 0.5,
         });
     }
-
-    // 3. Hold Modifier Indicators (Left Side)
-    if (content.hold_mods) |m| {
-        const item_h = size * 0.25;
-        const padding_x = 2 * scale;
-        var offset_y: f32 = 2 * scale;
-
-        const font = dvui.Font.theme(.body);
-        const col_w = size * 0.6; // width of the mod column on the left
-
-        if (m.left_gui or m.right_gui) {
-            const gui_icon_size = item_h * 0.8;
-            if (resources.gui_icon) |icon| dvui.icon(@src(), "gui_ind", icon, .{}, .{
-                .id_extra = index + 6000,
-                .color_text = .{ .color = mod_color },
-                // Center icon horizontally in col_w and vertically in its slot
-                .rect = .{
-                    .x = padding_x + (col_w - gui_icon_size) / 2.0,
-                    .y = offset_y + (item_h - gui_icon_size) / 2.0,
-                    .w = gui_icon_size,
-                    .h = gui_icon_size,
-                },
-            }) else {
-                var modifier_buffer: [32]u8 = undefined;
-                dvui.label(@src(), "{s}", .{labels.keycapModifiers(labels.runningHost(), 8, &modifier_buffer)}, .{ .id_extra = index + 6000, .color_text = .{ .color = mod_color }, .font = font, .rect = .{ .x = padding_x, .y = offset_y, .w = col_w, .h = item_h * 1.5 }, .gravity_x = 0.5, .gravity_y = 0.5 });
-            }
-            offset_y += item_h + 1 * scale;
-        }
-
-        if (m.left_ctrl or m.right_ctrl) {
-            dvui.label(@src(), "ctrl", .{}, .{
-                .id_extra = index + 3000,
-                .color_text = .{ .color = mod_color },
-                .font = font,
-                // Use a significantly taller rect for the label itself to prevent clipping,
-                // but keep the offset_y increment standard.
-                .rect = .{ .x = padding_x, .y = offset_y, .w = col_w, .h = item_h * 1.5 },
-                .gravity_x = 0.5,
-                .gravity_y = 0.5,
-            });
-            offset_y += item_h + 1 * scale;
-        }
-
-        if (m.left_alt or m.right_alt) {
-            var modifier_buffer: [32]u8 = undefined;
-            dvui.label(@src(), "{s}", .{labels.keycapModifiers(labels.runningHost(), 4, &modifier_buffer)}, .{
-                .id_extra = index + 4000,
-                .color_text = .{ .color = mod_color },
-                .font = font,
-                .rect = .{ .x = padding_x, .y = offset_y, .w = col_w, .h = item_h * 1.5 },
-                .gravity_x = 0.5,
-                .gravity_y = 0.5,
-            });
-            offset_y += item_h + 1 * scale;
-        }
-
-        if (m.left_shift or m.right_shift) {
-            dvui.label(@src(), "shft", .{}, .{
-                .id_extra = index + 5000,
-                .color_text = .{ .color = mod_color },
-                .font = font,
-                .rect = .{ .x = padding_x, .y = offset_y, .w = col_w, .h = item_h * 1.5 },
-                .gravity_x = 0.5,
-                .gravity_y = 0.5,
-            });
-        }
-    }
-}
+};
 
 test "getLabel: KC_A tap_only produces correct KeyDef" {
     const def = core.KeyDef{ .tap_only = .{
