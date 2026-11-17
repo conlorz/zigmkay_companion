@@ -16,6 +16,7 @@ pub const TextResult = struct {
     data: [4]u8 = @splat(0),
     /// Number of valid bytes in 'data' (0 means no text produced)
     len: u8 = 0,
+
     /// True when 'data' contains a human-readable key label ("F11", "TAB",
     /// "BACKSPACE", …) rather than layout-translated text.  Callers that only
     /// want typed characters should skip results where is_label is true.
@@ -139,4 +140,14 @@ test "fixed HID label decoding needs no native layout context" {
     const result = TextResult{ .data = .{ 58, 0, 0, 0 } };
     try testing.expect(result.isLabel());
     try testing.expectEqualStrings("F1", result.getLabel());
+}
+
+test "unavailable native backend keeps fixed labels and returns empty text" {
+    var km: KeyMap = .{};
+    try testing.expect(!km.available());
+    try testing.expectEqualStrings("", km.keyToText(.{ .tap_keycode = 4 }).slice());
+    const label = km.keyToText(.{ .tap_keycode = @backingInt(ScanCode.KC_F1) });
+    try testing.expectEqualStrings("F1", label.getLabel());
+    km.refresh();
+    km.deinit();
 }
