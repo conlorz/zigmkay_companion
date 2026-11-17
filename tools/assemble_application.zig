@@ -4,6 +4,9 @@ const jobs = @import("companion-jobs");
 const pins = @import("bundle-pins");
 const builtin = @import("builtin");
 const icon = @import("application-icon");
+// The runtime closure comes from `build/runtime.zig` through `bundle-pins`.
+const runtime_source_root = pins.runtime_source_root;
+const runtime_closure = pins.runtime_closure;
 const Assembler = struct {
     a: std.mem.Allocator,
     io: std.Io,
@@ -113,6 +116,12 @@ pub fn main(init: std.process.Init) !void {
         .linux => "usr/share/zigmkay",
         else => return error.UnsupportedBundlePlatform,
     };
+    // The build reuses its output directories; start empty so files from an
+    // earlier layout never ship.
+    for ([_][]const u8{ args[4], args[9] }) |output| {
+        try std.Io.Dir.cwd().deleteTree(init.io, output);
+        try std.Io.Dir.cwd().createDirPath(init.io, output);
+    }
     const resources = try std.fs.path.join(a, &.{ args[4], layout });
     var assembly: Assembler = .{ .a = a, .io = init.io, .output = resources, .packages = args[3], .seen = .init(a), .legal_seen = .init(a) };
     for ([_][]const u8{ "LICENSE", "NOTICE" }) |name| try assembly.copy(try std.fs.path.join(a, &.{ repository, name }), try std.fs.path.join(a, &.{ "licenses/application", name }));
@@ -120,7 +129,7 @@ pub fn main(init: std.process.Init) !void {
     try assembly.copy(compiler, "toolchain/zig" ++ if (@import("builtin").os.tag == .windows) ".exe" else "");
     try assembly.copy(try std.fs.path.join(a, &.{ distribution, "lib" }), "toolchain/lib");
     try assembly.copy(try std.fs.path.join(a, &.{ distribution, "LICENSE" }), "licenses/Zig.txt");
-    for ([_][]const u8{ "project", "layout", "runner", "importer", "firmware" }) |name| try assembly.copy(try std.fs.path.join(a, &.{ repository, "src", name }), try std.fs.path.join(a, &.{ "build/src", name }));
+    for (runtime_closure) |name| try assembly.copy(try std.fs.path.join(a, &.{ repository, runtime_source_root, name }), try std.fs.path.join(a, &.{ "build/" ++ runtime_source_root, name }));
     try assembly.copy(try std.fs.path.join(a, &.{ repository, "runtime/build.zig" }), "build/build.zig");
     if (builtin.os.tag == .windows) {
         try assembly.copy(args[6], "tools/bootsel-transfer.exe");

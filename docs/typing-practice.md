@@ -427,7 +427,7 @@ human typing trials remain separate. Cross-compilation is not native acceptance.
 Use exactly Zig 0.17.0:
 
 ```sh
-zig build test-desktop-core test-app-paths
+zig build test-practice -Donly=practice
 zig build check test -j4 --test-timeout 45s
 ```
 

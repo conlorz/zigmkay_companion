@@ -40,8 +40,9 @@ First portable imports (2026-10-10):
 - keyboards/my_keyboards/rollercole/lk7_physical_layout.zig -> src/catalog.
 All use reference implementation baseline 3ee4135d308f18f15cc51b1d73e33e1b36bf517f.
 No firmware processor, action implementation, protocol codec, zkeycodes, board
-wiring or imported C bridge is copied into this repository. Protocol facade
-forwards declarations from the selected firmware. GPL LICENSE remains verbatim.
+wiring or imported C bridge is copied into this repository. The host side of
+the companion Raw HID protocol (src/firmware/protocol.zig) is first-party and
+follows the firmware's documented report layout. GPL LICENSE remains verbatim.
 
 USB host extraction (2026-10-11): live_adapter.zig and session_capture.zig from
 zigmkay-companion/src -> src/session; the existing SDL Native adapter

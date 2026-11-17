@@ -44,5 +44,5 @@
             .lazy = true,
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "mise.toml", "AGENTS.md", "README.md", "LICENSE", "NOTICE", "compatibility", "tests", "src", "build", "tools", "runtime", "packaging" },
+    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "mise.toml", "AGENTS.md", "README.md", "LICENSE", "NOTICE", "tests", "src", "build", "tools", "runtime", "packaging" },
 }

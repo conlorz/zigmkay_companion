@@ -28,7 +28,7 @@ Run Zigmkay from source with [mise](https://mise.jdx.dev/getting-started), or us
 an unsigned executable preview once published. The [preview release workflow](docs/preview-releases.md)
 packages macOS DMGs, a portable Windows EXE and a Linux AppImage with Zig and the
 offline runtime included. Native Windows and Linux release acceptance runs in CI;
-device acceptance remains separate. See [compatibility status](compatibility/README.md).
+device acceptance remains separate. See [compatibility status](docs/compatibility.md).
 
 Install [mise](https://mise.jdx.dev/installing-mise.html) and Git, then:
 
@@ -216,7 +216,7 @@ mise run test
 The [development guide](docs/development.md) covers the package map, native GUI
 builds, explicit offline startup, test tasks, application assembly and further
 design/implementation docs. Builds, tests and explicit offline startup do not
-access keyboards. See [compatibility status](compatibility/README.md) for the
+access keyboards. See [compatibility status](docs/compatibility.md) for the
 remaining platform and hardware acceptance work.
 
 ## License

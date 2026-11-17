@@ -28,7 +28,7 @@ jobs:
           version: 0.17.0
           cache-size-limit: 4096
       - name: Build only the symbolized finalization reproduction
-        run: zig build build-finalization-diagnostic -Dfinalization-diagnostic-only=true -j2 --summary all
+        run: zig build tools -Donly=diagnostic -j2 --summary all
       - name: Reproduce artifact publication without firmware compilation or devices
         shell: pwsh
         run: |
@@ -69,14 +69,14 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libdbus-1-dev libx11-dev libudev-dev bubblewrap file binutils xkb-data
       - name: Verify source, storage, release and subprocess contracts (no devices)
         if: inputs.mode != 'gui'
-        run: zig build check test-practice-data test-app-paths test-release test-subprocess test-picotool -Doptimize=safe -j2 --test-timeout 60s --summary all
+        run: zig build check test-practice test-jobs -Doptimize=safe -j2 --test-timeout 60s --summary all
       - name: Assemble all runtime inputs
         shell: bash
         run: |
           set -eu
           sdk=()
           if [ "$RUNNER_OS" = macOS ]; then sdk=("-Dmacos-sdk=$(xcrun --show-sdk-path)"); fi
-          zig build bundle-application build-bundle-check build-release-tools -Dapplication-bundle=true -Ddesktop-dependencies=true -Ddesktop-vectors=true -Drelease=true -Doptimize=safe "-Drevision=$GITHUB_SHA" "${sdk[@]}" -j2 --summary all
+          zig build bundle tools -Dbundle -Drelease=true -Doptimize=safe "-Drevision=$GITHUB_SHA" "${sdk[@]}" -j2 --summary all
       - name: Validate the preview tag against this exact commit
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -88,7 +88,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          zig build test-editor-frame test-desktop-launch test-desktop-status test-desktop-practice test-desktop-rundown test-desktop-companion test-companion-placement test-desktop-flash-session -Ddesktop-dependencies=true -Ddesktop-vectors=true -Doptimize=safe -j2 --test-timeout 180s
+          zig build test-desktop -Ddesktop -Doptimize=safe -j2 --test-timeout 180s
       - name: Package the unsigned preview
         shell: bash
         run: |
@@ -336,7 +336,7 @@ jobs:
         with:
           version: 0.17.0
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev
-      - run: zig build check test test-release -Doptimize=safe -j2 --test-timeout 180s
+      - run: zig build check test -Doptimize=safe -j2 --test-timeout 180s
 
   publish:
     needs: [bundle, linux-runtime, source]
@@ -370,7 +370,7 @@ jobs:
           PREVIEW_TAG: ${{ github.ref_name }}
         run: |
           set -eu
-          zig build build-release-tools test-release -Dpractice-data-only=true -Doptimize=safe -j2
+          zig build tools test-jobs -Donly=practice -Doptimize=safe -j2
           zig-out/bin/release validate-tag "$PREVIEW_TAG" "$GITHUB_SHA"
           mkdir -p source/application source/dependencies
           git archive "$GITHUB_SHA" | tar -xf - -C source/application

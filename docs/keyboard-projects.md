@@ -125,14 +125,12 @@ Automatic switching between connected keyboards belongs to the follow-up PR.
 ## Hardware-free checks
 
 Use exactly the compiler pinned in [`.zigversion`](../.zigversion). The focused
-acceptance steps are:
+acceptance checks are:
 
 ```sh
-zig build test-onboarding test-import test-import-processors
-zig build test-catalog-defaults test-catalog-processors test-project test-session
-zig build test-desktop-onboarding test-desktop-catalog -Ddesktop-dependencies=true
-zig build catalog-firmware-check import-firmware-check -Dfirmware-check=true -Dcatalog-check=true -Dimport-check=true
-zig build catalog-firmware-check -Dfirmware-check=true -Dcatalog-check=true -Dcatalog-defaults=true
+zig build test -Dtest-filter=import -Dtest-filter=catalog -Dtest-filter=onboarding
+zig build test-desktop -Ddesktop
+zig build check-firmware check-firmware-defaults -Dfirmware
 ```
 
 Import tests use pinned local source and loopback HTTP/archive fixtures. Processor

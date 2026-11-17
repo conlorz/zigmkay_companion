@@ -21,8 +21,7 @@ The **Self-contained application** workflow also supports manual dispatch:
   the catalog's cold/warm build matrix.
 - `full`: the complete macOS/Windows bundle matrix.
 
-Build the small diagnostic locally with
-`zig build build-finalization-diagnostic -Dfinalization-diagnostic-only=true`.
+Build the small diagnostic locally with `zig build tools -Donly=diagnostic`.
 Run `zig-out/bin/diagnose-build-finalization` (with `.exe` on Windows), passing a
 fresh output-directory path. Outputs must remain in a cache directory. Windows
 attributes are queried natively because Zig 0.17.0's Windows `stat` reports
@@ -35,11 +34,11 @@ shell activation is optional.
 
 | Command | Purpose |
 | --- | --- |
-| `mise run check` | Check bootstrap and compiler pin without devices |
-| `mise run test` | Run the offline companion checks |
-| `mise run editor:build` | Compile the native application without launching |
-| `mise run editor:test` | Run offline GUI launch, tutor, source-refresh and companion fixtures |
-| `mise run companion:test` | Check companion visibility and placement offline |
+| `mise run check` | Compile every source, tool and test without devices |
+| `mise run test` | Run all offline tests |
+| `mise run desktop:check` | Compile the native editor and GUI dependencies without launching |
+| `mise run editor:build` | Assemble the complete application without launching |
+| `mise run editor:test` | Run offline GUI launch, onboarding, tutor, draft, source-refresh and companion fixtures |
 | `mise run typing-practice:test` | Check practice data, storage and application paths |
 | `mise run editor` | Launch the editor with automatic keyboard monitoring |
 | `mise run companion` | Launch the tray resident with windows hidden and automatic monitoring |
@@ -71,6 +70,8 @@ in caches, and preserve personal projects and attached source bundles.
 | [src/catalog](../src/catalog) | Pinned firmware board/default-profile inventory |
 | [src/platform](../src/platform) | Desktop integration, user paths and native window support |
 | [tools](../tools) / [tests](../tests) | Zig utilities and integration contracts |
+| [build.zig](../build.zig) / [build](../build) | Build options, steps, module graph and test wiring |
+| [runtime](../runtime) | Build script shipped inside the application bundle |
 
 - [Typing practice user guide](typing-practice.md): controls, metrics, data and evidence.
 - [Tutor package design](design/typing-practice-packages.md): boundaries and contracts.
@@ -85,26 +86,64 @@ in caches, and preserve personal projects and attached source bundles.
 - [Native layout review](implementation/practice-layout-review.md): visual studies,
   native screenshots, layout checks and offline gallery reproduction.
 - [README screenshot notes](screenshots/overview/README.md): native capture provenance.
-- [Compatibility status](../compatibility/README.md): remaining acceptance gates.
+- [Compatibility status](compatibility.md): remaining acceptance gates.
 
 ## Build and check
 
 Use exactly Zig 0.17.0 (`.zigversion` and `mise.toml`). Verify your compiler with
-`zig version` before running these commands. The normal dependency is an
-immutable, hash-pinned EuroZig firmware PR-head revision pending merge; the
-normal source build does not require a sibling firmware checkout. Fetching missing
-pinned source archives may require network access during dependency acquisition.
+`zig version` before running these commands. The normal firmware dependency is
+an immutable, hash-pinned PR-head revision (see [compatibility](compatibility.md));
+the normal source build does not require a sibling firmware checkout. Fetching
+missing pinned source archives may require network access during dependency
+acquisition.
 
 ```sh
-zig build test
-zig build check
+zig build check test
 ```
 
-These checks do not access devices. An explicit `--fork <firmware-checkout>`
-override is available for local firmware development, but is not required for
-normal builds and is not a release dependency. `firmware-check` and
-`catalog-firmware-check` are opt-in firmware compilation checks; they do not
-flash hardware.
+No step accesses devices. An explicit `--fork <firmware-checkout>` override is
+available for local firmware development, but is not required for normal builds
+and is not a release dependency. Zig configures the whole build graph for every
+step, so the options below decide which lazy dependencies are fetched; a step
+whose option is missing fails with a message that names it.
+
+| Step | Purpose | Needs |
+| --- | --- | --- |
+| `check` (default) | Compile every configured source, tool and test | |
+| `test` | Run all offline tests, including `test-practice` and `test-jobs`, and fail when a `test` block is compiled into no test binary | |
+| `test-practice` | Practice data, storage migration and application paths | works with `-Donly=practice` |
+| `test-jobs` | Subprocess, flash-job, traversal and release tooling tests | works with `-Donly=practice` |
+| `test-desktop` | SDL dummy/software GUI fixtures, GUI unit tests and flash admission | `-Ddesktop` |
+| `test-native` | Query the OS keyboard layout and install a hidden tray; never devices | `-Ddesktop` |
+| `run` | Assemble and launch the editor; `-- --background` starts the companion | `-Dbundle` |
+| `run-project` | Project create/validate/export command; pass arguments after `--` | |
+| `bundle` | Assemble the self-contained application | `-Dbundle` |
+| `tools` | Install `release`, `check-application-bundle`, `catalog-export`, `practice-samples` and `diagnose-build-finalization` (plus `bootsel-transfer` on Windows) to `zig-out/bin` | |
+| `check-firmware` | Compile generated, synthetic all-board and imported firmware | `-Dfirmware` |
+| `check-firmware-defaults` | Compile every board's actual default keymap | `-Dfirmware` |
+| `build-project` | Build a verified export into `zig-out/firmware/project.uf2` and `zig-out/bin/project-runner` | `-Dfirmware -Dproject-export=<dir> -Dproject-board=<selector>` |
+| `hardware-tools` | Prepare `zig-out/acceptance` (USB candidate UF2 and inventory) and `usb-acceptance` without running them | `-Dfirmware -Ddesktop` |
+| `analyze-keymap` | Compile a captured keymap with the typed evaluator | `-Dimport-root=<dir>` |
+
+| Option | Effect |
+| --- | --- |
+| `-Ddesktop` | Configure DVUI, SDL3, the tray and vector icons |
+| `-Dfirmware` | Configure the microzig embedded graph (never flashes) |
+| `-Dbundle` | Configure the application bundle; implies `-Ddesktop -Dfirmware` |
+| `-Donly=practice` / `-Donly=diagnostic` | Configure only practice and jobs tests, or only the finalization diagnostic, without the firmware package |
+| `-Doptimize`, `-Drelease`, `-Drevision`, `-Dmacos-sdk` | Optimization, release CPU/OS baseline, recorded revision and explicit macOS SDK |
+| `-Dtest-filter=<text>` | Run only matching tests (repeatable); skips the reachability check |
+| `-Dproject-export`, `-Dproject-board` | Inputs of `build-project` |
+| `-Dimport-root`, `-Dimport-module` | Inputs of `analyze-keymap` |
+| `-Dnative-only` | Skip the embedded graph even with `-Dfirmware`; the importer passes it to both this script and the bundled runtime build |
+| `-Dcandidate-project`, `-Dcandidate-overlay-trigger`, `-Dfirmware-revision` | Inputs of the `hardware-tools` USB candidate |
+
+`check-firmware` and `check-firmware-defaults` compile firmware into the build
+cache; they do not flash hardware. The bundled application runs
+[`runtime/build.zig`](../runtime/build.zig) with its own `build-project`,
+`build-runner` and `analyze-keymap` steps; [`build/runtime.zig`](../build/runtime.zig)
+lists the source directories shipped with it. The importer tests run their
+nested builds against that runtime closure.
 
 ## Capabilities and limits
 
@@ -152,8 +191,7 @@ the assembled application.
 ## Assemble the application
 
 ```sh
-zig build bundle-application -Dapplication-bundle=true \
-  -Ddesktop-dependencies=true -Ddesktop-vectors=true -j2
+zig build bundle -Dbundle -j2
 ```
 
 This developer-only step acquires pinned dependencies and builds the editor and
@@ -166,7 +204,7 @@ application. Compile-only desktop checks do not produce a distributable bundle.
 To validate firmware and native runners for every catalog board without devices:
 
 ```sh
-zig build build-bundle-check
+zig build bundle tools -Dbundle -j2
 zig-out/bin/check-application-bundle \
   "$PWD/zig-out/Zigmkay.app/Contents/Resources" \
   "$PWD/.zig-cache/bundle-check" all
@@ -178,8 +216,7 @@ Desktop builds resolve immutable dependencies through Zig's package manager;
 no source-directory arguments or source adaptation step is required:
 
 ```sh
-zig build build-desktop -Ddesktop-dependencies=true -Ddesktop-vectors=true
-zig build check-desktop-dependencies -Ddesktop-dependencies=true -Ddesktop-vectors=true
+zig build check -Ddesktop
 ```
 
 The root [manifest](../build.zig.zon) declares DVUI, ztray, SVG/TinyVG and icons

@@ -18,9 +18,8 @@ and runner checks; the other native release lanes must pass in CI before release
 Use exactly Zig 0.17.0. On the native host:
 
 ```sh
-zig build bundle-application build-bundle-check build-release-tools \
-  -Dapplication-bundle=true -Ddesktop-dependencies=true -Ddesktop-vectors=true \
-  -Drelease=true -Doptimize=safe -Drevision="$(git rev-parse HEAD)" -j2
+zig build bundle tools -Dbundle \
+  -Drelease -Doptimize=safe -Drevision="$(git rev-parse HEAD)" -j2
 ```
 
 On macOS also pass `-Dmacos-sdk="$(xcrun --show-sdk-path)"`. The release graph
@@ -141,8 +140,7 @@ creates a draft, uploads assets and publishes a prerelease. All Actions are pinn
 by commit. Failed gates never run publishing. A failed draft upload can be resumed;
 a rerun against an already published release refuses to replace its assets.
 
-Run `zig build test-release test-practice-data test-app-paths test-jobs
-test-picotool` for focused offline contracts, and `zig build check test` for the
+Run `zig build test-practice test-jobs` for focused offline contracts, and `zig build check test` for the
 full source suite. Historical SQL/ZON fixtures are committed; generated databases
 and packaging outputs belong in caches. Native Windows driver-free flashing and
 desktop/device acceptance need a separately requested hardware task.

@@ -140,3 +140,25 @@ fn defaultKeymapsSource(b: *std.Build) []const u8 {
     ) catch @panic("OOM");
     return text.items;
 }
+
+/// The firmware of the board `board_name` with the keymap of the frozen
+/// project export at the absolute `export_path`. Part of the runtime closure.
+pub fn projectFirmware(
+    b: *std.Build,
+    mb: anytype,
+    target: anytype,
+    sources: Sources,
+    board_name: []const u8,
+    export_path: []const u8,
+) *@TypeOf(mb.*).Firmware {
+    const board = boards.find(board_name) orelse std.debug.panic("Unknown firmware board selector '{s}'", .{board_name});
+    const firmware = addKeyboardFirmware(b, mb, target, .safe, "project", board, sources, null);
+    const processor = firmware.exe.root_module.import_table.get("zigmkay").?;
+    const keycodes = firmware.exe.root_module.import_table.get("zkeycodes").?;
+    const layout = b.createModule(.{ .root_source_file = b.path("src/layout/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = processor }} });
+    const selected = @import("../project/build_input.zig").load(b, export_path, processor, keycodes, layout) catch |err|
+        std.debug.panic("Cannot verify embedded export: {t}", .{err});
+    selected.module.addImport("microzig", firmware.core_mod);
+    firmware.add_app_import("keymap", selected.module, .{});
+    return firmware;
+}
