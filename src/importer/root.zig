@@ -667,31 +667,42 @@ test {
     _ = github;
 }
 
+/// The test toolchain from `test-options`. Under a relative build cache Zig
+/// writes the cached runtime tree relative to the build root, which is the
+/// test working directory; nested builds run elsewhere, so resolve it here.
+fn testToolchain(a: std.mem.Allocator, io: std.Io, cache: []const u8) !Toolchain {
+    const options = @import("test-options");
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", a);
+    return .{
+        .compiler = options.compiler,
+        .build_root = try std.fs.path.resolve(a, &.{ cwd, options.repository }),
+        .cache = cache,
+        .packages = options.packages,
+        .global_cache = try std.fs.path.resolve(a, &.{ cwd, options.compiler_cache }),
+    };
+}
+
 test "pinned friend sources convert reopen export and preserve immutable provenance for both revisions" {
     const t = std.testing;
-    const options = @import("test-options");
     var tmp = t.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
     defer t.allocator.free(path);
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const toolchain = try testToolchain(arena.allocator(), t.io, path);
     var env = std.process.Environ.Map.init(t.allocator);
     defer env.deinit();
     for ([_][]const u8{ "us", "de" }) |fixture| {
         const root = try std.fs.path.join(t.allocator, &.{
-            options.repository,
+            toolchain.build_root,
             "tests/fixtures/import",
             fixture,
         });
         defer t.allocator.free(root);
         var source = try inspect(t.allocator, t.io, root, null, path);
         defer source.deinit();
-        var analysis = try analyze(t.allocator, t.io, source, .{
-            .compiler = options.compiler,
-            .build_root = options.repository,
-            .cache = path,
-            .packages = options.packages,
-            .global_cache = options.compiler_cache,
-        }, &env);
+        var analysis = try analyze(t.allocator, t.io, source, toolchain, &env);
         defer analysis.deinit();
         try t.expectEqual(@as(usize, 6), analysis.data.layers.len);
         try t.expectEqual(
@@ -772,7 +783,6 @@ fn simpleSource(a: std.mem.Allocator, callbacks: bool) ![]u8 {
 
 test "callback-free imports keep provenance explicit names stale fingerprints and source integrity" {
     const t = std.testing;
-    const options = @import("test-options");
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
     const base = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
@@ -805,13 +815,9 @@ test "callback-free imports keep provenance explicit names stale fingerprints an
     try t.expectEqualStrings("https://github.com/owner/source.git", source.provenance.repository.?);
     var env = std.process.Environ.Map.init(t.allocator);
     defer env.deinit();
-    var data = try analyze(t.allocator, t.io, source, .{
-        .compiler = options.compiler,
-        .build_root = options.repository,
-        .cache = base,
-        .packages = options.packages,
-        .global_cache = options.compiler_cache,
-    }, &env);
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    var data = try analyze(t.allocator, t.io, source, try testToolchain(arena.allocator(), t.io, base), &env);
     defer data.deinit();
     var stale = data;
     stale.captured[0] ^= 1;
@@ -849,7 +855,6 @@ test "callback-free imports keep provenance explicit names stale fingerprints an
 
 test "unsupported callbacks and malformed API fail without creating a partial destination" {
     const t = std.testing;
-    const options = @import("test-options");
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
     const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
@@ -866,13 +871,9 @@ test "unsupported callbacks and malformed API fail without creating a partial de
     defer source.deinit();
     var env = std.process.Environ.Map.init(t.allocator);
     defer env.deinit();
-    const toolchain: Toolchain = .{
-        .compiler = options.compiler,
-        .build_root = options.repository,
-        .cache = root,
-        .packages = options.packages,
-        .global_cache = options.compiler_cache,
-    };
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    const toolchain = try testToolchain(arena.allocator(), t.io, root);
     var data = try analyze(t.allocator, t.io, source, toolchain, &env);
     defer data.deinit();
     try t.expect(data.data.has_callbacks);

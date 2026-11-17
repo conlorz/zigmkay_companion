@@ -16,10 +16,12 @@ pub fn main(init: std.process.Init) !void {
     defer captured.deinit();
     var analyzed = try importer.analyze(init.gpa, init.io, captured, .{
         .compiler = options.compiler,
-        .build_root = options.repository,
+        // Cached build-option paths are relative to this tool's working
+        // directory under a relative build cache; nested builds run elsewhere.
+        .build_root = try std.fs.path.resolve(a, &.{ cwd, options.repository }),
         .cache = cache,
         .packages = options.packages,
-        .global_cache = options.compiler_cache,
+        .global_cache = try std.fs.path.resolve(a, &.{ cwd, options.compiler_cache }),
     }, init.environ_map);
     defer analyzed.deinit();
     var prepared = try importer.prepare(
