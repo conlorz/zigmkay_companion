@@ -12,7 +12,6 @@ pub fn build(b: *std.Build) void {
     b.default_step = step;
     const export_option = b.option([]const u8, "project-export", "Frozen project export");
     const board_option = b.option([]const u8, "project-board", "Board selector");
-    const api = b.lazyImport(@This(), "zigmkay_firmware") orelse return;
     const fw = b.lazyDependency("zigmkay_firmware", .{}) orelse return;
     const native_keycodes = b.createModule(.{ .root_source_file = fw.path("zkeycodes/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = fw.module("zigmkay") }} });
     const native_model = b.createModule(.{ .root_source_file = b.path("packages/layout-model/src/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = fw.module("zigmkay") }} });
@@ -34,13 +33,13 @@ pub fn build(b: *std.Build) void {
     const mb = MicroBuild.init(b, mz_dep) orelse return;
     const path = export_option orelse return;
     const name = board_option orelse @panic("Missing board");
-    const board = api.boards.find(name) orelse @panic("Unknown board");
+    const fw_build = @import("packages/firmware-adapter/build.zig");
+    const board = fw_build.boards.find(name) orelse @panic("Unknown board");
     const target = mb.ports.rp2xxx.boards.raspberrypi.pico.*;
-    const item = api.addKeyboardFirmware(b, mb, &target, .safe, "project", board, .{
+    const item = fw_build.addKeyboardFirmware(b, mb, &target, .safe, "project", board, .{
         .keyboards = fw.path("keyboards"),
         .processor = fw.path("zigmkay/src/root.zig"),
         .keycodes = fw.path("zkeycodes/root.zig"),
-        .companion_enabled = true,
     }, null);
     const selector = @import("packages/project/src/build_input.zig");
     const processor = item.exe.root_module.import_table.get("zigmkay").?;

@@ -34,8 +34,13 @@
             .lazy = true,
         },
         .zigmkay_firmware = .{
-            .url = "git+https://github.com/EuroZig/zigmkay_firmware.git#e122f7502df4ad58e831f0b37439085774b670cb",
-            .hash = "zigmkay_firmware-0.1.0-EZ4qwyFcPwDnw-hTsHM-NGdUaBgKZewm1ZVU_nMOmdDg",
+            .url = "git+https://github.com/conlorz/zigmkay_firmware.git#ae8e40ca9e05dd43f968d5c27108a05dea1937f7",
+            .hash = "zigmkay_firmware-0.1.0-EZ4qw3oYPABfaPGfUJRNLsHJACrnmq7ZgQoDp9ha4nGp",
+            .lazy = true,
+        },
+        .picotool = .{
+            .url = "git+https://github.com/allyourcodebase/picotool.git#d8df33801dbea792128baaab516291720d400a91",
+            .hash = "picotool-2.3.1-PtJrRaJNAAA3xRwGctKAdomuKCJXz5UwMOrhzQ_Z2f-e",
             .lazy = true,
         },
     },

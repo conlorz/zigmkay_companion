@@ -1,4 +1,5 @@
-//! Inventory from the selected firmware, with host-owned display capabilities.
+//! Board inventory from the companion firmware adapter
+//! (`packages/firmware-adapter`), with host-owned display capabilities.
 const std = @import("std");
 const model = @import("layout-model");
 const defaults = @import("firmware-defaults");
@@ -204,6 +205,7 @@ test "selected firmware inventory is complete and all geometry indexes validate"
     }
     try std.testing.expect(find("yak") == null);
     try std.testing.expectEqualStrings("examples/yak/main.zig", unselected_examples[0]);
+    try std.testing.expect(find("encoder_demo") == null);
 }
 
 test "processing digest detects indexed side and encoder slot changes" {
@@ -263,4 +265,16 @@ test "geometry validation rejects malformed index contracts and tolerates displa
     keys[0] = original.geometry[1];
     keys[0].id += 1000;
     try std.testing.expectError(error.IndexDigestMismatch, validateGeometry(entry));
+}
+
+test "LK8 shares the LK7 default keymap and processing contract with schematic geometry" {
+    const lk7 = find("lk7").?;
+    const lk8 = find("lk8").?;
+    try std.testing.expectEqualStrings(lk7.default_profile_source, lk8.default_profile_source);
+    try std.testing.expectEqualSlices(model.Side, lk7.processing_sides, lk8.processing_sides);
+    try std.testing.expectEqual(lk7.encoder_action_slots, lk8.encoder_action_slots);
+    // Selectors are hashed into the digests, so the two boards stay distinct.
+    try std.testing.expect(!std.mem.eql(u8, &lk7.processing_digest, &lk8.processing_digest));
+    try std.testing.expectEqual(lk7.default_dimensions.key_count, lk8.geometry.len);
+    try std.testing.expect(lk8.geometry.ptr != lk7.geometry.ptr);
 }

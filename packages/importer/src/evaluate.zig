@@ -26,10 +26,10 @@ pub fn main(init: std.process.Init) !void {
     const callbacks = comptime blk: {
         if (!@hasDecl(P, "custom_functions")) break :blk false;
         var found = false;
-        for (@typeInfo(@TypeOf(P.custom_functions)).@"struct".field_names) |name|
-            if (@field(P.custom_functions, name) != null) {
-                found = true;
-            };
+        for (@typeInfo(@TypeOf(P.custom_functions)).@"struct".field_names) |name| {
+            const value = @field(P.custom_functions, name);
+            if (@typeInfo(@TypeOf(value)) == .optional and value != null) found = true;
+        }
         break :blk found;
     };
     const data: wire.Data = .{

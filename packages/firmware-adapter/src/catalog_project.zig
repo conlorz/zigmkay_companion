@@ -9,8 +9,8 @@ pub const OwnedBoard = struct {
     arena: std.heap.ArenaAllocator,
     board: project.Board,
     entry: *const catalog.Entry,
-    /// Kept for callers of the initial adapter. Always false now that selected
-    /// firmware entrypoints own portable authoritative processing descriptors.
+    /// Kept for callers of the initial adapter. Always false now that the
+    /// firmware adapter derives processing descriptors for every board entrypoint.
     uses_schematic_sides: bool,
 
     pub fn init(gpa: std.mem.Allocator, selector: []const u8) !OwnedBoard {
