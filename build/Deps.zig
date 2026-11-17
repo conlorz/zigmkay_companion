@@ -7,8 +7,11 @@ const Config = @import("Config.zig");
 const Deps = @This();
 
 /// The microzig build API with the RP2xxx port, or `void` until Zig has
-/// fetched microzig. Use `microBuild`, never this type, to reach it.
-pub const MicroBuild = if (microzigBuild()) |mz| mz.MicroBuild(.{ .rp2xxx = true }) else void;
+/// fetched microzig.
+const MicroBuildApi = if (microzigBuild()) |mz| mz.MicroBuild(.{ .rp2xxx = true }) else void;
+/// `MicroBuildApi` once Zig has also fetched its lazy RP2xxx port, else
+/// `void`. Use `microBuild`, never this type, to reach it.
+pub const MicroBuild = if (MicroBuildApi != void and portsFetched(MicroBuildApi)) MicroBuildApi else void;
 
 /// `zigmkay_firmware`: processor, keycodes and board sources (absent under `-Donly`).
 firmware: ?*std.Build.Dependency = null,
@@ -47,9 +50,16 @@ pub fn init(b: *std.Build, cfg: Config) error{LazyDependencyNeeded}!Deps {
     if (cfg.firmware) {
         const dependency = lazy(b, &missing, "microzig", .{});
         if (b.lazyImport(Deps, "microzig") == null) missing = true;
-        if (MicroBuild != void) if (dependency) |dep| {
-            deps.micro = MicroBuild.init(b, dep);
-            if (deps.micro == null) missing = true;
+        // `init` also requests the lazy port packages and, until Zig has
+        // fetched them, returns `?noreturn`.
+        if (MicroBuildApi != void) if (dependency) |dep| {
+            const micro = MicroBuildApi.init(b, dep);
+            if (comptime MicroBuild == void) {
+                missing = true;
+            } else {
+                deps.micro = micro;
+                if (micro == null) missing = true;
+            }
         };
     }
     if (missing) return error.LazyDependencyNeeded;
@@ -97,4 +107,11 @@ fn microzigBuild() ?type {
         }
     }
     return null;
+}
+
+/// Whether microzig sees every selected port package: until Zig has fetched
+/// them, `init` returns `?noreturn` and `ports` lacks their board APIs.
+fn portsFetched(comptime Api: type) bool {
+    const Return = @typeInfo(@TypeOf(Api.init)).@"fn".return_type.?;
+    return @typeInfo(Return).optional.child != noreturn;
 }
