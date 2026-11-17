@@ -84,7 +84,11 @@ pub const Gate = struct {
                     self.phase = .finished;
                     return .start;
                 }
-                if (now >= self.deadline or session.status == .rejected or session.status == .timed_out or session.status == .disconnected) {
+                const refused = switch (session.status) {
+                    .rejected, .timed_out, .disconnected => true,
+                    else => false,
+                };
+                if (now >= self.deadline or refused) {
                     self.phase = .manual;
                     return .noop;
                 }
@@ -108,8 +112,13 @@ pub const Gate = struct {
 };
 
 const fixture: Snapshot = .{
-    .operation = 7, .model_generation = 4, .board_id = "board123".*, .build_key = @splat(2),
-    .artifact_hash = @splat(3), .selection_revision = 2, .selected_target = 44,
+    .operation = 7,
+    .model_generation = 4,
+    .board_id = "board123".*,
+    .build_key = @splat(2),
+    .artifact_hash = @splat(3),
+    .selection_revision = 2,
+    .selected_target = 44,
 };
 
 test "idle remains waiting; acceptance latched before disconnect starts once" {

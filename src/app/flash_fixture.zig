@@ -3,7 +3,7 @@
 const std = @import("std");
 const desktop = @import("desktop-core");
 const project = @import("project");
-const app = @import("main.zig");
+const flash_request = @import("flash_request.zig");
 
 test "one click dispatches captured Flash intent without starting hardware work" {
     const gpa = std.testing.allocator;
@@ -14,10 +14,10 @@ test "one click dispatches captured Flash intent without starting hardware work"
     var state = try desktop.editor_dispatch.State.init(&model);
     defer state.deinit();
 
-    const effect = try app.dispatchFlash(&state, &model);
+    const effect = try flash_request.dispatch(&state, &model);
     switch (effect) {
         .flash => |captured| {
-            try app.acceptFlashEffect(&model, captured);
+            try flash_request.accept(&model, captured);
             try std.testing.expectEqualDeep(try model.id(), captured.snapshot);
         },
         else => return error.FlashIntentNotDispatched,
