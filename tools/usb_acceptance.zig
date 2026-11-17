@@ -18,8 +18,8 @@ const help =
     \\usb-acceptance reconnect <candidate.zon> <capture-file> [HID-path]
     \\usb-acceptance bootloader <candidate.zon> <capture-file> [HID-path]
     \\Only discover/live/recovery/reconnect/bootloader access HID. No command flashes.
-    \\Bootloader requests reset once, only after a matching coherent session.
-    \\Live requires a coherent matching identity/snapshot and records key events.
+    \\Bootloader sends one unacknowledged command, only after a matching coherent session.
+    \\Live requires a matching hello and a state report, and records key events.
     \\Recovery performs malformed-protocol recovery, a 3-second read pause and a
     \\local close/reopen. Physical reconnect and both USB routes need separate evidence.
     \\Reconnect allows one physical disconnect and waits up to 120 seconds for a
@@ -38,9 +38,17 @@ fn identity(init: std.process.Init, path: []const u8) !protocol.Identity {
 }
 
 fn describe(expected: protocol.Identity) void {
-    std.debug.print("Expected board={s} profile={s} keys={d} layers={d} digest={s}\n", .{
+    std.debug.print("Expected board={s} profile={s} keys={d} layers={d} digest={s} keymap id=digest\n", .{
         std.mem.trimEnd(u8, &expected.board_id, &.{0}), std.mem.trimEnd(u8, &expected.profile_id, &.{0}), expected.dimensions.key_count,
         expected.dimensions.layer_count,                std.fmt.bytesToHex(expected.digest, .lower),
+    });
+}
+
+fn hello(label: []const u8, observed: protocol.Hello) void {
+    std.debug.print("{s}: version={d} keys={d} layers={d} keymap={s}{s}\n", .{
+        label,                                          observed.version,
+        observed.dimensions.key_count,                  observed.dimensions.layer_count,
+        std.fmt.bytesToHex(observed.keymap_id, .lower), if (protocol.isUnknownKeymap(observed.keymap_id)) " (unknown)" else "",
     });
 }
 
@@ -61,11 +69,7 @@ pub fn main(init: std.process.Init) !void {
         const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[3], allocator, .limited(capture.max_bytes));
         const session = try capture.replay(bytes, expected);
         std.debug.print("Offline replay passed; final phase={s}.\n", .{@tagName(session.phase)});
-        const token = std.mem.readInt(u32, session.identity_body[0..4], .little);
-        if (protocol.decodeIdentityBody(session.identity_body, token)) |observed| {
-            std.debug.print("Last assembled device identity:\n", .{});
-            describe(observed);
-        } else |_| {}
+        if (session.observed) |observed| hello("Last device hello", observed);
         return;
     }
     const discover = args.len == 2 and std.mem.eql(u8, args[1], "discover");
@@ -118,16 +122,16 @@ pub fn main(init: std.process.Init) !void {
     var reopen_done = false;
     var recovery_cuts: [3]bool = @splat(false);
     var bootloader_sent = false;
-    var disconnected_nonce: ?u32 = null;
+    var disconnected_token: ?u32 = null;
     var reconnected_at: ?u64 = null;
     while (driver.transport.now() -| start < seconds * 1000) {
         const now = driver.transport.now();
         const was_connected = driver.connected;
-        const previous_nonce = driver.session.token;
+        const previous_token = driver.session.token;
         driver.poll(now);
-        if (bootloader and driver.session.bootloader_status == .accepted) {
-            std.debug.print("Bootloader request accepted; verify the BOOTSEL volume before flashing.\n", .{});
-            driver.disconnect(now);
+        if (bootloader and driver.session.bootloader_status == .sent) {
+            // The command has no acknowledgement; the keyboard reboots at once.
+            std.debug.print("Bootloader command sent; verify the BOOTSEL volume before flashing.\n", .{});
             try file.?.writeStreamingAll(init.io, recording.encoded());
             saved = true;
             return;
@@ -136,21 +140,19 @@ pub fn main(init: std.process.Init) !void {
             const err = driver.transport_error orelse return error.HidTransportFailed;
             if (!reconnect or (err != error.HidReadFailed and err != error.HidWriteFailed)) return err;
             if (was_connected) {
-                if (disconnected_nonce != null) return error.UnexpectedRepeatedDisconnect;
-                disconnected_nonce = previous_nonce;
+                if (disconnected_token != null) return error.UnexpectedRepeatedDisconnect;
+                disconnected_token = previous_token;
                 std.debug.print("Observed physical disconnect at t={d}ms; waiting for fresh session.\n", .{now -| start});
             }
         }
         if (driver.status == .multiple_devices or driver.status == .path_not_found) return error.UniqueDeviceRequired;
         if (driver.session.phase == .incompatible) {
-            if (protocol.decodeIdentityBody(driver.session.identity_body, driver.session.token)) |observed| {
-                std.debug.print("Observed device identity:\n", .{});
-                describe(observed);
-            } else |_| {}
+            if (driver.session.observed) |observed| hello("Observed device hello", observed);
+            if (driver.session.mismatch) |mismatch| std.debug.print("Mismatch: {t}\n", .{mismatch});
             return error.IdentityOrProtocolMismatch;
         }
         if (driver.session.phase != last_phase) {
-            std.debug.print("t={d}ms phase={s} nonce={d}\n", .{ now -| start, @tagName(driver.session.phase), driver.session.token });
+            std.debug.print("t={d}ms phase={s} token={d}\n", .{ now -| start, @tagName(driver.session.phase), driver.session.token });
             last_phase = driver.session.phase;
         }
         for (driver.key_events[0..driver.key_event_count]) |event| {
@@ -159,17 +161,18 @@ pub fn main(init: std.process.Init) !void {
         }
         if (driver.session.hasCoherentState()) {
             live_cuts += 1;
-            if (reconnect and disconnected_nonce != null and driver.session.token != disconnected_nonce.?) {
+            if (reconnect and disconnected_token != null and driver.session.token != disconnected_token.?) {
                 if (reconnected_at == null) {
                     reconnected_at = now;
-                    std.debug.print("Fresh coherent session after disconnect; nonce={d}.\n", .{driver.session.token});
+                    std.debug.print("Fresh coherent session after disconnect; token={d}.\n", .{driver.session.token});
                 } else if (now -| reconnected_at.? >= 10000) break;
             }
-            if (bootloader and !bootloader_sent and driver.session.capabilities_queried and driver.session.capability_request == 0) {
+            if (bootloader and !bootloader_sent) {
                 if (!driver.session.bootloaderAvailable()) return error.ManualBootloaderRequired;
                 try driver.enterBootloader(now);
                 bootloader_sent = true;
-                std.debug.print("One explicit remote bootloader request sent.\n", .{});
+                std.debug.print("One explicit enter-bootloader command sent.\n", .{});
+                continue;
             }
             if (recovery and driver.session.phase == .live) {
                 if (!malformed_sent) {
@@ -189,7 +192,7 @@ pub fn main(init: std.process.Init) !void {
                     recovery_cuts[1] = true;
                     driver.disconnect(now);
                     reopen_done = true;
-                    std.debug.print("Closing/reopening HID for fresh nonce/snapshot.\n", .{});
+                    std.debug.print("Closing and reopening HID for a fresh connect and state.\n", .{});
                 } else recovery_cuts[2] = true;
             }
         }
@@ -200,7 +203,7 @@ pub fn main(init: std.process.Init) !void {
     if (live_cuts == 0 or !driver.session.hasCoherentState()) return error.NoCoherentFinalSnapshot;
     if (recovery and !std.mem.allEqual(bool, &recovery_cuts, true)) return error.RecoveryNotCompleted;
     if (recording.full) return error.CaptureCapacityExceeded;
-    std.debug.print("Capabilities queried={any} value=0x{x}; remote bootloader available={any}\n", .{ driver.session.capabilities_queried, driver.session.capabilities, driver.session.bootloaderAvailable() });
+    std.debug.print("Remote bootloader available={any}\n", .{driver.session.bootloaderAvailable()});
     driver.disconnect(driver.transport.now());
     try file.?.writeStreamingAll(init.io, recording.encoded());
     saved = true;

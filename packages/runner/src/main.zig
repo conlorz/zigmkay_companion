@@ -12,10 +12,9 @@ comptime {
 var trace: [protocol.max_events]core.ProcessorEvent = undefined;
 var trace_count: usize = 0;
 var trace_overflow = false;
-var signal_context: u8 = 0;
-var signals: [protocol.max_events]firmware.telemetry.Signal = undefined;
+var signals: [protocol.max_events]protocol.Signal = undefined;
 var signal_count: usize = 0;
-fn signal(_: *anyopaque, value: firmware.telemetry.Signal) void {
+fn signal(value: protocol.Signal) void {
     if (signal_count < signals.len) {
         signals[signal_count] = value;
         signal_count += 1;
@@ -26,6 +25,7 @@ fn event(e: core.ProcessorEvent, layers: *core.LayerActivations, queue: *core.Ou
         trace[trace_count] = e;
         trace_count += 1;
     } else trace_overflow = true;
+    if (protocol.eventSignal(e)) |value| signal(value);
     if (profile.custom_functions.on_event) |handler| handler(e, layers, queue);
 }
 const callbacks = core.CustomFunctions{ .on_event = event };
@@ -44,7 +44,6 @@ pub fn main(init: std.process.Init) !void {
     var matrix = core.MatrixStateChangeQueue.Create();
     var encoder = core.EncoderEventQueue.Create();
     var queue = core.OutputCommandQueue.Create();
-    queue.companion_signals = .{ .context = &signal_context, .write = signal };
     var processor = Processor{ .input_matrix_changes = &matrix, .encoder_event_changes = &encoder, .output_usb_commands = &queue };
     try emit(gpa, io, .{ .sequence = 0, .snapshot_id = snapshot_id, .state = .ready });
     var buffer: [protocol.max_input_bytes + 1]u8 = undefined;
@@ -100,9 +99,18 @@ pub fn main(init: std.process.Init) !void {
         var commands: [256]core.OutputCommand = undefined;
         var count: usize = 0;
         while (queue.dequeue()) |command| {
+            // Companion keycodes are intents for the host, not typing output.
+            if (protocol.commandSignal(command)) |value| {
+                signal(value);
+                continue;
+            }
             if (count >= commands.len) return error.CommandOverflow;
             commands[count] = command;
             count += 1;
+        }
+        if (trace_overflow) {
+            try emit(gpa, io, .{ .sequence = input.sequence, .snapshot_id = snapshot_id, .state = .failed, .diagnostic = "EventOverflow" });
+            return;
         }
         var active: u16 = 1;
         for (1..profile.dimensions.layer_count) |index| if (processor.layers_activations.is_layer_active(@intCast(index))) {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const p = @import("root.zig");
 const model = @import("layout-model");
+const protocol = @import("device-protocol");
 
 fn value(writer: *std.Io.Writer, data: anytype) !void {
     try std.zon.stringify.serializeMaxDepth(data, .{ .whitespace = false }, writer, 32);
@@ -43,13 +44,18 @@ pub fn generate(gpa: std.mem.Allocator, snapshot: p.snapshot.Snapshot, board: p.
         try writer.writeAll(",\n");
     }
     try writer.writeAll("};\n");
-    if (doc.callbacks.len == 0) {
-        try writer.writeAll("pub const custom_functions = core.CustomFunctions{};\n");
-    } else {
+    // Firmware reports companion_keymap_id in its companion hello; the editor
+    // matches it against the open project.
+    if (doc.callbacks.len != 0) {
         try writer.writeAll("fn on_event(event: core.ProcessorEvent, layers: *core.LayerActivations, output: *core.OutputCommandQueue) void {\n");
         for (doc.callbacks, 0..) |_, index| try writer.print("    if (@import(\"callback_{d}\").custom_functions.on_event) |handler| handler(event, layers, output);\n", .{index});
-        try writer.writeAll("}\npub const custom_functions = core.CustomFunctions{ .on_event = on_event };\n");
+        try writer.writeAll("}\n");
     }
+    try writer.writeAll("pub const custom_functions = core.CustomFunctions{ ");
+    if (doc.callbacks.len != 0) try writer.writeAll(".on_event = on_event, ");
+    try writer.writeAll(".companion_keymap_id = ");
+    try value(writer, protocol.keymapId(identity));
+    try writer.writeAll(" };\n");
     try writer.writeAll("pub fn identity(comptime protocol: type) protocol.Identity {\n    return ");
     try value(writer, identity);
     try writer.writeAll(";\n}\n");

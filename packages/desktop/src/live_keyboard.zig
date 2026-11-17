@@ -31,13 +31,13 @@ pub const Presenter = struct {
         const identity = binding orelse return .{};
         const current = session orelse return .{};
         try protocol.validateIdentity(identity);
-        if (!std.meta.eql(identity, current.expected) or !std.meta.eql(identity.dimensions, current.state.dimensions) or verified.key_count != identity.dimensions.key_count or verified.layer_count != identity.dimensions.layer_count or current.bootloader_identity_discovery) {
+        if (!std.meta.eql(identity, current.expected) or !std.meta.eql(identity.dimensions, current.state.dimensions) or verified.key_count != identity.dimensions.key_count or verified.layer_count != identity.dimensions.layer_count) {
             self.invalidate();
             return .{};
         }
         const coherent = current.token != 0 and current.hasCoherentState();
         if (output.len < verified.key_count) return error.LiveFrameStorageTooSmall;
-        if (coherent) try protocol.validate(.{ .sequence = 0, .event = .{ .layers = .{ .active_layers = current.state.active_layers, .highest_layer = current.state.highest_layer, .modifiers = current.state.modifiers } } }, identity.dimensions);
+        if (coherent) try protocol.validateLayers(current.state.active_layers, current.state.highest_layer, identity.dimensions);
         if (coherent) self.accepted_identity = identity else {
             const accepted = self.accepted_identity orelse return .{};
             if (!std.meta.eql(accepted, identity)) {
@@ -59,7 +59,12 @@ pub const Presenter = struct {
     }
 };
 
-/// Keyboard requests never make an unverified draft visible. Hold state is
+/// Companion-owned overlay intent. The keyboard protocol has no signal
+/// messages, so callers derive these on the host; the live session supplies none.
+pub const SignalKind = enum { log_toggle, overlay_toggle, shutdown };
+pub const Signal = struct { kind: SignalKind, pressed: bool };
+
+/// Overlay requests never make an unverified draft visible. Hold state is
 /// transient and must be cleared on loss of coherent session state.
 pub const Visibility = struct {
     mode: enum { toggle, hold, tap_hold } = .toggle,
@@ -68,10 +73,10 @@ pub const Visibility = struct {
     down: bool = false,
     pressed_at: u64 = 0,
     pub const hold_ms = 250;
-    pub fn update(self: *Visibility, frame: Frame, signals: []const protocol.Signal) bool {
+    pub fn update(self: *Visibility, frame: Frame, signals: []const Signal) bool {
         return self.updateAt(frame, signals, 0);
     }
-    pub fn updateAt(self: *Visibility, frame: Frame, signals: []const protocol.Signal, now: u64) bool {
+    pub fn updateAt(self: *Visibility, frame: Frame, signals: []const Signal, now: u64) bool {
         if (frame.labels == null or frame.stale) {
             self.held = false;
             self.down = false;
@@ -117,8 +122,8 @@ test "live SDL wait budget preserves quick-tap timing with visible and hidden wi
     var labels = try cache.LabelCache.init(t.allocator, 2, 3);
     defer labels.deinit();
     const frame = Frame{ .labels = &labels, .stale = false };
-    const press = [_]protocol.Signal{.{ .kind = .overlay_toggle, .pressed = true }};
-    const release = [_]protocol.Signal{.{ .kind = .overlay_toggle, .pressed = false }};
+    const press = [_]Signal{.{ .kind = .overlay_toggle, .pressed = true }};
+    const release = [_]Signal{.{ .kind = .overlay_toggle, .pressed = false }};
     for ([_]bool{ false, true }) |hidden| {
         var visibility = Visibility{ .mode = .tap_hold };
         const poll_ms = waitBudget(true, false, hidden) / 1000;
@@ -138,8 +143,8 @@ test "quick taps latch while long holds restore preceding visibility" {
     var labels = try cache.LabelCache.init(t.allocator, 2, 3);
     defer labels.deinit();
     const frame = Frame{ .labels = &labels, .stale = false };
-    const press = [_]protocol.Signal{.{ .kind = .overlay_toggle, .pressed = true }};
-    const release = [_]protocol.Signal{.{ .kind = .overlay_toggle, .pressed = false }};
+    const press = [_]Signal{.{ .kind = .overlay_toggle, .pressed = true }};
+    const release = [_]Signal{.{ .kind = .overlay_toggle, .pressed = false }};
     var visibility = Visibility{ .mode = .tap_hold };
     try t.expect(visibility.updateAt(frame, &press, 100));
     try t.expect(visibility.updateAt(frame, &release, 200));
@@ -161,8 +166,8 @@ test "verified visibility preserves releases and clears holds on stale or mismat
     var labels = try cache.LabelCache.init(t.allocator, 2, 3);
     defer labels.deinit();
     const frame = Frame{ .labels = &labels, .stale = false };
-    const press = [_]protocol.Signal{.{ .kind = .overlay_toggle, .pressed = true }};
-    const release = [_]protocol.Signal{.{ .kind = .overlay_toggle, .pressed = false }};
+    const press = [_]Signal{.{ .kind = .overlay_toggle, .pressed = true }};
+    const release = [_]Signal{.{ .kind = .overlay_toggle, .pressed = false }};
     var hold = Visibility{ .mode = .hold };
     try t.expect(hold.update(frame, &press));
     try t.expect(!hold.update(frame, &release));
@@ -188,7 +193,6 @@ test "live frame waits for coherent identity and clears stale held state" {
     // Coherent phase is normally established by the protocol reducer. These
     // presentation fixtures inject its accepted result without device access.
     session.phase = .live;
-    session.stale = false;
     session.token = 7;
     session.state.pressed[30] = true;
     session.state.highest_layer = 2;
@@ -198,7 +202,7 @@ test "live frame waits for coherent identity and clears stale held state" {
     try t.expect(frame.labels != null and !frame.stale and frame.pressed[30]);
     try t.expectEqual(@as(usize, 2), frame.layer);
     try t.expectEqual(@as(u16, 5), frame.active);
-    session.disconnect();
+    _ = session.close();
     frame = try presenter.select(&labels, identity, &session, &storage);
     try t.expect(frame.labels != null and frame.stale);
     try t.expectEqual(@as(usize, 0), frame.layer);
@@ -210,7 +214,7 @@ test "live frame waits for coherent identity and clears stale held state" {
     try t.expect((try presenter.select(&labels, changed, &session, &storage)).labels == null);
     try t.expect(presenter.accepted_identity == null);
 }
-test "wire identity and complete snapshot promote the verified presentation atomically" {
+test "hello and the first state promote the verified presentation atomically" {
     const t = std.testing;
     var labels = try cache.LabelCache.init(t.allocator, 2, 3);
     defer labels.deinit();
@@ -219,32 +223,23 @@ test "wire identity and complete snapshot promote the verified presentation atom
     var presenter = Presenter{};
     var output: [3]bool = @splat(false);
     _ = try session.connect(0, 42);
-    for (try protocol.identityPackets(identity, 42, session.request)) |packet| {
-        const report = try protocol.encodePacket(packet, identity.dimensions, .device_to_host);
-        _ = session.receive(&report, 1);
-        try t.expect((try presenter.select(&labels, identity, &session, &output)).labels == null);
-    }
-    var snapshot = protocol.Snapshot{ .active_layers = 3, .highest_layer = 1 };
-    snapshot.pressed[0] = 4;
-    const packets = try protocol.snapshotPackets(snapshot, identity.dimensions, 42, session.request, 9);
-    const first = try protocol.encodePacket(packets[0], identity.dimensions, .device_to_host);
-    _ = session.receive(&first, 2);
+    const hello = try protocol.encode(.{ .hello = .{ .dimensions = identity.dimensions, .keymap_id = protocol.keymapId(identity) } }, identity.dimensions);
+    _ = session.receive(&hello, 1);
     try t.expect((try presenter.select(&labels, identity, &session, &output)).labels == null);
-    const second = try protocol.encodePacket(packets[1], identity.dimensions, .device_to_host);
-    _ = session.receive(&second, 3);
+    var state = protocol.State{ .sequence = 9, .active_layers = 3, .highest_layer = 1 };
+    state.pressed[0] = 4;
+    const first = try protocol.encode(.{ .state = state }, identity.dimensions);
+    _ = session.receive(&first, 2);
     const frame = try presenter.select(&labels, identity, &session, &output);
     try t.expect(frame.labels != null and !frame.stale and frame.pressed[2]);
     try t.expectEqual(@as(usize, 1), frame.layer);
     try t.expect(frame.content(2) != null and frame.content(3) == null);
     var visibility = Visibility{ .mode = .hold };
-    const press = session.apply(.{ .session = 42, .sequence = 9, .payload = .{ .signal = .{ .kind = .overlay_toggle, .pressed = true } } }, 3);
-    try t.expectEqual(@as(usize, 1), press.signal_event_count);
-    try t.expect(visibility.update(frame, press.signal_events[0..press.signal_event_count]));
-    const release = session.apply(.{ .session = 42, .sequence = 10, .payload = .{ .signal = .{ .kind = .overlay_toggle, .pressed = false } } }, 3);
-    try t.expectEqual(@as(usize, 1), release.signal_event_count);
-    try t.expectEqual(@as(u2, 0), release.count);
-    try t.expect(!visibility.update(frame, release.signal_events[0..release.signal_event_count]));
-    _ = session.apply(.{ .session = 42, .sequence = 13, .payload = .{ .key = .{ .key_index = 2, .pressed = false, .layer = 1, .modifiers = .{} } } }, 4);
+    try t.expect(visibility.update(frame, &.{.{ .kind = .overlay_toggle, .pressed = true }}));
+    // A sequence gap makes the presentation stale until the keyboard resends state.
+    const gap = try protocol.encode(.{ .key = .{ .sequence = 13, .event = .{ .key_index = 2, .pressed = false, .layer = 1, .modifiers = .{} } } }, identity.dimensions);
+    try t.expectEqual(@as(?protocol.Command, .connect), session.receive(&gap, 3).send);
     const stale = try presenter.select(&labels, identity, &session, &output);
     try t.expect(stale.stale and !stale.pressed[2]);
+    try t.expect(!visibility.update(stale, &.{}));
 }

@@ -325,11 +325,9 @@ fn flashLiveMatches(driver: *const LiveDriver, running: ?@TypeOf(@as(LiveDriver,
 fn bootloaderStatus(status: @TypeOf(@as(LiveDriver, undefined).session.bootloader_status)) bootloader.Session.Status {
     return switch (status) {
         .idle => .idle,
-        .requested => .requested,
-        .accepted => .accepted,
-        .rejected => .rejected,
-        .timed_out => .timed_out,
-        .disconnected => .disconnected,
+        // The enter-bootloader command has no acknowledgement; a successful
+        // write is final and the flash wrapper waits for the BOOTSEL drive.
+        .sent => .accepted,
     };
 }
 pub fn main(init: std.process.Init) !void {
@@ -744,10 +742,8 @@ pub fn main(init: std.process.Init) !void {
                 std.log.info("Keyboard connection: {t}", .{status});
                 last_live_status = status;
             }
-            life.companion_visible = visibility.updateAt(live_frame, driver.signal_events[0..driver.signal_event_count], driver.transport.now());
-            for (driver.signal_events[0..driver.signal_event_count]) |signal| {
-                std.log.debug("Live overlay signal {t} pressed={any}; latched={any} held={any} visible={any}", .{ signal.kind, signal.pressed, visibility.latched, visibility.held, life.companion_visible });
-            }
+            // The keyboard protocol carries no overlay signals; the tray toggles the overlay.
+            life.companion_visible = visibility.updateAt(live_frame, &.{}, driver.transport.now());
             if (!life.companion_visible or (practicing and practice.config.assistance == .hidden)) if (companion_window) |id| if (Backend.c.SDL_GetWindowFromID(id)) |child_window| {
                 _ = Backend.c.SDL_HideWindow(child_window);
             };
@@ -1240,7 +1236,7 @@ pub fn main(init: std.process.Init) !void {
                 const current = flashSnapshot(session, session.view(null), built_generation);
                 const driver_now = if (live) |*driver| driver.transport.now() else @as(u64, @intCast(std.Io.Clock.awake.now(init.io).toMilliseconds()));
                 if (live) |*driver| {
-                    if (driver.session.bootloader_status == .accepted) flash_gate.observeAccepted(current, driver_now);
+                    if (driver.session.bootloader_status == .sent) flash_gate.observeAccepted(current, driver_now);
                 }
                 // Only the board must match the selected artifact; the live
                 // session remains bound to the verified running firmware.

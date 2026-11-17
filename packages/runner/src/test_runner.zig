@@ -466,3 +466,22 @@ test "draft runtime prepares explicitly routes real processor output and stops o
     try t.expect(runtime.owner == null and tutor.runner_state == .idle);
     try t.expect(!try runtime.route(&tutor, &model, .{ .key = .{ .window = 7, .scancode = 4, .down = true } }, 4000));
 }
+
+test "companion signals are derived host-side from reserved custom ids and keycodes" {
+    const core = @import("zigmkay").core;
+    const t = std.testing;
+    const log_tap = core.TapDef{ .custom = core.CUSTOM_ID_COMPANION_LOG_TOGGLE };
+    try t.expectEqual(wire.Signal{ .kind = .log_toggle, .pressed = true }, wire.eventSignal(.{ .OnTapEnterAfter = .{ .tap = log_tap } }).?);
+    try t.expectEqual(wire.Signal{ .kind = .log_toggle, .pressed = false }, wire.eventSignal(.{ .OnTapExitAfter = .{ .tap = log_tap } }).?);
+    try t.expectEqual(@as(?wire.Signal, null), wire.eventSignal(.{ .OnTapEnterBefore = .{ .tap = log_tap } }));
+    const overlay_hold = core.HoldDef{ .custom = core.CUSTOM_ID_COMPANION_TOGGLE };
+    try t.expectEqual(wire.Signal{ .kind = .overlay_toggle, .pressed = true }, wire.eventSignal(.{ .OnHoldEnterAfter = .{ .hold = overlay_hold } }).?);
+    try t.expectEqual(wire.Signal{ .kind = .overlay_toggle, .pressed = false }, wire.eventSignal(.{ .OnHoldExitBefore = .{ .hold = overlay_hold } }).?);
+    try t.expectEqual(wire.Signal{ .kind = .shutdown, .pressed = true }, wire.eventSignal(.{ .OnTapEnterAfter = .{ .tap = .{ .custom = core.CUSTOM_ID_COMPANION_SHUTDOWN } } }).?);
+    try t.expectEqual(@as(?wire.Signal, null), wire.eventSignal(.{ .OnTapEnterAfter = .{ .tap = .{ .custom = 1 } } }));
+    try t.expectEqual(@as(?wire.Signal, null), wire.eventSignal(.Tick));
+    try t.expectEqual(wire.Signal{ .kind = .overlay_toggle, .pressed = true }, wire.commandSignal(.{ .KeyCodePress = core.special_keycode_COMPANION }).?);
+    try t.expectEqual(wire.Signal{ .kind = .shutdown, .pressed = false }, wire.commandSignal(.{ .KeyCodeRelease = core.special_keycode_SHUTDOWN_COMPANION }).?);
+    try t.expectEqual(@as(?wire.Signal, null), wire.commandSignal(.{ .KeyCodePress = 4 }));
+    try t.expectEqual(@as(?wire.Signal, null), wire.commandSignal(.ActivateBootMode));
+}

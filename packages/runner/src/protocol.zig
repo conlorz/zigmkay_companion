@@ -13,7 +13,7 @@ pub const Output = struct {
     state: enum { ready, processed, restart_required, stopped, failed },
     commands: []const core.OutputCommand = &.{},
     events: []const core.ProcessorEvent = &.{},
-    signals: []const @import("zigmkay").telemetry.Signal = &.{},
+    signals: []const Signal = &.{},
     active_layers: u16 = 1,
     highest_layer: u4 = 0,
     modifiers: u8 = 0,
@@ -26,4 +26,47 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Input {
     const input = try @import("owned-zon").parse(Input, gpa, text);
     if (input.version != version) return error.UnsupportedVersion;
     return input;
+}
+
+/// Companion intents of the reserved keymap actions. Firmware does not route
+/// them anywhere special, so the runner derives them on the host from
+/// processor events and output commands.
+pub const SignalKind = enum(u8) { log_toggle = 1, overlay_toggle = 2, shutdown = 3 };
+pub const Signal = struct { kind: SignalKind, pressed: bool };
+
+fn customSignal(id: ?u8) ?SignalKind {
+    return switch (id orelse return null) {
+        core.CUSTOM_ID_COMPANION_LOG_TOGGLE => .log_toggle,
+        core.CUSTOM_ID_COMPANION_TOGGLE => .overlay_toggle,
+        core.CUSTOM_ID_COMPANION_SHUTDOWN => .shutdown,
+        else => null,
+    };
+}
+
+/// Reserved custom ids (0xFD..0xFF) on taps and holds, seen by `on_event`.
+pub fn eventSignal(event: core.ProcessorEvent) ?Signal {
+    const kind, const pressed = switch (event) {
+        .OnTapEnterAfter => |value| .{ customSignal(value.tap.custom), true },
+        .OnTapExitAfter => |value| .{ customSignal(value.tap.custom), false },
+        .OnHoldEnterAfter => |value| .{ customSignal(value.hold.custom), true },
+        .OnHoldExitBefore => |value| .{ customSignal(value.hold.custom), false },
+        else => return null,
+    };
+    return .{ .kind = kind orelse return null, .pressed = pressed };
+}
+
+/// KC_COMPANION (0xFE) and KC_SHUTDOWN_COMPANION (0xFF) keycodes, which
+/// firmware sends as ordinary key presses.
+pub fn commandSignal(command: core.OutputCommand) ?Signal {
+    const keycode, const pressed = switch (command) {
+        .KeyCodePress => |value| .{ value, true },
+        .KeyCodeRelease => |value| .{ value, false },
+        else => return null,
+    };
+    const kind: SignalKind = switch (keycode) {
+        core.special_keycode_COMPANION => .overlay_toggle,
+        core.special_keycode_SHUTDOWN_COMPANION => .shutdown,
+        else => return null,
+    };
+    return .{ .kind = kind, .pressed = pressed };
 }

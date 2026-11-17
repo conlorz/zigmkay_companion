@@ -42,8 +42,8 @@ pub fn nativeWrite(report: protocol.Report) [33]u8 {
     @memcpy(bytes[1..], &report);
     return bytes;
 }
-/// A seed is obtained from OS randomness by the live entry point. Exhaustion is
-/// explicit rather than wrapping into an earlier session's queued traffic.
+/// Host-side connection tokens. A seed is obtained from OS randomness by the
+/// live entry point, so a new connection never reuses an earlier token.
 pub const Nonces = struct {
     value: u32,
     remaining: u64 = std.math.maxInt(u32),
@@ -60,62 +60,6 @@ pub const report_budget = 32;
 pub const drain_budget_ms = 2;
 pub const reconnect_ms = 1000;
 
-pub const BootloaderAttemptStatus = enum { idle, connecting, requested, accepted, manual_recovery };
-/// One bounded attempt per explicit Flash click. The independent session binds
-/// the running profile, never the unflashed draft or overlay labels.
-pub fn BootloaderAttempt(comptime Transport: type) type {
-    return struct {
-        const Self = @This();
-        driver: Driver(Transport),
-        status: BootloaderAttemptStatus = .idle,
-        deadline: u64 = 0,
-        request_sent: bool = false,
-        pub fn init(transport: Transport, board: protocol.Identity, nonce: u32, path: ?[]const u8) !Self {
-            var driver = try Driver(Transport).init(transport, board, nonce, path);
-            driver.session = try companion.Session.initBootloader(board);
-            return .{ .driver = driver };
-        }
-        pub fn active(self: *const Self) bool {
-            return self.status == .connecting or self.status == .requested;
-        }
-        pub fn start(self: *Self, now: u64) void {
-            if (self.status != .idle) return;
-            self.status = .connecting;
-            self.deadline = now +| 2500;
-        }
-        pub fn stop(self: *Self, status: BootloaderAttemptStatus, now: u64) void {
-            self.driver.disconnect(now);
-            self.status = status;
-        }
-        pub fn poll(self: *Self, now: u64) void {
-            if (!self.active()) return;
-            if (now >= self.deadline) return self.stop(.manual_recovery, now);
-            self.driver.poll(now);
-            if (!self.driver.connected or self.driver.session.phase == .incompatible) return self.stop(.manual_recovery, now);
-            const session = &self.driver.session;
-            if (session.bootloader_status == .accepted) return self.stop(.accepted, now);
-            if (self.request_sent) {
-                if (session.bootloader_status != .requested) self.stop(.manual_recovery, now);
-                return;
-            }
-            if (session.bootloaderAvailable()) {
-                self.request_sent = true;
-                self.driver.enterBootloader(now) catch return self.stop(.manual_recovery, now);
-                self.status = .requested;
-            } else if (session.capabilities_queried and session.capability_request == 0) self.stop(.manual_recovery, now);
-        }
-        pub fn message(self: *const Self) []const u8 {
-            return switch (self.status) {
-                .idle => "",
-                .connecting => "Checking HID bootloader support…",
-                .requested => "Bootloader requested via HID…",
-                .accepted => "Bootloader accepted · waiting for BOOTSEL drive…",
-                .manual_recovery => "HID unavailable · enter BOOTSEL manually to continue flashing.",
-            };
-        }
-    };
-}
-
 /// Transport methods: discover(?path)!Discovery, read(*[33]u8)!usize,
 /// write([]const u8)!void, close(), and now()u64. discover opens only a uniquely
 /// selected vendor collection. read is nonblocking; zero means no report.
@@ -130,27 +74,37 @@ pub fn Driver(comptime Transport: type) type {
         retry_at: u64 = 0,
         status: Status = .searching,
         transport_error: ?anyerror = null,
-        signals: [2]protocol.SignalKind = undefined,
-        signal_count: usize = 0,
-        signal_events: [2]protocol.Signal = undefined,
-        signal_event_count: usize = 0,
+        /// Validated key events applied during the last poll, oldest first.
         key_events: [report_budget]protocol.KeyEvent = undefined,
         key_event_count: usize = 0,
         recording: ?*capture.Recorder = null,
         pub fn init(transport: Transport, expected: protocol.Identity, seed: u32, path: ?[]const u8) !Self {
             return .{ .transport = transport, .session = try companion.Session.init(expected), .nonces = .{ .value = seed }, .path = path };
         }
+        /// Clean shutdown: tells a connected keyboard to stop streaming, then
+        /// closes the transport.
         pub fn disconnect(self: *Self, now: u64) void {
+            self.close(now, true);
+        }
+        fn close(self: *Self, now: u64, notify: bool) void {
             if (self.recording) |recording| recording.add(.disconnect, now, &.{});
-            if (self.connected) self.transport.close();
+            const command = self.session.close();
+            if (self.connected) {
+                if (notify) if (command) |value| {
+                    const bytes = nativeWrite(protocol.encodeCommand(value));
+                    if (self.recording) |recording| recording.add(.send, now, &bytes);
+                    // Best effort: the keyboard also stops when unplugged or reset.
+                    self.transport.write(&bytes) catch {};
+                };
+                self.transport.close();
+            }
             self.connected = false;
-            self.session.disconnect();
             self.retry_at = now +| reconnect_ms;
         }
         fn fail(self: *Self, err: anyerror, now: u64) void {
             self.transport_error = err;
             self.status = .transport_error;
-            self.disconnect(now);
+            self.close(now, false);
         }
         fn fresh(self: *Self, now: u64) ?u32 {
             return self.nonces.next() catch {
@@ -160,46 +114,30 @@ pub fn Driver(comptime Transport: type) type {
                 return null;
             };
         }
-        fn execute(self: *Self, actions: companion.Actions, now: u64) bool {
-            if (self.signal_event_count + actions.signal_event_count > self.signal_events.len) {
-                self.fail(error.SignalQueueOverflow, now);
+        fn send(self: *Self, command: protocol.Command, now: u64) bool {
+            const bytes = nativeWrite(protocol.encodeCommand(command));
+            if (self.recording) |recording| recording.add(.send, now, &bytes);
+            self.transport.write(&bytes) catch |err| {
+                self.fail(err, now);
                 return false;
-            }
-            for (actions.signal_events[0..actions.signal_event_count]) |event| {
-                self.signal_events[self.signal_event_count] = event;
-                self.signal_event_count += 1;
-            }
-            for (actions.slice()) |action| switch (action) {
-                .send => |packet| {
-                    const report = protocol.encodePacket(packet, self.session.state.dimensions, .host_to_device) catch |err| {
-                        self.fail(err, now);
-                        return false;
-                    };
-                    const bytes = nativeWrite(report);
-                    if (self.recording) |recording| recording.add(.send, now, &bytes);
-                    self.transport.write(&bytes) catch |err| {
-                        self.fail(err, now);
-                        return false;
-                    };
-                },
-                .signal => |signal| {
-                    // Stop draining before another receive can exceed this UI queue.
-                    self.signals[self.signal_count] = signal;
-                    self.signal_count += 1;
-                },
             };
             return true;
         }
-        /// Explicit UI action only. Never retried after timeout or reconnect.
+        /// Explicit UI action only, never retried. The keyboard reboots into
+        /// BOOTSEL without replying, so the transport is closed right away and
+        /// the caller waits for the BOOTSEL drive.
         pub fn enterBootloader(self: *Self, now: u64) !void {
-            if (!self.connected or !self.session.bootloaderAvailable()) return error.BootloaderUnavailable;
-            const actions = self.session.requestBootloader(now);
+            if (!self.connected) return error.BootloaderUnavailable;
             if (self.recording) |recording| recording.add(.bootloader, now, &.{});
-            if (!self.execute(actions, now)) return error.BootloaderTransportFailed;
+            const command = self.session.requestBootloader() orelse return error.BootloaderUnavailable;
+            if (!self.send(command, now)) {
+                // Nothing reached the keyboard, so nothing is waiting for BOOTSEL.
+                self.session.bootloader_status = .idle;
+                return error.BootloaderTransportFailed;
+            }
+            self.close(now, false);
         }
         pub fn poll(self: *Self, now: u64) void {
-            self.signal_count = 0;
-            self.signal_event_count = 0;
             self.key_event_count = 0;
             if (!self.connected) {
                 if (now < self.retry_at) return;
@@ -213,13 +151,13 @@ pub fn Driver(comptime Transport: type) type {
                         self.connected = true;
                         self.status = .connected;
                         self.transport_error = null;
-                        const nonce = self.fresh(now) orelse return;
-                        if (self.recording) |recording| recording.nonce(.connect, now, nonce);
-                        const actions = self.session.connect(now, nonce) catch |err| {
+                        const token = self.fresh(now) orelse return;
+                        if (self.recording) |recording| recording.token(.connect, now, token);
+                        const command = self.session.connect(now, token) catch |err| {
                             self.fail(err, now);
                             return;
                         };
-                        if (!self.execute(actions, now)) return;
+                        if (!self.send(command, now)) return;
                     },
                     .no_device => {
                         self.status = .no_device;
@@ -237,15 +175,15 @@ pub fn Driver(comptime Transport: type) type {
             }
             const start = self.transport.now();
             for (0..report_budget) |_| {
-                if (self.signal_event_count != 0 or self.transport.now() -| start >= drain_budget_ms) break;
+                if (self.transport.now() -| start >= drain_budget_ms) break;
                 var bytes: [33]u8 = undefined;
                 const count = self.transport.read(&bytes) catch |err| {
                     self.fail(err, now);
                     return;
                 };
                 if (count == 0) break;
-                // Invalid native lengths enter the same malformed receive recovery
-                // path as invalid codec frames; no bytes are silently truncated.
+                // Invalid native lengths enter the same malformed-report path
+                // as invalid codec frames; no bytes are silently truncated.
                 const report = normalize(bytes[0..@min(count, bytes.len)]) catch {
                     if (!self.receive(&.{}, now)) return;
                     continue;
@@ -256,34 +194,21 @@ pub fn Driver(comptime Transport: type) type {
                 }
                 if (!self.receive(&report, now)) return;
             }
-            const nonce = if (self.session.exhausted and now >= self.session.deadline) (self.fresh(now) orelse return) else 0;
-            if (self.recording) |recording| recording.nonce(.tick, now, nonce);
-            const actions = self.session.tick(now, nonce) catch |err| {
-                self.fail(err, now);
-                return;
-            };
-            _ = self.execute(actions, now);
-            if (self.connected) {
-                const query = self.session.queryCapabilities(now);
-                if (query.count != 0) {
-                    if (self.recording) |recording| recording.add(.capabilities, now, &.{});
-                    _ = self.execute(query, now);
-                }
+            if (self.session.tick(now)) |command| {
+                if (self.recording) |recording| recording.add(.tick, now, &.{});
+                _ = self.send(command, now);
             }
         }
         fn receive(self: *Self, bytes: []const u8, now: u64) bool {
             if (self.recording) |recording| recording.add(.receive, now, bytes);
-            const previous_sequence = self.session.state.last_sequence;
-            const actions = self.session.receive(bytes, now);
-            if (self.session.phase == .live and self.session.state.last_sequence != previous_sequence) {
-                if (protocol.decodePacket(bytes, self.session.state.dimensions, .device_to_host)) |packet| {
-                    if (packet.payload == .key and self.key_event_count < self.key_events.len) {
-                        self.key_events[self.key_event_count] = packet.payload.key;
-                        self.key_event_count += 1;
-                    }
-                } else |_| {}
+            const outcome = self.session.receive(bytes, now);
+            if (outcome.key) |event| {
+                // The drain budget bounds the count to the storage.
+                self.key_events[self.key_event_count] = event;
+                self.key_event_count += 1;
             }
-            return self.execute(actions, now);
+            if (outcome.send) |command| return self.send(command, now);
+            return true;
         }
     };
 }
@@ -313,6 +238,7 @@ const Fake = struct {
         return 32;
     }
     fn write(self: *Fake, bytes: []const u8) !void {
+        if (self.broken) return error.Unplugged;
         self.writes[self.write_count] = bytes[0..33].*;
         self.write_count += 1;
     }
@@ -324,22 +250,30 @@ const Fake = struct {
         self.clock += self.clock_step;
         return result;
     }
-    fn queue(self: *Fake, packet: protocol.Packet, dimensions: @import("layout-model").KeymapDimensions) !void {
-        self.frames[self.count] = try protocol.encodePacket(packet, dimensions, .device_to_host);
+    fn queue(self: *Fake, message: protocol.Message, dimensions: @import("layout-model").KeymapDimensions) !void {
+        self.frames[self.count] = try protocol.encode(message, dimensions);
         self.count += 1;
+    }
+    fn command(self: *const Fake, index: usize) ?protocol.Command {
+        return protocol.decodeCommand(self.writes[index][1..]) catch null;
+    }
+    fn last(self: *const Fake) ?protocol.Command {
+        return if (self.write_count == 0) null else self.command(self.write_count - 1);
     }
 };
 fn fixture() protocol.Identity {
     return .{ .board_id = .{ 'l', 'k', '7', 0, 0, 0, 0, 0 }, .profile_id = .{ 't', 'e', 's', 't', 0, 0, 0, 0 }, .digest = @splat(1), .dimensions = .{ .key_count = 4, .layer_count = 2 } };
 }
+fn hello(identity: protocol.Identity) protocol.Message {
+    return .{ .hello = .{ .dimensions = identity.dimensions, .keymap_id = identity.digest } };
+}
 fn attach(driver: *Driver(Fake), identity: protocol.Identity, held: bool) !void {
     driver.poll(0);
-    for (try protocol.identityPackets(identity, driver.session.token, driver.session.request)) |p| try driver.transport.queue(p, identity.dimensions);
+    try driver.transport.queue(hello(identity), identity.dimensions);
+    var state = protocol.State{ .sequence = 0 };
+    if (held) state.pressed[0] = 1;
+    try driver.transport.queue(.{ .state = state }, identity.dimensions);
     driver.poll(1);
-    var snapshot = protocol.Snapshot{ .pressed = @splat(0), .active_layers = 1, .highest_layer = 0, .modifiers = .{} };
-    if (held) snapshot.pressed[0] = 1;
-    for (try protocol.snapshotPackets(snapshot, identity.dimensions, driver.session.token, driver.session.request, 0)) |p| try driver.transport.queue(p, identity.dimensions);
-    driver.poll(2);
 }
 test "vendor selection refuses ambiguous devices and requires exact path" {
     const candidates = [_]Candidate{ .{ .path = "keyboard", .usage_page = 1 }, .{ .path = "a" }, .{ .path = "b" } };
@@ -357,21 +291,42 @@ test "native report ID boundaries are exact" {
     try std.testing.expectError(error.InvalidNativeReport, normalize(&native));
     try std.testing.expectError(error.InvalidNativeReport, normalize(report[0..31]));
 }
-test "fake attach held state unplug and reconnect use fresh identity session" {
+test "a discovered keyboard is connected, synchronised and cleanly disconnected" {
     var driver = try Driver(Fake).init(.{}, fixture(), 100, null);
     try attach(&driver, fixture(), true);
+    try std.testing.expectEqual(@as(?protocol.Command, .connect), driver.transport.command(0));
     try std.testing.expectEqual(companion.Phase.live, driver.session.phase);
     try std.testing.expect(driver.session.state.pressed[0]);
+    try driver.transport.queue(.{ .key = .{ .sequence = 1, .event = .{ .pressed = false, .key_index = 0, .layer = 0, .modifiers = .{} } } }, fixture().dimensions);
+    driver.poll(2);
+    try std.testing.expectEqual(@as(usize, 1), driver.key_event_count);
+    try std.testing.expect(!driver.session.state.pressed[0]);
+    const writes = driver.transport.write_count;
+    driver.disconnect(3);
+    try std.testing.expectEqual(writes + 1, driver.transport.write_count);
+    try std.testing.expectEqual(@as(?protocol.Command, .disconnect), driver.transport.last());
+    try std.testing.expect(driver.transport.closed and !driver.connected);
+    try std.testing.expectEqual(companion.Phase.disconnected, driver.session.phase);
+}
+test "unplug closes without a command and reconnect uses a fresh token" {
+    var driver = try Driver(Fake).init(.{}, fixture(), 100, null);
+    try attach(&driver, fixture(), true);
     const old = driver.session.token;
+    const writes = driver.transport.write_count;
     driver.transport.broken = true;
     driver.poll(3);
-    try std.testing.expect(driver.session.stale and driver.transport.closed);
+    try std.testing.expect(!driver.session.hasCoherentState() and driver.transport.closed);
+    try std.testing.expectEqual(Status.transport_error, driver.status);
+    try std.testing.expectEqual(writes, driver.transport.write_count);
     driver.transport.broken = false;
+    driver.poll(500);
+    try std.testing.expectEqual(@as(usize, 1), driver.transport.discovery_count);
     driver.poll(1003);
-    try std.testing.expect(driver.session.token != old);
+    try std.testing.expect(driver.session.token != old and driver.session.token != 0);
     try std.testing.expectEqual(companion.Phase.negotiating, driver.session.phase);
+    try std.testing.expectEqual(@as(?protocol.Command, .connect), driver.transport.last());
 }
-test "fake mismatch no device malformed recovery and bounded drain" {
+test "no device sends nothing and a mismatched keymap is refused and disconnected" {
     var driver = try Driver(Fake).init(.{ .discovery = .no_device }, fixture(), 10, null);
     driver.poll(0);
     try std.testing.expectEqual(Status.no_device, driver.status);
@@ -380,50 +335,73 @@ test "fake mismatch no device malformed recovery and bounded drain" {
     driver.poll(1000);
     var wrong = fixture();
     wrong.digest[0] = 2;
-    for (try protocol.identityPackets(wrong, driver.session.token, driver.session.request)) |p| try driver.transport.queue(p, wrong.dimensions);
+    try driver.transport.queue(hello(wrong), wrong.dimensions);
+    try driver.transport.queue(.{ .state = .{ .sequence = 0 } }, wrong.dimensions);
     driver.poll(1001);
     try std.testing.expectEqual(companion.Phase.incompatible, driver.session.phase);
+    try std.testing.expectEqual(companion.Mismatch.keymap_id, driver.session.mismatch.?);
+    try std.testing.expectEqual(@as(?protocol.Command, .disconnect), driver.transport.last());
+    // Incompatible sessions neither retry nor apply later reports.
+    const writes = driver.transport.write_count;
+    driver.poll(5000);
+    try std.testing.expectEqual(writes, driver.transport.write_count);
+    try std.testing.expect(!driver.session.hasCoherentState());
+}
+test "malformed reports resynchronise and the drain stays bounded" {
     var good = try Driver(Fake).init(.{}, fixture(), 20, null);
     try attach(&good, fixture(), false);
-    good.transport.frames[good.transport.count] = @splat(0);
+    const writes = good.transport.write_count;
+    var malformed: protocol.Report = @splat(0);
+    malformed[0] = 0x22;
+    malformed[2] = 7;
+    good.transport.frames[good.transport.count] = malformed;
     good.transport.count += 1;
     good.poll(3);
-    try std.testing.expect(good.session.stale and good.session.last_error != null);
+    try std.testing.expectEqual(companion.Phase.negotiating, good.session.phase);
+    try std.testing.expectEqual(@as(?protocol.ProtocolError, error.InvalidBoolean), good.session.last_error);
+    try std.testing.expectEqual(writes + 1, good.transport.write_count);
+    try std.testing.expectEqual(@as(?protocol.Command, .connect), good.transport.last());
     var busy = try Driver(Fake).init(.{}, fixture(), 30, null);
     busy.transport.count = 64;
     for (&busy.transport.frames) |*frame| frame.* = @splat(0);
     busy.poll(0);
     try std.testing.expectEqual(@as(usize, report_budget), busy.transport.cursor);
+    // Unknown report ids are ignored and never trigger a resync.
+    try std.testing.expectEqual(@as(usize, 1), busy.transport.write_count);
 }
-
-test "fake gap recovery interrupted snapshot and successful reconnect" {
+test "a sequence gap resynchronises with connect and recovers from the fresh state" {
     var driver = try Driver(Fake).init(.{}, fixture(), 200, null);
     try attach(&driver, fixture(), true);
-    try driver.transport.queue(.{ .session = driver.session.token, .sequence = 2, .payload = .{ .key = .{ .pressed = false, .key_index = 0, .layer = 0, .modifiers = .{} } } }, fixture().dimensions);
+    try driver.transport.queue(.{ .key = .{ .sequence = 2, .event = .{ .pressed = false, .key_index = 0, .layer = 0, .modifiers = .{} } } }, fixture().dimensions);
     driver.poll(3);
-    try std.testing.expectEqual(companion.Phase.recovering, driver.session.phase);
-    try std.testing.expect(driver.session.stale and driver.session.state.pressed[0]);
-    driver.transport.broken = true;
-    driver.poll(4);
-    driver.transport.broken = false;
-    driver.poll(1004);
-    for (try protocol.identityPackets(fixture(), driver.session.token, driver.session.request)) |p| try driver.transport.queue(p, fixture().dimensions);
-    driver.poll(1005);
-    const snapshot = protocol.Snapshot{ .pressed = @splat(0), .active_layers = 1, .highest_layer = 0, .modifiers = .{} };
-    for (try protocol.snapshotPackets(snapshot, fixture().dimensions, driver.session.token, driver.session.request, 0)) |p| try driver.transport.queue(p, fixture().dimensions);
-    driver.poll(1006);
-    try std.testing.expectEqual(companion.Phase.live, driver.session.phase);
-    try std.testing.expect(!driver.session.stale and !driver.session.state.pressed[0]);
-    const old_token = driver.session.token;
-    driver.poll(2006);
-    driver.poll(2506);
-    driver.poll(3006);
-    driver.poll(3506);
-    driver.poll(4506);
     try std.testing.expectEqual(companion.Phase.negotiating, driver.session.phase);
-    try std.testing.expect(driver.session.token != old_token);
+    try std.testing.expect(!driver.session.hasCoherentState());
+    try std.testing.expectEqual(@as(usize, 0), driver.key_event_count);
+    try std.testing.expectEqual(@as(?protocol.Command, .connect), driver.transport.last());
+    try driver.transport.queue(hello(fixture()), fixture().dimensions);
+    try driver.transport.queue(.{ .state = .{ .sequence = 3 } }, fixture().dimensions);
+    try driver.transport.queue(.{ .key = .{ .sequence = 4, .event = .{ .pressed = true, .key_index = 3, .layer = 1, .modifiers = .{} } } }, fixture().dimensions);
+    driver.poll(4);
+    try std.testing.expectEqual(companion.Phase.live, driver.session.phase);
+    try std.testing.expect(!driver.session.state.pressed[0] and driver.session.state.pressed[3]);
+    try std.testing.expectEqual(@as(usize, 1), driver.key_event_count);
+    try std.testing.expectEqual(@as(u8, 3), driver.key_events[0].key_index);
 }
-test "fake ambiguous discovery and nonce exhaustion never reuse a token" {
+test "an unanswered connect is retried with bounded backoff" {
+    var driver = try Driver(Fake).init(.{}, fixture(), 1, null);
+    driver.poll(0);
+    try std.testing.expectEqual(@as(usize, 1), driver.transport.write_count);
+    driver.poll(499);
+    try std.testing.expectEqual(@as(usize, 1), driver.transport.write_count);
+    for ([_]u64{ 500, 1000, 2000, 3000 }, 2..) |time, writes| {
+        driver.poll(time);
+        try std.testing.expectEqual(writes, driver.transport.write_count);
+        try std.testing.expectEqual(@as(?protocol.Command, .connect), driver.transport.last());
+    }
+    driver.poll(3999);
+    try std.testing.expectEqual(@as(usize, 5), driver.transport.write_count);
+}
+test "fake ambiguous discovery and token exhaustion never reuse a token" {
     var driver = try Driver(Fake).init(.{ .discovery = .multiple_devices }, fixture(), 1, null);
     driver.poll(0);
     try std.testing.expectEqual(Status.multiple_devices, driver.status);
@@ -432,7 +410,6 @@ test "fake ambiguous discovery and nonce exhaustion never reuse a token" {
     try std.testing.expectEqual(@as(u32, 1), try nonces.next());
     try std.testing.expectError(error.NonceExhausted, nonces.next());
 }
-
 test "fake elapsed drain budget returns UI and capture replays final state" {
     var driver = try Driver(Fake).init(.{ .clock_step = 1 }, fixture(), 17, null);
     driver.transport.count = 64;
@@ -444,144 +421,48 @@ test "fake elapsed drain budget returns UI and capture replays final state" {
     var recorded = try Driver(Fake).init(.{}, fixture(), 18, null);
     recorded.recording = &recorder;
     try attach(&recorded, fixture(), true);
-    recorded.transport.broken = true;
-    recorded.poll(3);
+    const live = try capture.replay(recorder.encoded(), fixture());
+    try std.testing.expectEqual(companion.Phase.live, live.phase);
+    try std.testing.expectEqual(recorded.session.state.pressed, live.state.pressed);
+    try recorded.transport.queue(.{ .key = .{ .sequence = 9, .event = .{ .pressed = false, .key_index = 0, .layer = 0, .modifiers = .{} } } }, fixture().dimensions);
+    recorded.poll(2);
+    recorded.poll(600);
+    recorded.disconnect(601);
     const replayed = try capture.replay(recorder.encoded(), fixture());
     try std.testing.expectEqual(recorded.session.phase, replayed.phase);
-    try std.testing.expectEqual(recorded.session.stale, replayed.stale);
     try std.testing.expectEqual(recorded.session.state.pressed, replayed.state.pressed);
 }
-
-test "live bootloader requires capability and one explicit action without retry" {
+test "bootloader is one explicit command after a coherent session, then the transport closes" {
     var driver = try Driver(Fake).init(.{}, fixture(), 300, null);
     try std.testing.expectError(error.BootloaderUnavailable, driver.enterBootloader(0));
-    try attach(&driver, fixture(), false);
-    const query = try protocol.decodePacket(driver.transport.writes[driver.transport.write_count - 1][1..], fixture().dimensions, .host_to_device);
-    try std.testing.expect(query.payload == .capabilities_request);
-    try driver.transport.queue(.{ .session = driver.session.token, .request = query.request, .payload = .{ .capabilities = protocol.capability_bootloader } }, fixture().dimensions);
-    driver.poll(3);
-    const before = driver.transport.write_count;
+    driver.poll(0);
+    try std.testing.expectError(error.BootloaderUnavailable, driver.enterBootloader(0));
+    try driver.transport.queue(hello(fixture()), fixture().dimensions);
+    try driver.transport.queue(.{ .state = .{ .sequence = 0 } }, fixture().dimensions);
+    driver.poll(1);
     try std.testing.expect(driver.session.bootloaderAvailable());
+    const before = driver.transport.write_count;
     try driver.enterBootloader(4);
     try std.testing.expectEqual(before + 1, driver.transport.write_count);
-    const request = try protocol.decodePacket(driver.transport.writes[before][1..], fixture().dimensions, .host_to_device);
-    try std.testing.expect(request.payload == .enter_bootloader);
+    try std.testing.expectEqual(@as(?protocol.Command, .enter_bootloader), driver.transport.last());
+    try std.testing.expect(driver.transport.closed and !driver.connected);
+    try std.testing.expectEqual(companion.BootloaderStatus.sent, driver.session.bootloader_status);
     try std.testing.expectError(error.BootloaderUnavailable, driver.enterBootloader(5));
+    // While the keyboard sits in BOOTSEL there is no HID device to reconnect to.
+    driver.transport.discovery = .no_device;
     driver.poll(10000);
-    for (driver.transport.writes[before + 1 .. driver.transport.write_count]) |bytes| {
-        const packet = try protocol.decodePacket(bytes[1..], fixture().dimensions, .host_to_device);
-        try std.testing.expect(packet.payload != .enter_bootloader);
-    }
-    try std.testing.expectEqual(companion.BootloaderStatus.timed_out, driver.session.bootloader_status);
-}
-
-test "explicit bootloader binds running profile while ordinary overlay rejects mismatch" {
-    var running = fixture();
-    running.profile_id = "running\x00".*;
-    running.digest = @splat(9);
-    running.dimensions.layer_count = 3;
-    var attempt = try BootloaderAttempt(Fake).init(.{}, fixture(), 400, null);
-    try std.testing.expectEqual(@as(usize, 0), attempt.driver.transport.write_count);
-    attempt.start(0);
-    try attach(&attempt.driver, running, false);
-    try std.testing.expectEqual(companion.Phase.live, attempt.driver.session.phase);
-    try std.testing.expectEqual(running, attempt.driver.session.expected);
-    const query = attempt.driver.session.capability_request;
-    try attempt.driver.transport.queue(.{ .session = attempt.driver.session.token, .request = query, .payload = .{ .capabilities = protocol.capability_bootloader } }, running.dimensions);
-    attempt.poll(3);
-    try std.testing.expectEqual(BootloaderAttemptStatus.requested, attempt.status);
-    const request = attempt.driver.session.bootloader_request;
-    try attempt.driver.transport.queue(.{ .session = attempt.driver.session.token, .request = request, .payload = .{ .bootloader_result = .accepted } }, running.dimensions);
-    attempt.poll(4);
-    try std.testing.expectEqual(BootloaderAttemptStatus.accepted, attempt.status);
-    try std.testing.expect(attempt.driver.transport.closed);
-    const count = attempt.driver.transport.write_count;
-    attempt.poll(10000);
-    attempt.start(10000);
-    try std.testing.expectEqual(count, attempt.driver.transport.write_count);
+    try std.testing.expectEqual(companion.BootloaderStatus.sent, driver.session.bootloader_status);
     var boot_requests: usize = 0;
-    for (attempt.driver.transport.writes[0..count]) |bytes| {
-        const packet = try protocol.decodePacket(bytes[1..], running.dimensions, .host_to_device);
-        if (packet.payload == .enter_bootloader) boot_requests += 1;
+    for (0..driver.transport.write_count) |index| {
+        if (driver.transport.command(index) == .enter_bootloader) boot_requests += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), boot_requests);
-    var overlay = try Driver(Fake).init(.{}, fixture(), 500, null);
-    try attach(&overlay, running, false);
-    try std.testing.expectEqual(companion.Phase.incompatible, overlay.session.phase);
 }
-
-test "optional bootloader falls back for absent ambiguous unsupported and wrong-board devices" {
-    for ([_]Discovery{ .no_device, .multiple_devices, .path_not_found }) |discovery| {
-        var attempt = try BootloaderAttempt(Fake).init(.{ .discovery = discovery }, fixture(), 600, null);
-        attempt.poll(0); // Construction and idle polling cannot access hardware.
-        try std.testing.expectEqual(@as(usize, 0), attempt.driver.transport.discovery_count);
-        try std.testing.expectEqual(@as(usize, 0), attempt.driver.transport.write_count);
-        attempt.start(0);
-        attempt.poll(0);
-        try std.testing.expectEqual(BootloaderAttemptStatus.manual_recovery, attempt.status);
-        try std.testing.expect(!attempt.request_sent);
-    }
-    var wrong = fixture();
-    wrong.board_id = "other\x00\x00\x00".*;
-    var incompatible = try BootloaderAttempt(Fake).init(.{}, fixture(), 700, null);
-    incompatible.start(0);
-    try attach(&incompatible.driver, wrong, false);
-    incompatible.poll(3);
-    try std.testing.expectEqual(BootloaderAttemptStatus.manual_recovery, incompatible.status);
-    try std.testing.expect(!incompatible.request_sent);
-    for ([_]?u16{ null, 0 }) |capabilities| {
-        var old = try BootloaderAttempt(Fake).init(.{}, fixture(), 800, null);
-        old.start(0);
-        try attach(&old.driver, fixture(), false);
-        if (capabilities) |value| try old.driver.transport.queue(.{ .session = old.driver.session.token, .request = old.driver.session.capability_request, .payload = .{ .capabilities = value } }, fixture().dimensions);
-        old.poll(if (capabilities == null) 503 else 3);
-        try std.testing.expectEqual(BootloaderAttemptStatus.manual_recovery, old.status);
-        try std.testing.expect(!old.request_sent);
-    }
-}
-
-test "bootloader rejection stale acknowledgments and timeout never resend the command" {
-    for ([_]?protocol.BootloaderResult{ .unsupported, .busy, .duplicate, null }) |reply| {
-        var attempt = try BootloaderAttempt(Fake).init(.{}, fixture(), 900, null);
-        attempt.start(0);
-        try attach(&attempt.driver, fixture(), false);
-        try attempt.driver.transport.queue(.{ .session = attempt.driver.session.token, .request = attempt.driver.session.capability_request, .payload = .{ .capabilities = protocol.capability_bootloader } }, fixture().dimensions);
-        attempt.poll(3);
-        const count = attempt.driver.transport.write_count;
-        const request = attempt.driver.session.bootloader_request;
-        try attempt.driver.transport.queue(.{ .session = attempt.driver.session.token + 1, .request = request, .payload = .{ .bootloader_result = .accepted } }, fixture().dimensions);
-        try attempt.driver.transport.queue(.{ .session = attempt.driver.session.token, .request = request + 1, .payload = .{ .bootloader_result = .accepted } }, fixture().dimensions);
-        attempt.poll(4);
-        try std.testing.expectEqual(BootloaderAttemptStatus.requested, attempt.status);
-        if (reply) |value| try attempt.driver.transport.queue(.{ .session = attempt.driver.session.token, .request = request, .payload = .{ .bootloader_result = value } }, fixture().dimensions);
-        attempt.poll(if (reply == null) 503 else 5);
-        try std.testing.expectEqual(BootloaderAttemptStatus.manual_recovery, attempt.status);
-        attempt.poll(10000);
-        try std.testing.expectEqual(count, attempt.driver.transport.write_count);
-    }
-}
-
-test "routine snapshot refresh retains coherent held state without reconnecting" {
-    var driver = try Driver(Fake).init(.{}, fixture(), 900, null);
-    try attach(&driver, fixture(), true);
-    const token = driver.session.token;
-    for (0..4) |_| {
-        const now = driver.session.refresh_at;
-        driver.poll(now);
-        try std.testing.expectEqual(companion.Phase.synchronizing, driver.session.phase);
-        try std.testing.expect(driver.session.hasCoherentState());
-        try std.testing.expect(driver.session.state.pressed[0]);
-        try std.testing.expectEqual(token, driver.session.token);
-        try std.testing.expect(!driver.transport.closed);
-        const snapshot = protocol.Snapshot{ .pressed = .{1} ++ @as([15]u8, @splat(0)), .active_layers = 3, .highest_layer = 1, .modifiers = .{} };
-        for (try protocol.snapshotPackets(snapshot, fixture().dimensions, token, driver.session.request, driver.session.state.last_sequence.?)) |packet| try driver.transport.queue(packet, fixture().dimensions);
-        driver.poll(now + 1);
-        try std.testing.expect(driver.session.hasCoherentState() and driver.session.state.pressed[0]);
-        try std.testing.expectEqual(@as(u8, 1), driver.session.state.highest_layer);
-    }
-    driver.poll(driver.session.refresh_at);
-    driver.poll(driver.session.deadline);
-    try std.testing.expect(!driver.session.hasCoherentState());
-    driver.disconnect(driver.session.deadline + 1);
-    try std.testing.expect(!driver.session.hasCoherentState());
+test "a failed bootloader write reports a transport failure" {
+    var driver = try Driver(Fake).init(.{}, fixture(), 400, null);
+    try attach(&driver, fixture(), false);
+    driver.transport.broken = true;
+    try std.testing.expectError(error.BootloaderTransportFailed, driver.enterBootloader(2));
+    try std.testing.expectEqual(Status.transport_error, driver.status);
+    try std.testing.expectEqual(companion.BootloaderStatus.idle, driver.session.bootloader_status);
 }

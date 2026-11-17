@@ -2,7 +2,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const profile = @import("generated-profile");
-const protocol = @import("zigmkay").device_protocol;
+const protocol = @import("device-protocol");
 
 fn word(bytes: []const u8, offset: usize) u32 {
     return std.mem.readInt(u32, bytes[offset..][0..4], .little);
@@ -30,6 +30,8 @@ pub fn main(init: std.process.Init) !void {
     for (args[3]) |byte| if (!std.ascii.isHex(byte)) return error.InvalidRevision;
     const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[1], allocator, .limited(4 * 1024 * 1024));
     try validate(bytes);
+    const identity = profile.identity(protocol);
+    if (!std.mem.eql(u8, &protocol.keymapId(identity), &profile.custom_functions.companion_keymap_id)) return error.KeymapIdMismatch;
     var sha256: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &sha256, .{});
     const manifest = .{
@@ -37,7 +39,9 @@ pub fn main(init: std.process.Init) !void {
         .acceptance = .offline_candidate,
         .firmware_revision = args[3],
         .compiler = builtin.zig_version_string,
-        .identity = profile.identity(protocol),
+        .identity = identity,
+        // What the flashed keyboard reports in its companion hello.
+        .keymap_id = profile.custom_functions.companion_keymap_id,
         .uf2_bytes = bytes.len,
         .uf2_sha256 = sha256,
         .uf2_family = @as(u32, 0xe48bff56),

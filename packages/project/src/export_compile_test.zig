@@ -31,4 +31,5 @@ test "generated Zig compiles and specializes the real firmware processor" {
     const keys = [_]?core.KeyDef{ profile.keymap[0][0], profile.keymap[0][1], profile.keymap[1][0], profile.keymap[1][1] };
     const actual = try protocol.computeIdentity(.{ .board_id = profile.identity(protocol).board_id, .profile_id = profile.identity(protocol).profile_id, .dimensions = profile.dimensions, .keys = &keys, .sides = &profile.sides, .combos = &profile.combos, .encoders = &profile.encoder_actions, .callbacks = &.{} });
     try std.testing.expectEqual(profile.identity(protocol).digest, actual.digest);
+    try std.testing.expectEqual(protocol.keymapId(actual), profile.custom_functions.companion_keymap_id);
 }
