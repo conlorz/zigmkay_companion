@@ -40,7 +40,7 @@ pub fn build(b: *std.Build) void {
     b.default_step = check;
     const tests = b.step("test", "Run offline downstream processor contract tests");
     const app_paths_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/platform/src/app_paths.zig"),
+        .root_source_file = b.path("src/platform/app_paths.zig"),
         .target = app_target,
         .optimize = optimize,
     }) });
@@ -49,16 +49,16 @@ pub fn build(b: *std.Build) void {
     tests.dependOn(app_paths_step);
     check.dependOn(&app_paths_tests.step);
     const desktop_dependencies = b.step("check-desktop-dependencies", "Compile the pinned desktop GUI/tray graph without launching it");
-    var desktop_graph: ?@import("packages/platform/desktop_build.zig").Graph = null;
+    var desktop_graph: ?@import("build/desktop.zig").Graph = null;
     var desktop_app: ?*std.Build.Step.Compile = null;
     const macos_sdk = b.option([]const u8, "macos-sdk", "Explicit macOS SDK path for release compilation");
     defer if (macos_sdk) |sdk| {
-        if (desktop_app) |app| @import("packages/platform/desktop_build.zig").sdkPaths(b, app.root_module, sdk);
+        if (desktop_app) |app| @import("build/desktop.zig").sdkPaths(b, app.root_module, sdk);
     };
-    const owned_zon = b.addModule("owned-zon", .{ .root_source_file = b.path("packages/project/src/owned_zon.zig") });
-    const uf2_module = b.addModule("firmware-uf2", .{ .root_source_file = b.path("packages/artifact/src/uf2.zig") });
+    const owned_zon = b.addModule("owned-zon", .{ .root_source_file = b.path("src/project/owned_zon.zig") });
+    const uf2_module = b.addModule("firmware-uf2", .{ .root_source_file = b.path("src/artifact/uf2.zig") });
     const jobs_imports: []const std.Build.Module.Import = &.{ .{ .name = "owned-zon", .module = owned_zon }, .{ .name = "firmware-uf2", .module = uf2_module } };
-    const jobs = b.addModule("companion-jobs", .{ .root_source_file = b.path("packages/jobs/src/root.zig"), .imports = jobs_imports });
+    const jobs = b.addModule("companion-jobs", .{ .root_source_file = b.path("src/jobs/root.zig"), .imports = jobs_imports });
     const release_options = b.addOptions();
     release_options.addOption([]const u8, "application_version", @import("build.zig.zon").version);
     const appimage_pins = @import("packaging/appimage-pins.zon");
@@ -70,8 +70,8 @@ pub fn build(b: *std.Build) void {
     const test_release = b.step("test-release", "Test preview tag, dependency and asset validation offline");
     test_release.dependOn(&b.addRunArtifact(release_tests).step);
     tests.dependOn(test_release);
-    const bootsel_policy = b.createModule(.{ .root_source_file = b.path("packages/jobs/src/bootsel_transfer.zig"), .imports = &.{.{ .name = "firmware-uf2", .module = uf2_module }} });
-    const bootsel_native = b.createModule(.{ .root_source_file = b.path("packages/jobs/src/bootsel_windows.zig"), .imports = &.{.{ .name = "bootsel-policy", .module = bootsel_policy }} });
+    const bootsel_policy = b.createModule(.{ .root_source_file = b.path("src/jobs/bootsel_transfer.zig"), .imports = &.{.{ .name = "firmware-uf2", .module = uf2_module }} });
+    const bootsel_native = b.createModule(.{ .root_source_file = b.path("src/jobs/bootsel_windows.zig"), .imports = &.{.{ .name = "bootsel-policy", .module = bootsel_policy }} });
     const bootsel_helper = b.addExecutable(.{ .name = "bootsel-transfer", .root_module = b.createModule(.{
         .root_source_file = b.path("tools/bootsel_transfer.zig"),
         .target = app_target,
@@ -92,10 +92,10 @@ pub fn build(b: *std.Build) void {
     const diagnostic_step = b.step("build-finalization-diagnostic", "Build the symbolized offline artifact publication reproduction");
     diagnostic_step.dependOn(&b.addInstallArtifact(finalization_diagnostic, .{}).step);
     if (b.option(bool, "finalization-diagnostic-only", "Configure only the offline artifact publication diagnostic") orelse false) return;
-    const flash_controller = b.addModule("flash-controller", .{ .root_source_file = b.path("packages/desktop/src/flash_controller.zig"), .imports = &.{.{ .name = "companion-jobs", .module = jobs }} });
-    const tray_lifecycle = b.addModule("tray-lifecycle", .{ .root_source_file = b.path("packages/desktop/src/tray_lifecycle.zig"), .target = app_target, .optimize = optimize });
-    const flash_presenter = b.addModule("flash-presenter", .{ .root_source_file = b.path("packages/desktop/src/flash_presenter.zig"), .target = app_target, .optimize = optimize, .imports = &.{.{ .name = "flash-controller", .module = flash_controller }} });
-    const desktop_geometry = b.addModule("desktop-geometry", .{ .root_source_file = b.path("packages/desktop/src/geometry.zig") });
+    const flash_controller = b.addModule("flash-controller", .{ .root_source_file = b.path("src/desktop/flash_controller.zig"), .imports = &.{.{ .name = "companion-jobs", .module = jobs }} });
+    const tray_lifecycle = b.addModule("tray-lifecycle", .{ .root_source_file = b.path("src/desktop/tray_lifecycle.zig"), .target = app_target, .optimize = optimize });
+    const flash_presenter = b.addModule("flash-presenter", .{ .root_source_file = b.path("src/desktop/flash_presenter.zig"), .target = app_target, .optimize = optimize, .imports = &.{.{ .name = "flash-controller", .module = flash_controller }} });
+    const desktop_geometry = b.addModule("desktop-geometry", .{ .root_source_file = b.path("src/desktop/geometry.zig") });
     const desktop_tests_step = b.step("test-desktop-core", "Validate practice and explicit flash intents without GUI or devices");
     const zqlite = b.dependency("zqlite", .{
         .target = app_target,
@@ -109,7 +109,7 @@ pub fn build(b: *std.Build) void {
     const practice_data_tests = b.step("test-practice-data", "Validate timing, database portability and legacy migration without firmware or devices");
     for ([_][]const u8{ "practice_generator.zig", "practice_results.zig", "practice_history.zig", "practice_history_runtime.zig", "practice_timing.zig", "practice_database.zig", "practice_progress.zig", "practice_analysis.zig", "practice_curriculum.zig", "practice_help.zig", "practice_retention.zig" }) |name| {
         const practice_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path(b.fmt("packages/desktop/src/{s}", .{name})),
+            .root_source_file = b.path(b.fmt("src/desktop/{s}", .{name})),
             .target = app_target,
             .optimize = optimize,
         }) });
@@ -126,7 +126,7 @@ pub fn build(b: *std.Build) void {
 
     for ([_][]const u8{ "practice.zig", "practice_view.zig", "practice_controller.zig", "try_state.zig", "flash_controller.zig", "auto_build.zig", "geometry.zig", "encoder_state.zig" }) |file| {
         const desktop_test = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path(b.fmt("packages/desktop/src/{s}", .{file})),
+            .root_source_file = b.path(b.fmt("src/desktop/{s}", .{file})),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
@@ -143,15 +143,15 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&tray_lifecycle_tests.step);
     if (b.option(bool, "desktop-dependencies", "Compile native desktop dependencies") orelse false) {
         const vectors = b.option(bool, "desktop-vectors", "Enable TinyVG rendering and icons") orelse false;
-        desktop_graph = @import("packages/platform/desktop_build.zig").check(b, desktop_dependencies, flash_presenter, tray_lifecycle, vectors, app_target, optimize);
+        desktop_graph = @import("build/desktop.zig").check(b, desktop_dependencies, flash_presenter, tray_lifecycle, vectors, app_target, optimize);
     } else desktop_dependencies.dependOn(&b.addFail("Pass desktop-dependencies=true to compile the native GUI").step);
     const job_fixture = b.addExecutable(.{ .name = "job-fixture", .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/jobs/src/fixture.zig"),
+        .root_source_file = b.path("src/jobs/fixture.zig"),
         .target = app_target,
         .optimize = optimize,
     }) });
     const job_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/jobs/src/test_process.zig"),
+        .root_source_file = b.path("src/jobs/test_process.zig"),
         .target = app_target,
         .optimize = optimize,
         .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
@@ -170,7 +170,7 @@ pub fn build(b: *std.Build) void {
     const jobs_step = b.step("test-jobs", "Run bounded subprocess, runner session and traversal regressions offline");
     const package_manifest_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/jobs/src/package_manifest.zig"),
+            .root_source_file = b.path("src/jobs/package_manifest.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "owned-zon", .module = owned_zon }, .{ .name = "firmware-uf2", .module = uf2_module } },
@@ -180,7 +180,7 @@ pub fn build(b: *std.Build) void {
     jobs_step.dependOn(&b.addRunArtifact(package_manifest_tests).step);
     jobs_step.dependOn(&b.addRunArtifact(job_tests).step);
     const traversal_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/jobs/src/source_files.zig"),
+        .root_source_file = b.path("src/jobs/source_files.zig"),
         .target = app_target,
         .optimize = optimize,
     }) });
@@ -190,7 +190,7 @@ pub fn build(b: *std.Build) void {
     tests.dependOn(jobs_step);
     for ([_][]const u8{ "target_lock.zig", "firmware.zig", "source_digest.zig", "sidecar.zig", "flash_inputs.zig", "application_bundle.zig", "bundle_payload.zig", "runner_artifact.zig", "bootsel_transfer.zig" }) |file| {
         const artifact = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path(b.fmt("packages/jobs/src/{s}", .{file})),
+            .root_source_file = b.path(b.fmt("src/jobs/{s}", .{file})),
             .target = app_target,
             .optimize = optimize,
             .imports = jobs_imports,
@@ -199,12 +199,12 @@ pub fn build(b: *std.Build) void {
         jobs_step.dependOn(&b.addRunArtifact(artifact).step);
     }
     const picotool_fixture = b.addExecutable(.{ .name = "picotool-job-fixture", .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/jobs/src/picotool_fixture.zig"),
+        .root_source_file = b.path("src/jobs/picotool_fixture.zig"),
         .target = app_target,
         .optimize = optimize,
     }) });
     const picotool_job_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/jobs/src/test_picotool_job.zig"),
+        .root_source_file = b.path("src/jobs/test_picotool_job.zig"),
         .target = app_target,
         .optimize = optimize,
         .imports = jobs_imports,
@@ -218,7 +218,7 @@ pub fn build(b: *std.Build) void {
     test_picotool.dependOn(&b.addRunArtifact(picotool_job_tests).step);
     jobs_step.dependOn(test_picotool);
     const uf2_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/artifact/src/uf2.zig"),
+        .root_source_file = b.path("src/artifact/uf2.zig"),
         .target = app_target,
         .optimize = optimize,
     }) });
@@ -228,19 +228,19 @@ pub fn build(b: *std.Build) void {
     // the BOOTSEL helper instead of picotool.
     if (app_target.result.os.tag != .windows) {
         const wrapper_fixture = b.addExecutable(.{ .name = "picotool-flash-offline", .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/jobs/src/picotool_flash.zig"),
+            .root_source_file = b.path("src/jobs/picotool_flash.zig"),
             .target = app_target,
             .optimize = optimize,
         }) });
         const tool_fixture = b.addExecutable(.{ .name = "fake-picotool", .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/jobs/src/fake_picotool.zig"),
+            .root_source_file = b.path("src/jobs/fake_picotool.zig"),
             .target = app_target,
             .optimize = optimize,
         }) });
         picotool_job_options.addOptionPath("wrapper", wrapper_fixture.getEmittedBin());
         picotool_job_options.addOptionPath("picotool_fixture", tool_fixture.getEmittedBin());
         const wrapper_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/jobs/src/test_picotool_flash.zig"),
+            .root_source_file = b.path("src/jobs/test_picotool_flash.zig"),
             .target = app_target,
             .optimize = optimize,
         }) });
@@ -249,19 +249,19 @@ pub fn build(b: *std.Build) void {
         test_picotool.dependOn(&b.addRunArtifact(wrapper_tests).step);
     }
     const firmware = b.lazyDependency("zigmkay_firmware", .{}) orelse return;
-    const fw_build = @import("packages/firmware-adapter/build.zig");
+    const fw_build = @import("src/firmware/build.zig");
     const fw_sources: fw_build.Sources = .{
         .keyboards = firmware.path("keyboards"),
         .processor = firmware.path("zigmkay/src/root.zig"),
         .keycodes = firmware.path("zkeycodes/root.zig"),
     };
     const keycode_module = b.createModule(.{ .root_source_file = firmware.path("zkeycodes/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = firmware.module("zigmkay") }} });
-    @import("packages/keymap/build.zig").tests(b, firmware.module("zigmkay"), keycode_module, tests, check);
+    @import("src/keymap/build.zig").tests(b, firmware.module("zigmkay"), keycode_module, tests, check);
     const model = b.addModule("layout-model", .{
-        .root_source_file = b.path("packages/layout-model/src/root.zig"),
+        .root_source_file = b.path("src/layout/root.zig"),
         .imports = &.{.{ .name = "zigmkay", .module = firmware.module("zigmkay") }},
     });
-    @import("packages/importer/build.zig").add(b, firmware.module("zigmkay"), keycode_module, model);
+    @import("src/importer/build.zig").add(b, firmware.module("zigmkay"), keycode_module, model);
     const processor_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("tests/processor_contract.zig"),
         .target = app_target,
@@ -271,7 +271,7 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&processor_tests.step);
     tests.dependOn(&b.addRunArtifact(processor_tests).step);
     const model_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/layout-model/src/root.zig"),
+        .root_source_file = b.path("src/layout/root.zig"),
         .target = app_target,
         .optimize = optimize,
         .imports = &.{.{ .name = "zigmkay", .module = firmware.module("zigmkay") }},
@@ -279,10 +279,10 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&model_tests.step);
     tests.dependOn(&b.addRunArtifact(model_tests).step);
     const catalog_tests = b.step("test-catalog", "Validate every selected firmware default and schematic geometry offline");
-    const physical = b.createModule(.{ .root_source_file = b.path("packages/catalog/src/lk7_physical_layout.zig"), .imports = &.{.{ .name = "layout-model", .module = model }} });
+    const physical = b.createModule(.{ .root_source_file = b.path("src/catalog/lk7_physical_layout.zig"), .imports = &.{.{ .name = "layout-model", .module = model }} });
     const defaults = fw_build.defaultKeymaps(b, fw_sources, firmware.module("zigmkay"), keycode_module);
     {
-        const catalog = b.addModule("catalog", .{ .root_source_file = b.path("packages/catalog/src/root.zig"), .target = app_target, .optimize = optimize, .imports = &.{ .{ .name = "firmware-defaults", .module = defaults }, .{ .name = "layout-model", .module = model }, .{ .name = "lk7-physical", .module = physical } } });
+        const catalog = b.addModule("catalog", .{ .root_source_file = b.path("src/catalog/root.zig"), .target = app_target, .optimize = optimize, .imports = &.{ .{ .name = "firmware-defaults", .module = defaults }, .{ .name = "layout-model", .module = model }, .{ .name = "lk7-physical", .module = physical } } });
         for (fw_build.boards.entries, 0..) |board, index|
             catalog.addAnonymousImport(b.fmt("default-source-{d}", .{index}), .{ .root_source_file = firmware.path(b.fmt("keyboards/{s}", .{board.default_keymap})) });
         catalog.addAnonymousImport("janbeelte-shared-source", .{ .root_source_file = firmware.path("keyboards/my_keyboards/janbeelte/keymap_shared.zig") });
@@ -296,18 +296,18 @@ pub fn build(b: *std.Build) void {
     const project_build = b.step("build-project", "Build an explicit verified export into UF2 and native runner without device access");
     const hardware_client = b.step("prepare-hardware-client", "Compile/install explicit native HID acceptance client without device access");
     var project_module: ?*std.Build.Module = null;
-    var import_fixtures: []const @import("packages/importer/fixtures.zig").Fixture = &.{};
+    var import_fixtures: []const @import("src/importer/fixtures.zig").Fixture = &.{};
     {
         const protocol = b.addModule("device-protocol", .{
-            .root_source_file = b.path("packages/firmware-adapter/src/protocol.zig"),
+            .root_source_file = b.path("src/firmware/protocol.zig"),
             .imports = &.{.{ .name = "zigmkay", .module = firmware.module("zigmkay") }},
         });
         const keycodes = keycode_module;
-        const input_source = @import("packages/input-source/build.zig").publish(b, b.path("packages/input-source"), keycodes, app_target);
+        const input_source = @import("src/input/build.zig").publish(b, b.path("src/input"), keycodes, app_target);
         tests.dependOn(input_source.tests);
         desktop_dependencies.dependOn(input_source.native_check);
         const text_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/text.zig"),
+            .root_source_file = b.path("src/desktop/text.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "layout-model", .module = model }, .{ .name = "input-source", .module = input_source.source } },
@@ -315,14 +315,14 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(text_tests).step);
         check.dependOn(&text_tests.step);
         const default_profile = b.createModule(.{
-            .root_source_file = b.path("packages/firmware-adapter/src/curated_profile.zig"),
+            .root_source_file = b.path("src/firmware/curated_profile.zig"),
             .imports = &.{.{ .name = "firmware-defaults", .module = defaults }},
         });
         const project_imports: []const std.Build.Module.Import = &.{ .{ .name = "layout-model", .module = model }, .{ .name = "device-protocol", .module = protocol }, .{ .name = "rollercole-profile", .module = default_profile }, .{ .name = "lk7-physical", .module = physical }, .{ .name = "owned-zon", .module = owned_zon } };
-        const project = b.addModule("project", .{ .root_source_file = b.path("packages/project/src/root.zig"), .imports = project_imports });
+        const project = b.addModule("project", .{ .root_source_file = b.path("src/project/root.zig"), .imports = project_imports });
         project_module = project;
         const startup_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/startup_project.zig"),
+            .root_source_file = b.path("src/desktop/startup_project.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "project", .module = project }},
@@ -330,7 +330,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(startup_tests).step);
         check.dependOn(&startup_tests.step);
         const host_input_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/host_input.zig"),
+            .root_source_file = b.path("src/desktop/host_input.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "project", .module = project }},
@@ -338,7 +338,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(host_input_tests).step);
         check.dependOn(&host_input_tests.step);
         const draft_input_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/draft_input.zig"),
+            .root_source_file = b.path("src/desktop/draft_input.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "project", .module = project }},
@@ -346,7 +346,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(draft_input_tests).step);
         check.dependOn(&draft_input_tests.step);
         const action_form_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/action_form.zig"),
+            .root_source_file = b.path("src/desktop/action_form.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "project", .module = project }},
@@ -354,7 +354,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(action_form_tests).step);
         check.dependOn(&action_form_tests.step);
         const profile_preferences_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/profile_projects.zig"),
+            .root_source_file = b.path("src/desktop/profile_projects.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "project", .module = project }},
@@ -362,7 +362,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(profile_preferences_tests).step);
         check.dependOn(&profile_preferences_tests.step);
         const label_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/labels.zig"),
+            .root_source_file = b.path("src/desktop/labels.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model }, .{ .name = "zkeymap", .module = input_source.module }, .{ .name = "zkeycodes", .module = keycodes } },
@@ -370,7 +370,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(label_tests).step);
         check.dependOn(&label_tests.step);
         const label_cache_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/label_cache.zig"),
+            .root_source_file = b.path("src/desktop/label_cache.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model }, .{ .name = "zkeymap", .module = input_source.module }, .{ .name = "zkeycodes", .module = keycodes } },
@@ -378,7 +378,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(label_cache_tests).step);
         check.dependOn(&label_cache_tests.step);
         const physical_view_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/physical_view.zig"),
+            .root_source_file = b.path("src/desktop/physical_view.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model }, .{ .name = "zkeymap", .module = input_source.module }, .{ .name = "zkeycodes", .module = keycodes } },
@@ -386,7 +386,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(physical_view_tests).step);
         check.dependOn(&physical_view_tests.step);
         const flash_runtime_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/flash_runtime.zig"),
+            .root_source_file = b.path("src/desktop/flash_runtime.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "companion-jobs", .module = jobs }, .{ .name = "flash-controller", .module = flash_controller } },
@@ -394,7 +394,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(flash_runtime_tests).step);
         check.dependOn(&flash_runtime_tests.step);
         const desktop_core = b.addModule("desktop-core", .{
-            .root_source_file = b.path("packages/desktop/src/root.zig"),
+            .root_source_file = b.path("src/desktop/root.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model }, .{ .name = "zkeymap", .module = input_source.module }, .{ .name = "zkeycodes", .module = keycodes }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "companion-jobs", .module = jobs } },
@@ -406,7 +406,7 @@ pub fn build(b: *std.Build) void {
         desktop_core.addImport("tray-lifecycle", tray_lifecycle);
         desktop_core.addImport("device-protocol", protocol);
         const event_history_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/event_history.zig"),
+            .root_source_file = b.path("src/desktop/event_history.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "device-protocol", .module = protocol }},
@@ -415,7 +415,7 @@ pub fn build(b: *std.Build) void {
         check.dependOn(&event_history_tests.step);
         if (desktop_graph) |graph| {
             const physical_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/components/layout.zig"),
+                .root_source_file = b.path("src/desktop/components/layout.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "layout-model", .module = model }, .{ .name = "zkeymap", .module = input_source.module } },
@@ -432,90 +432,90 @@ pub fn build(b: *std.Build) void {
             physical_probe.root_module.addImport("zkeymap", input_source.module);
             physical_probe.root_module.addImport("input-source", input_source.source);
             const practice_ui = b.addModule("practice-ui", .{
-                .root_source_file = b.path("packages/desktop/src/practice_ui.zig"),
+                .root_source_file = b.path("src/desktop/practice_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "physical-ui", .module = physical_ui }, .{ .name = "layout-model", .module = model } },
             });
             physical_probe.root_module.addImport("practice-ui", practice_ui);
             const action_form_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/action_form_ui.zig"),
+                .root_source_file = b.path("src/desktop/action_form_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model } },
             });
             physical_probe.root_module.addImport("action-form-ui", action_form_ui);
             const action_drawer_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/action_drawer_ui.zig"),
+                .root_source_file = b.path("src/desktop/action_drawer_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "action-form-ui", .module = action_form_ui } },
             });
             physical_probe.root_module.addImport("action-drawer-ui", action_drawer_ui);
             const inspector_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/inspector_ui.zig"),
+                .root_source_file = b.path("src/desktop/inspector_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "project", .module = project } },
             });
             physical_probe.root_module.addImport("inspector-ui", inspector_ui);
             const combo_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/combo_ui.zig"),
+                .root_source_file = b.path("src/desktop/combo_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "action-form-ui", .module = action_form_ui } },
             });
             physical_probe.root_module.addImport("combo-ui", combo_ui);
             const encoder_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/encoder_ui.zig"),
+                .root_source_file = b.path("src/desktop/encoder_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "action-form-ui", .module = action_form_ui } },
             });
             const callback_ui = b.addModule("callback-ui", .{
-                .root_source_file = b.path("packages/desktop/src/callback_ui.zig"),
+                .root_source_file = b.path("src/desktop/callback_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui } },
             });
             physical_probe.root_module.addImport("callback-ui", callback_ui);
             const layer_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/layer_ui.zig"),
+                .root_source_file = b.path("src/desktop/layer_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "project", .module = project } },
             });
             physical_probe.root_module.addImport("layer-ui", layer_ui);
             const host_palette_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/host_palette_ui.zig"),
+                .root_source_file = b.path("src/desktop/host_palette_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "editor-fonts", .module = graph.fonts } },
             });
             physical_probe.root_module.addImport("host-palette-ui", host_palette_ui);
             const keyboard_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/keyboard_ui.zig"),
+                .root_source_file = b.path("src/desktop/keyboard_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "layout-model", .module = model } },
             });
             physical_probe.root_module.addImport("keyboard-ui", keyboard_ui);
             const toolbar_ui = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/toolbar_ui.zig"),
+                .root_source_file = b.path("src/desktop/toolbar_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui } },
             });
             physical_probe.root_module.addImport("toolbar-ui", toolbar_ui);
             const paths_ui = b.addModule("paths-ui", .{
-                .root_source_file = b.path("packages/desktop/src/paths_ui.zig"),
+                .root_source_file = b.path("src/desktop/paths_ui.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui } },
             });
             physical_probe.root_module.addImport("paths-ui", paths_ui);
             const editor_frame = b.addModule("editor-frame-ui", .{
-                .root_source_file = b.path("packages/desktop/src/editor_frame.zig"),
+                .root_source_file = b.path("src/desktop/editor_frame.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "paths-ui", .module = paths_ui }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "toolbar-ui", .module = toolbar_ui }, .{ .name = "layer-ui", .module = layer_ui }, .{ .name = "keyboard-ui", .module = keyboard_ui }, .{ .name = "host-palette-ui", .module = host_palette_ui }, .{ .name = "inspector-ui", .module = inspector_ui }, .{ .name = "combo-ui", .module = combo_ui }, .{ .name = "callback-ui", .module = callback_ui } },
@@ -535,7 +535,7 @@ pub fn build(b: *std.Build) void {
                 b.step("test-editor-frame", "Run explicit offline SDL dummy/software editor interaction fixtures").dependOn(&run_frames.step);
             }
             const draft_input_native = b.addModule("native-draft-input", .{
-                .root_source_file = b.path("packages/desktop/src/draft_input_native.zig"),
+                .root_source_file = b.path("src/desktop/draft_input_native.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "dvui_backend", .module = graph.backend } },
@@ -549,7 +549,7 @@ pub fn build(b: *std.Build) void {
             if (graph.icons) |icons| {
                 physical_probe.root_module.addImport("desktop-icons", icons);
                 const resources = b.createModule(.{
-                    .root_source_file = b.path("packages/desktop/src/icon_resources.zig"),
+                    .root_source_file = b.path("src/desktop/icon_resources.zig"),
                     .target = app_target,
                     .optimize = optimize,
                     .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "icons", .module = icons }, .{ .name = "svg2tvg", .module = graph.vectors.? } },
@@ -560,7 +560,7 @@ pub fn build(b: *std.Build) void {
             }
             desktop_dependencies.dependOn(&physical_probe.step);
             const key_renderer_tests = b.addTest(.{ .root_module = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/components/key.zig"),
+                .root_source_file = b.path("src/desktop/components/key.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "layout-model", .module = model }, .{ .name = "zkeymap", .module = input_source.module } },
@@ -578,7 +578,7 @@ pub fn build(b: *std.Build) void {
         desktop_integration_tests.root_module.addOptions("options", picotool_job_options);
         check.dependOn(&desktop_integration_tests.step);
         const editor_model_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/model.zig"),
+            .root_source_file = b.path("src/desktop/model.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "project", .module = project }},
@@ -586,7 +586,7 @@ pub fn build(b: *std.Build) void {
         desktop_tests_step.dependOn(&b.addRunArtifact(editor_model_tests).step);
         check.dependOn(&editor_model_tests.step);
         const inspector_session_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/desktop/src/inspector_session.zig"),
+            .root_source_file = b.path("src/desktop/inspector_session.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model } },
@@ -603,13 +603,13 @@ pub fn build(b: *std.Build) void {
             desktop_tests_step.dependOn(&b.addRunArtifact(catalog_view_tests).step);
             check.dependOn(&catalog_view_tests.step);
             const catalog_project = b.addModule("catalog-project", .{
-                .root_source_file = b.path("packages/firmware-adapter/src/catalog_project.zig"),
+                .root_source_file = b.path("src/firmware/catalog_project.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "catalog", .module = catalog }, .{ .name = "project", .module = project }, .{ .name = "layout-model", .module = model } },
             });
             const adapter_tests = b.addTest(.{ .root_module = catalog_project });
-            const importer = b.addModule("keymap-importer", .{ .root_source_file = b.path("packages/importer/src/root.zig"), .target = app_target, .optimize = optimize, .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "catalog", .module = catalog }, .{ .name = "layout-model", .module = model }, .{ .name = "companion-jobs", .module = jobs } } });
+            const importer = b.addModule("keymap-importer", .{ .root_source_file = b.path("src/importer/root.zig"), .target = app_target, .optimize = optimize, .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "catalog", .module = catalog }, .{ .name = "layout-model", .module = model }, .{ .name = "companion-jobs", .module = jobs } } });
             desktop_core.addImport("keymap-importer", importer);
             const onboarding_tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/onboarding.zig"), .target = app_target, .optimize = optimize, .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project } } }) });
             const onboarding_step = b.step("test-onboarding", "Validate all-board project creation, portable collections and cancellation offline");
@@ -640,7 +640,7 @@ pub fn build(b: *std.Build) void {
             const install_check = b.addInstallArtifact(bundle_check, .{});
             b.step("build-bundle-check", "Build the offline application acceptance utility").dependOn(&install_check.step);
             const flash_session_tests = b.addTest(.{ .root_module = b.createModule(.{
-                .root_source_file = b.path("apps/desktop/flash_session.zig"),
+                .root_source_file = b.path("src/app/flash_session.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "project", .module = project } },
@@ -648,13 +648,13 @@ pub fn build(b: *std.Build) void {
             const flash_session_step = b.step("test-desktop-flash-session", "Test offline editor flash admission and confirmation gates");
             flash_session_step.dependOn(&b.addRunArtifact(flash_session_tests).step);
             const bootloader_gate_tests = b.addTest(.{ .root_module = b.createModule(.{
-                .root_source_file = b.path("apps/desktop/flash_bootloader.zig"),
+                .root_source_file = b.path("src/app/flash_bootloader.zig"),
                 .target = app_target,
                 .optimize = optimize,
             }) });
             flash_session_step.dependOn(&b.addRunArtifact(bootloader_gate_tests).step);
             const flash_dispatch_tests = b.addTest(.{ .root_module = b.createModule(.{
-                .root_source_file = b.path("apps/desktop/flash_fixture.zig"),
+                .root_source_file = b.path("src/app/flash_fixture.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project } },
@@ -665,12 +665,12 @@ pub fn build(b: *std.Build) void {
             check.dependOn(&bootloader_gate_tests.step);
             check.dependOn(&flash_dispatch_tests.step);
             if (desktop_graph) |graph| {
-                const onboarding_ui = b.createModule(.{ .root_source_file = b.path("packages/desktop/src/onboarding_ui.zig"), .target = app_target, .optimize = optimize, .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui } } });
+                const onboarding_ui = b.createModule(.{ .root_source_file = b.path("src/desktop/onboarding_ui.zig"), .target = app_target, .optimize = optimize, .imports = &.{ .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "editor-ui", .module = graph.ui } } });
                 const onboarding_state_tests = b.addTest(.{ .root_module = onboarding_ui });
                 b.step("test-onboarding-state", "Reject stale wizard settings and project ownership without filesystem publication").dependOn(&b.addRunArtifact(onboarding_state_tests).step);
-                const installed_paths = b.createModule(.{ .root_source_file = b.path("packages/platform/src/app_paths.zig"), .target = app_target, .optimize = optimize });
+                const installed_paths = b.createModule(.{ .root_source_file = b.path("src/platform/app_paths.zig"), .target = app_target, .optimize = optimize });
                 const app = b.addExecutable(.{ .name = "zigmkay-companion", .root_module = b.createModule(.{
-                    .root_source_file = b.path("apps/desktop/main.zig"),
+                    .root_source_file = b.path("src/app/main.zig"),
                     .target = app_target,
                     .optimize = optimize,
                     .imports = &.{ .{ .name = "callback-ui", .module = b.modules.get("callback-ui").? }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "project", .module = project }, .{ .name = "catalog-project", .module = catalog_project }, .{ .name = "dvui", .module = graph.dvui }, .{ .name = "dvui_backend", .module = graph.backend }, .{ .name = "native-events", .module = graph.events }, .{ .name = "folder-dialog", .module = graph.folder_dialog }, .{ .name = "editor-fonts", .module = graph.fonts }, .{ .name = "editor-frame-ui", .module = b.modules.get("editor-frame-ui").? }, .{ .name = "paths-ui", .module = b.modules.get("paths-ui").? }, .{ .name = "input-source", .module = input_source.source }, .{ .name = "zkeymap", .module = input_source.module } },
@@ -698,7 +698,7 @@ pub fn build(b: *std.Build) void {
                         .optimize = optimize,
                         .imports = &.{.{ .name = "companion-jobs", .module = jobs }},
                     }) });
-                    assembler.root_module.addImport("application-icon", b.createModule(.{ .root_source_file = b.path("packages/desktop/src/tray_icon.zig") }));
+                    assembler.root_module.addImport("application-icon", b.createModule(.{ .root_source_file = b.path("src/desktop/tray_icon.zig") }));
                     const app_run = b.addExecutable(.{ .name = "AppRun", .root_module = b.createModule(.{ .root_source_file = b.path("tools/app_run.zig"), .target = app_target, .optimize = optimize }) });
                     const manifest = @import("build.zig.zon");
                     var manifest_text: std.Io.Writer.Allocating = .init(b.allocator);
@@ -708,10 +708,10 @@ pub fn build(b: *std.Build) void {
                         .version = manifest.version,
                         .minimum_zig_version = manifest.minimum_zig_version,
                         .dependencies = .{ .zigmkay_firmware = manifest.dependencies.zigmkay_firmware, .microzig = manifest.dependencies.microzig },
-                        .paths = .{ "build.zig", "build.zig.zon", "packages" },
+                        .paths = .{ "build.zig", "build.zig.zon", "src" },
                     }, .{}, &manifest_text.writer) catch @panic("Cannot write runtime manifest");
                     const pins = b.addOptions();
-                    pins.addOption([]const []const u8, "license_hashes", &.{ manifest.dependencies.dvui.hash, manifest.dependencies.ztray.hash, manifest.dependencies.zqlite.hash, manifest.dependencies.svg2tvg.hash, manifest.dependencies.icons.hash, @import("packages/jobs/src/flash_inputs.zig").picotool_package_hash });
+                    pins.addOption([]const []const u8, "license_hashes", &.{ manifest.dependencies.dvui.hash, manifest.dependencies.ztray.hash, manifest.dependencies.zqlite.hash, manifest.dependencies.svg2tvg.hash, manifest.dependencies.icons.hash, @import("src/jobs/flash_inputs.zig").picotool_package_hash });
                     pins.addOption([]const u8, "manifest", manifest_text.written());
                     pins.addOption([]const u8, "firmware_hash", manifest.dependencies.zigmkay_firmware.hash);
                     pins.addOption([]const u8, "microzig_hash", manifest.dependencies.microzig.hash);
@@ -730,9 +730,9 @@ pub fn build(b: *std.Build) void {
                         assemble.addArtifactArg(bootsel_helper);
                         assemble.addArtifactArg(bootsel_helper);
                     } else {
-                        const wrapper = b.addExecutable(.{ .name = "picotool_flash", .root_module = b.createModule(.{ .root_source_file = b.path("packages/jobs/src/picotool_flash.zig"), .target = app_target, .optimize = optimize }) });
+                        const wrapper = b.addExecutable(.{ .name = "picotool_flash", .root_module = b.createModule(.{ .root_source_file = b.path("src/jobs/picotool_flash.zig"), .target = app_target, .optimize = optimize }) });
                         const pico = b.lazyDependency("picotool", .{ .target = app_target, .optimize = optimize }) orelse return;
-                        if (macos_sdk) |sdk| @import("packages/platform/desktop_build.zig").sdkPaths(b, pico.artifact("picotool").root_module, sdk);
+                        if (macos_sdk) |sdk| @import("build/desktop.zig").sdkPaths(b, pico.artifact("picotool").root_module, sdk);
                         assemble.addArtifactArg(wrapper);
                         assemble.addArtifactArg(pico.artifact("picotool"));
                     }
@@ -747,17 +747,17 @@ pub fn build(b: *std.Build) void {
                     }
                 } else assemble_step.dependOn(&b.addFail("Pass application-bundle=true to assemble the complete application").step);
 
-                app.root_module.addImport("flash-ui", b.createModule(.{ .root_source_file = b.path("packages/desktop/src/flash_ui.zig"), .imports = &.{ .{ .name = "dvui", .module = graph.dvui }, .{ .name = "flash-presenter", .module = flash_presenter } } }));
+                app.root_module.addImport("flash-ui", b.createModule(.{ .root_source_file = b.path("src/desktop/flash_ui.zig"), .imports = &.{ .{ .name = "dvui", .module = graph.dvui }, .{ .name = "flash-presenter", .module = flash_presenter } } }));
                 app.root_module.addImport("app-paths", installed_paths);
                 app.root_module.addImport("native-tray", graph.tray);
                 const companion_ui = b.createModule(.{
-                    .root_source_file = b.path("packages/desktop/src/companion_ui.zig"),
+                    .root_source_file = b.path("src/desktop/companion_ui.zig"),
                     .target = app_target,
                     .optimize = optimize,
                     .imports = &.{ .{ .name = "dvui", .module = graph.dvui }, .{ .name = "desktop-core", .module = desktop_core }, .{ .name = "layout-model", .module = model }, .{ .name = "editor-ui", .module = graph.ui }, .{ .name = "editor-fonts", .module = graph.fonts } },
                 });
                 app.root_module.addImport("companion-ui", companion_ui);
-                const companion_window = b.createModule(.{ .root_source_file = b.path("packages/platform/src/companion_window.zig"), .target = app_target, .optimize = optimize, .imports = &.{.{ .name = "dvui_backend", .module = graph.backend }} });
+                const companion_window = b.createModule(.{ .root_source_file = b.path("src/platform/companion_window.zig"), .target = app_target, .optimize = optimize, .imports = &.{.{ .name = "dvui_backend", .module = graph.backend }} });
                 app.root_module.addImport("companion-window", companion_window);
                 const overlay_tests = b.addTest(.{ .root_module = companion_window });
                 b.step("test-companion-placement", "Validate optional overlay bounds without creating a window").dependOn(&b.addRunArtifact(overlay_tests).step);
@@ -882,20 +882,20 @@ pub fn build(b: *std.Build) void {
             b.step("export-catalog-fixture", "Explicit synthetic indexed board export; no physical mapping claim").dependOn(&export_run.step);
         }
         const runner_protocol = b.addModule("runner-protocol", .{
-            .root_source_file = b.path("packages/runner/src/protocol.zig"),
+            .root_source_file = b.path("src/runner/protocol.zig"),
             .imports = &.{ .{ .name = "zigmkay", .module = firmware.module("zigmkay") }, .{ .name = "owned-zon", .module = owned_zon } },
         });
-        const processor_fixture = @import("packages/runner/build.zig").tests(b, runner_tests, check, firmware.module("zigmkay"), project, default_profile, jobs, runner_protocol, owned_zon);
+        const processor_fixture = @import("src/runner/build.zig").tests(b, runner_tests, check, firmware.module("zigmkay"), project, default_profile, jobs, runner_protocol, owned_zon);
         const native_step = b.step("build-runner", "Build a native tutor runner without preparing embedded firmware");
-        if (b.modules.get("keymap-importer")) |importer| import_fixtures = @import("packages/importer/fixtures.zig").add(b, importer, project, firmware.module("zigmkay"), keycodes, model, runner_protocol);
+        if (b.modules.get("keymap-importer")) |importer| import_fixtures = @import("src/importer/fixtures.zig").add(b, importer, project, firmware.module("zigmkay"), keycodes, model, runner_protocol);
         if (native_only and selected_export != null) {
-            const selected = @import("packages/project/src/build_input.zig").load(b, selected_export.?, firmware.module("zigmkay"), keycodes, model) catch |err| @panic(@errorName(err));
-            const native_runner = @import("packages/runner/build.zig").runner(b, "project-runner", firmware.module("zigmkay"), selected.module, runner_protocol, selected.snapshot_id);
+            const selected = @import("src/project/build_input.zig").load(b, selected_export.?, firmware.module("zigmkay"), keycodes, model) catch |err| @panic(@errorName(err));
+            const native_runner = @import("src/runner/build.zig").runner(b, "project-runner", firmware.module("zigmkay"), selected.module, runner_protocol, selected.snapshot_id);
             native_step.dependOn(&b.addInstallArtifact(native_runner, .{}).step);
         } else native_step.dependOn(&b.addFail("build-runner requires native-only=true and an absolute project-export").step);
         if (desktop_app) |app| {
             const manifest_fixture = b.addExecutable(.{ .name = "runner-manifest-fixture", .root_module = b.createModule(.{
-                .root_source_file = b.path("packages/runner/src/manifest_fixture.zig"),
+                .root_source_file = b.path("src/runner/manifest_fixture.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "project", .module = project }, .{ .name = "companion-jobs", .module = jobs } },
@@ -913,7 +913,7 @@ pub fn build(b: *std.Build) void {
         tests.dependOn(runner_tests);
         project.addAnonymousImport("rollercole-source", .{ .root_source_file = firmware.path("keyboards/my_keyboards/rollercole/shared_keymap_3x5_2.zig") });
         const cli = b.addExecutable(.{ .name = "keymap-project", .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/project/src/main.zig"),
+            .root_source_file = b.path("src/project/main.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "keymap-project", .module = project }},
@@ -922,14 +922,14 @@ pub fn build(b: *std.Build) void {
         const cli_run = b.addRunArtifact(cli);
         cli_run.addPassthruArgs();
         b.step("run-project", "Explicit project create/validate/export command").dependOn(&cli_run.step);
-        const project_test_module = b.createModule(.{ .root_source_file = b.path("packages/project/src/root.zig"), .target = app_target, .optimize = optimize, .imports = project_imports });
+        const project_test_module = b.createModule(.{ .root_source_file = b.path("src/project/root.zig"), .target = app_target, .optimize = optimize, .imports = project_imports });
         project_test_module.addAnonymousImport("rollercole-source", .{ .root_source_file = firmware.path("keyboards/my_keyboards/rollercole/shared_keymap_3x5_2.zig") });
         const project_tests = b.addTest(.{ .root_module = project_test_module });
         check.dependOn(&project_tests.step);
         const project_step = b.step("test-project", "Test schema, source snapshots, deterministic export and actual processor");
         project_step.dependOn(&b.addRunArtifact(project_tests).step);
         const historical_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/project/src/test_historical_callbacks.zig"),
+            .root_source_file = b.path("src/project/test_historical_callbacks.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "project", .module = project }},
@@ -939,7 +939,7 @@ pub fn build(b: *std.Build) void {
         project_step.dependOn(&b.addRunArtifact(historical_tests).step);
         tests.dependOn(project_step);
         const generator = b.addExecutable(.{ .name = "export-compile-fixture", .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/project/src/export_fixture.zig"),
+            .root_source_file = b.path("src/project/export_fixture.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "keymap-project", .module = project }},
@@ -947,18 +947,18 @@ pub fn build(b: *std.Build) void {
         const exported = b.addRunArtifact(generator).addOutputFileArg("keymap.zig");
         const exported_profile = b.createModule(.{ .root_source_file = exported, .imports = &.{.{ .name = "zigmkay", .module = firmware.module("zigmkay") }} });
         const export_test = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/project/src/export_compile_test.zig"),
+            .root_source_file = b.path("src/project/export_compile_test.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{ .{ .name = "generated-profile", .module = exported_profile }, .{ .name = "zigmkay", .module = firmware.module("zigmkay") }, .{ .name = "device-protocol", .module = protocol } },
         }) });
         project_step.dependOn(&b.addRunArtifact(export_test).step);
         const imports: []const std.Build.Module.Import = &.{ .{ .name = "layout-model", .module = model }, .{ .name = "device-protocol", .module = protocol } };
-        const session = b.addModule("session", .{ .root_source_file = b.path("packages/session/src/root.zig"), .imports = imports });
+        const session = b.addModule("session", .{ .root_source_file = b.path("src/session/root.zig"), .imports = imports });
         {
             desktop_core.addImport("session", session);
             const live_frame_tests = b.addTest(.{ .root_module = b.createModule(.{
-                .root_source_file = b.path("packages/desktop/src/live_keyboard.zig"),
+                .root_source_file = b.path("src/desktop/live_keyboard.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "session", .module = session }, .{ .name = "device-protocol", .module = protocol }, .{ .name = "layout-model", .module = model }, .{ .name = "project", .module = project }, .{ .name = "zkeymap", .module = desktop_core.import_table.get("zkeymap").? }, .{ .name = "zkeycodes", .module = desktop_core.import_table.get("zkeycodes").? } },
@@ -966,16 +966,16 @@ pub fn build(b: *std.Build) void {
             desktop_tests_step.dependOn(&b.addRunArtifact(live_frame_tests).step);
             check.dependOn(&live_frame_tests.step);
         }
-        const live = b.addModule("live-adapter", .{ .root_source_file = b.path("packages/session/src/live_adapter.zig"), .imports = &.{
+        const live = b.addModule("live-adapter", .{ .root_source_file = b.path("src/session/live_adapter.zig"), .imports = &.{
             .{ .name = "device-protocol", .module = protocol }, .{ .name = "companion-model", .module = session },
         } });
-        const native = b.addModule("native-hid", .{ .root_source_file = b.path("packages/platform/src/native_hid.zig"), .imports = &.{.{ .name = "live-adapter", .module = live }} });
+        const native = b.addModule("native-hid", .{ .root_source_file = b.path("src/platform/native_hid.zig"), .imports = &.{.{ .name = "live-adapter", .module = live }} });
         if (desktop_app) |app| {
             app.root_module.addImport("native-hid", native);
             app.root_module.addImport("live-adapter", live);
         }
         if (b.option(bool, "native-hid", "Prepare pinned SDL native acceptance dependencies") orelse false) {
-            const dvui = @import("packages/platform/desktop_build.zig").dependency(b, false, app_target, optimize) orelse return;
+            const dvui = @import("build/desktop.zig").dependency(b, false, app_target, optimize) orelse return;
             const probe = b.addExecutable(.{ .name = "usb-acceptance", .root_module = b.createModule(.{
                 .root_source_file = b.path("tools/usb_acceptance.zig"),
                 .target = app_target,
@@ -990,7 +990,7 @@ pub fn build(b: *std.Build) void {
             hardware_client.dependOn(&b.addInstallArtifact(probe, .{}).step);
         } else hardware_client.dependOn(&b.addFail("Pass -Dnative-hid=true to prepare the native client; preparation never runs it").step);
         const native_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/platform/src/test_native_hid.zig"),
+            .root_source_file = b.path("src/platform/test_native_hid.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "native-hid", .module = native }},
@@ -998,7 +998,7 @@ pub fn build(b: *std.Build) void {
         check.dependOn(&native_tests.step);
         session_tests.dependOn(&b.addRunArtifact(native_tests).step);
         const protocol_tests = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/firmware-adapter/src/protocol.zig"),
+            .root_source_file = b.path("src/firmware/protocol.zig"),
             .target = app_target,
             .optimize = optimize,
             .imports = &.{.{ .name = "zigmkay", .module = firmware.module("zigmkay") }},
@@ -1006,7 +1006,7 @@ pub fn build(b: *std.Build) void {
         check.dependOn(&protocol_tests.step);
         session_tests.dependOn(&b.addRunArtifact(protocol_tests).step);
         for ([_][]const u8{ "root.zig", "test_session.zig", "live_adapter.zig", "session_capture.zig" }) |file| {
-            const module = b.createModule(.{ .root_source_file = b.path(b.fmt("packages/session/src/{s}", .{file})), .target = app_target, .optimize = optimize, .imports = imports });
+            const module = b.createModule(.{ .root_source_file = b.path(b.fmt("src/session/{s}", .{file})), .target = app_target, .optimize = optimize, .imports = imports });
             if (!std.mem.eql(u8, file, "root.zig")) module.addImport("companion-model", session);
             const artifact = b.addTest(.{ .root_module = module });
             check.dependOn(&artifact.step);
@@ -1031,8 +1031,8 @@ pub fn build(b: *std.Build) void {
                     const item = fw_build.addKeyboardFirmware(b, mb, &target, .ReleaseSafe, "imported", board, fw_sources, null);
                     const processor = item.exe.root_module.import_table.get("zigmkay").?;
                     const keycodes = item.exe.root_module.import_table.get("zkeycodes").?;
-                    const embedded_model = b.createModule(.{ .root_source_file = b.path("packages/layout-model/src/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = processor }} });
-                    const selected = @import("packages/importer/fixtures.zig").module(b, fixture.export_root, processor, keycodes, embedded_model);
+                    const embedded_model = b.createModule(.{ .root_source_file = b.path("src/layout/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = processor }} });
+                    const selected = @import("src/importer/fixtures.zig").module(b, fixture.export_root, processor, keycodes, embedded_model);
                     selected.addImport("microzig", item.core_mod);
                     item.add_app_import("keymap", selected, .{});
                     imported_firmware.dependOn(&item.exe.step);
@@ -1068,25 +1068,25 @@ pub fn build(b: *std.Build) void {
                 const export_path = selected_export orelse @panic("project-build requires project-export");
                 const board_name = selected_board orelse @panic("project-build requires project-board");
                 const board = fw_build.boards.find(board_name) orelse @panic("Unknown firmware board selector");
-                const selector = @import("packages/project/src/build_input.zig");
+                const selector = @import("src/project/build_input.zig");
                 const keycodes = b.createModule(.{ .root_source_file = firmware.path("zkeycodes/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = firmware.module("zigmkay") }} });
                 const native_selected = selector.load(b, export_path, firmware.module("zigmkay"), keycodes, model) catch |err| @panic(b.fmt("Cannot verify native export: {s}", .{@errorName(err)}));
                 const item = fw_build.addKeyboardFirmware(b, mb, &target, .ReleaseSafe, "project", board, fw_sources, null);
                 const embedded_processor = item.exe.root_module.import_table.get("zigmkay").?;
                 const embedded_keycodes = item.exe.root_module.import_table.get("zkeycodes").?;
-                const embedded_model = b.createModule(.{ .root_source_file = b.path("packages/layout-model/src/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = embedded_processor }} });
+                const embedded_model = b.createModule(.{ .root_source_file = b.path("src/layout/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = embedded_processor }} });
                 const embedded_selected = selector.load(b, export_path, embedded_processor, embedded_keycodes, embedded_model) catch |err| @panic(b.fmt("Cannot verify embedded export: {s}", .{@errorName(err)}));
                 embedded_selected.module.addImport("microzig", item.core_mod);
                 item.add_app_import("keymap", embedded_selected.module, .{});
                 const install = b.addInstallFile(item.get_emitted_bin(.{ .uf2 = .{ .family_id = .RP2040 } }), "firmware/project.uf2");
                 project_build.dependOn(&install.step);
-                const native_runner = @import("packages/runner/build.zig").runner(b, "project-runner", firmware.module("zigmkay"), native_selected.module, b.modules.get("runner-protocol").?, native_selected.snapshot_id);
+                const native_runner = @import("src/runner/build.zig").runner(b, "project-runner", firmware.module("zigmkay"), native_selected.module, b.modules.get("runner-protocol").?, native_selected.snapshot_id);
                 project_build.dependOn(&b.addInstallArtifact(native_runner, .{}).step);
             } else project_build.dependOn(&b.addFail("Pass project-build=true with absolute project-export and project-board inputs").step);
             const generated = b.addWriteFiles();
             const artifacts = b.addWriteFiles();
             const project_generator = b.addExecutable(.{ .name = "export-board-fixture", .root_module = b.createModule(.{
-                .root_source_file = b.path("packages/project/src/board_export_fixture.zig"),
+                .root_source_file = b.path("src/project/board_export_fixture.zig"),
                 .target = app_target,
                 .optimize = optimize,
                 .imports = &.{.{ .name = "keymap-project", .module = project_module orelse @panic("Firmware check requires the firmware-owned codec") }},

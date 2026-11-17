@@ -63,13 +63,13 @@ in caches, and preserve personal projects and attached source bundles.
 
 | Location | Responsibility |
 | --- | --- |
-| [apps/desktop](../apps/desktop) | Application startup, resident lifecycle and background build/flash work |
-| [packages/desktop](../packages/desktop) | Editor models, native UI, companion presentation and tutor |
-| [packages/project](../packages/project) | Project schema, validation, source preservation and export |
-| [packages/session](../packages/session) | Device sessions and verified live state |
-| [packages/jobs](../packages/jobs) | Build environments, managed jobs and Flash tooling |
-| [packages/catalog](../packages/catalog) | Pinned firmware board/default-profile inventory |
-| [packages/platform](../packages/platform) | Desktop integration, user paths and native window support |
+| [src/app](../src/app) | Application startup, resident lifecycle and background build/flash work |
+| [src/desktop](../src/desktop) | Editor models, native UI, companion presentation and tutor |
+| [src/project](../src/project) | Project schema, validation, source preservation and export |
+| [src/session](../src/session) | Device sessions and verified live state |
+| [src/jobs](../src/jobs) | Build environments, managed jobs and Flash tooling |
+| [src/catalog](../src/catalog) | Pinned firmware board/default-profile inventory |
+| [src/platform](../src/platform) | Desktop integration, user paths and native window support |
 | [tools](../tools) / [tests](../tests) | Zig utilities and integration contracts |
 
 - [Typing practice user guide](typing-practice.md): controls, metrics, data and evidence.

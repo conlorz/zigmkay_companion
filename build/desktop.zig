@@ -75,12 +75,12 @@ pub fn check(b: *std.Build, step: *std.Build.Step, flash_presenter: *std.Build.M
         b.step("test-desktop-vectors", "Decode pinned vector icons without a GUI").dependOn(&b.addRunArtifact(vector_tests).step);
     }
     const placement = b.createModule(.{
-        .root_source_file = b.path("packages/platform/src/window_placement.zig"),
+        .root_source_file = b.path("src/platform/window_placement.zig"),
         .target = target,
         .imports = &.{.{ .name = "sdl3-c", .module = sdl_module }},
     });
     const folder_dialog = b.createModule(.{
-        .root_source_file = b.path("packages/platform/src/folder_dialog.zig"),
+        .root_source_file = b.path("src/platform/folder_dialog.zig"),
         .target = target,
         .imports = &.{.{ .name = "sdl3-c", .module = sdl_module }},
     });
@@ -88,36 +88,36 @@ pub fn check(b: *std.Build, step: *std.Build.Step, flash_presenter: *std.Build.M
     const placement_tests_step = b.step("test-window-placement", "Validate reference window bounds without opening a window");
     placement_tests_step.dependOn(&b.addRunArtifact(placement_tests).step);
     const fonts = b.createModule(.{
-        .root_source_file = b.path("packages/desktop/src/fonts.zig"),
+        .root_source_file = b.path("src/desktop/fonts.zig"),
         .target = target,
         .imports = &.{.{ .name = "dvui", .module = dvui }},
     });
     const editor_ui = b.createModule(.{
-        .root_source_file = b.path("packages/desktop/src/ui.zig"),
+        .root_source_file = b.path("src/desktop/ui.zig"),
         .target = target,
         .imports = &.{ .{ .name = "dvui", .module = dvui }, .{ .name = "editor-fonts", .module = fonts } },
     });
     editor_ui.addImport("desktop-geometry", b.modules.get("desktop-geometry").?);
     const flash_ui = b.createModule(.{
-        .root_source_file = b.path("packages/desktop/src/flash_ui.zig"),
+        .root_source_file = b.path("src/desktop/flash_ui.zig"),
         .target = target,
         .imports = &.{ .{ .name = "dvui", .module = dvui }, .{ .name = "flash-presenter", .module = flash_presenter } },
     });
     const tray = tray_dep.module("ztray");
     nativeLinuxPaths(b, tray, target);
     const native_tray = b.createModule(.{
-        .root_source_file = b.path("packages/desktop/src/tray_native.zig"),
+        .root_source_file = b.path("src/desktop/tray_native.zig"),
         .target = target,
         .imports = &.{ .{ .name = "ztray", .module = tray }, .{ .name = "tray-lifecycle", .module = tray_lifecycle } },
     });
     const tray_icon_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/desktop/src/tray_icon.zig"),
+        .root_source_file = b.path("src/desktop/tray_icon.zig"),
         .target = target,
         .imports = &.{.{ .name = "dvui", .module = dvui }},
     }) });
     b.step("test-tray-icon", "Decode retained tray PNG offline without installing a tray").dependOn(&b.addRunArtifact(tray_icon_tests).step);
     const events = b.createModule(.{
-        .root_source_file = b.path("packages/platform/src/events.zig"),
+        .root_source_file = b.path("src/platform/events.zig"),
         .target = target,
         .imports = &.{ .{ .name = "dvui", .module = dvui }, .{ .name = "dvui_backend", .module = backend } },
     });

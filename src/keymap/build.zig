@@ -2,9 +2,9 @@ const std = @import("std");
 
 pub fn module(b: *std.Build, firmware: *std.Build.Module, keycodes: *std.Build.Module, us_fixture: bool) *std.Build.Module {
     _ = firmware;
-    const shared = @import("../input-source/build.zig").keymapModule(b, b.path("packages/input-source"), keycodes, b.graph.host, !us_fixture, us_fixture);
+    const shared = @import("../input/build.zig").keymapModule(b, b.path("src/input"), keycodes, b.graph.host, !us_fixture, us_fixture);
     return b.createModule(.{
-        .root_source_file = b.path("packages/keymap/src/root.zig"),
+        .root_source_file = b.path("src/keymap/root.zig"),
         .target = b.graph.host,
         .imports = &.{.{ .name = "input-keymap", .module = shared }},
     });
@@ -18,12 +18,12 @@ pub fn tests(b: *std.Build, firmware: *std.Build.Module, keycodes: *std.Build.Mo
     for ([_]*std.Build.Module{
         portable,
         b.createModule(.{
-            .root_source_file = b.path("packages/keymap/src/hid_to_platform.test.zig"),
+            .root_source_file = b.path("src/keymap/hid_to_platform.test.zig"),
             .target = b.graph.host,
-            .imports = &.{ .{ .name = "zkeycodes", .module = keycodes }, .{ .name = "hid_to_platform", .module = b.createModule(.{ .root_source_file = b.path("packages/input-source/src/hid_to_platform.zig"), .imports = &.{.{ .name = "zkeycodes", .module = keycodes }} }) } },
+            .imports = &.{ .{ .name = "zkeycodes", .module = keycodes }, .{ .name = "hid_to_platform", .module = b.createModule(.{ .root_source_file = b.path("src/input/hid_to_platform.zig"), .imports = &.{.{ .name = "zkeycodes", .module = keycodes }} }) } },
         }),
         b.createModule(.{
-            .root_source_file = b.path("packages/keymap/example/main.zig"),
+            .root_source_file = b.path("src/keymap/example/main.zig"),
             .target = b.graph.host,
             .imports = &.{.{ .name = "zkeymap", .module = portable }},
         }),

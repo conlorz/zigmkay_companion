@@ -14,14 +14,14 @@ pub fn build(b: *std.Build) void {
     const board_option = b.option([]const u8, "project-board", "Board selector");
     const fw = b.lazyDependency("zigmkay_firmware", .{}) orelse return;
     const native_keycodes = b.createModule(.{ .root_source_file = fw.path("zkeycodes/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = fw.module("zigmkay") }} });
-    const native_model = b.createModule(.{ .root_source_file = b.path("packages/layout-model/src/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = fw.module("zigmkay") }} });
-    @import("packages/importer/build.zig").add(b, fw.module("zigmkay"), native_keycodes, native_model);
+    const native_model = b.createModule(.{ .root_source_file = b.path("src/layout/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = fw.module("zigmkay") }} });
+    @import("src/importer/build.zig").add(b, fw.module("zigmkay"), native_keycodes, native_model);
     const runner_step = b.step("build-runner", "Build only the native tutor processor");
     if (export_option) |path| {
-        const native = @import("packages/project/src/build_input.zig").load(b, path, fw.module("zigmkay"), native_keycodes, native_model) catch |err| @panic(@errorName(err));
-        const owned_zon = b.createModule(.{ .root_source_file = b.path("packages/project/src/owned_zon.zig") });
-        const protocol = b.createModule(.{ .root_source_file = b.path("packages/runner/src/protocol.zig"), .imports = &.{ .{ .name = "zigmkay", .module = fw.module("zigmkay") }, .{ .name = "owned-zon", .module = owned_zon } } });
-        const runner = @import("packages/runner/build.zig").runner(b, "project-runner", fw.module("zigmkay"), native.module, protocol, native.snapshot_id);
+        const native = @import("src/project/build_input.zig").load(b, path, fw.module("zigmkay"), native_keycodes, native_model) catch |err| @panic(@errorName(err));
+        const owned_zon = b.createModule(.{ .root_source_file = b.path("src/project/owned_zon.zig") });
+        const protocol = b.createModule(.{ .root_source_file = b.path("src/runner/protocol.zig"), .imports = &.{ .{ .name = "zigmkay", .module = fw.module("zigmkay") }, .{ .name = "owned-zon", .module = owned_zon } } });
+        const runner = @import("src/runner/build.zig").runner(b, "project-runner", fw.module("zigmkay"), native.module, protocol, native.snapshot_id);
         const install = b.addInstallArtifact(runner, .{});
         runner_step.dependOn(&install.step);
         step.dependOn(&install.step);
@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) void {
     const mb = MicroBuild.init(b, mz_dep) orelse return;
     const path = export_option orelse return;
     const name = board_option orelse @panic("Missing board");
-    const fw_build = @import("packages/firmware-adapter/build.zig");
+    const fw_build = @import("src/firmware/build.zig");
     const board = fw_build.boards.find(name) orelse @panic("Unknown board");
     const target = mb.ports.rp2xxx.boards.raspberrypi.pico.*;
     const item = fw_build.addKeyboardFirmware(b, mb, &target, .safe, "project", board, .{
@@ -41,10 +41,10 @@ pub fn build(b: *std.Build) void {
         .processor = fw.path("zigmkay/src/root.zig"),
         .keycodes = fw.path("zkeycodes/root.zig"),
     }, null);
-    const selector = @import("packages/project/src/build_input.zig");
+    const selector = @import("src/project/build_input.zig");
     const processor = item.exe.root_module.import_table.get("zigmkay").?;
     const keycodes = item.exe.root_module.import_table.get("zkeycodes").?;
-    const model = b.createModule(.{ .root_source_file = b.path("packages/layout-model/src/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = processor }} });
+    const model = b.createModule(.{ .root_source_file = b.path("src/layout/root.zig"), .imports = &.{.{ .name = "zigmkay", .module = processor }} });
     const selected = selector.load(b, path, processor, keycodes, model) catch |err| @panic(@errorName(err));
     selected.module.addImport("microzig", item.core_mod);
     item.add_app_import("keymap", selected.module, .{});

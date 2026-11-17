@@ -5,7 +5,7 @@ pub fn runner(b: *std.Build, name: []const u8, firmware: *std.Build.Module, prof
     options.addOption([32]u8, "snapshot_id", snapshot_id orelse @splat(0));
     options.addOption(bool, "verify_snapshot", snapshot_id != null);
     const module = b.createModule(.{
-        .root_source_file = b.path("packages/runner/src/main.zig"),
+        .root_source_file = b.path("src/runner/main.zig"),
         .target = b.graph.host,
         .imports = &.{ .{ .name = "zigmkay", .module = firmware }, .{ .name = "selected-profile", .module = profile }, .{ .name = "runner-protocol", .module = protocol } },
     });
@@ -15,7 +15,7 @@ pub fn runner(b: *std.Build, name: []const u8, firmware: *std.Build.Module, prof
 
 fn fixture(b: *std.Build, project: *std.Build.Module, name: []const u8, mode: ?[]const u8) std.Build.LazyPath {
     const generator = b.addExecutable(.{ .name = name, .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/runner/src/fixture.zig"),
+        .root_source_file = b.path("src/runner/fixture.zig"),
         .target = b.graph.host,
         .imports = &.{.{ .name = "keymap-project", .module = project }},
     }) });
@@ -26,8 +26,8 @@ fn fixture(b: *std.Build, project: *std.Build.Module, name: []const u8, mode: ?[
 }
 
 pub fn tests(b: *std.Build, step: *std.Build.Step, check: *std.Build.Step, firmware: *std.Build.Module, project: *std.Build.Module, registered_handler: *std.Build.Module, jobs: *std.Build.Module, protocol: *std.Build.Module, zon: *std.Build.Module) *std.Build.Step.Compile {
-    const client = b.addModule("runner-client", .{ .root_source_file = b.path("packages/runner/src/client.zig"), .imports = &.{ .{ .name = "runner-protocol", .module = protocol }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = zon } } });
-    const async_client = b.addModule("runner-async", .{ .root_source_file = b.path("packages/runner/src/async_client.zig"), .imports = &.{ .{ .name = "runner-client", .module = client }, .{ .name = "runner-protocol", .module = protocol }, .{ .name = "companion-jobs", .module = jobs } } });
+    const client = b.addModule("runner-client", .{ .root_source_file = b.path("src/runner/client.zig"), .imports = &.{ .{ .name = "runner-protocol", .module = protocol }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = zon } } });
+    const async_client = b.addModule("runner-async", .{ .root_source_file = b.path("src/runner/async_client.zig"), .imports = &.{ .{ .name = "runner-client", .module = client }, .{ .name = "runner-protocol", .module = protocol }, .{ .name = "companion-jobs", .module = jobs } } });
     b.modules.get("desktop-core").?.addImport("runner-async", async_client);
     const a = fixture(b, project, "runner-fixture", null);
     const basic_profile = b.createModule(.{ .root_source_file = a, .imports = &.{.{ .name = "zigmkay", .module = firmware }} });
@@ -37,19 +37,19 @@ pub fn tests(b: *std.Build, step: *std.Build.Step, check: *std.Build.Step, firmw
     step.dependOn(&rejected_snapshot.step);
     check.dependOn(&rejected_snapshot.step);
     const invalid = b.addExecutable(.{ .name = "invalid-runner-fixture", .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/runner/src/invalid_fixture.zig"),
+        .root_source_file = b.path("src/runner/invalid_fixture.zig"),
         .target = b.graph.host,
         .imports = &.{ .{ .name = "runner-protocol", .module = protocol }, .{ .name = "test-profile", .module = basic_profile }, .{ .name = "zigmkay", .module = firmware } },
     }) });
     const actions = fixture(b, project, "runner-actions", "all-actions");
-    const handler = b.createModule(.{ .root_source_file = b.path("packages/runner/src/callback_fixture.zig"), .imports = &.{.{ .name = "zigmkay", .module = firmware }} });
+    const handler = b.createModule(.{ .root_source_file = b.path("src/runner/callback_fixture.zig"), .imports = &.{.{ .name = "zigmkay", .module = firmware }} });
     const action_profile = b.createModule(.{ .root_source_file = actions, .imports = &.{ .{ .name = "zigmkay", .module = firmware }, .{ .name = "callback_0", .module = handler } } });
     const action_runner = runner(b, "action-runner", firmware, action_profile, protocol, null);
     const registered = fixture(b, project, "runner-registered", "danish");
     const registered_profile = b.createModule(.{ .root_source_file = registered, .imports = &.{ .{ .name = "zigmkay", .module = firmware }, .{ .name = "callback_0", .module = registered_handler } } });
     const registered_runner = runner(b, "registered-runner", firmware, registered_profile, protocol, null);
     const artifact = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("packages/runner/src/test_runner.zig"),
+        .root_source_file = b.path("src/runner/test_runner.zig"),
         .target = b.graph.host,
         .imports = &.{ .{ .name = "runner-protocol", .module = protocol }, .{ .name = "zigmkay", .module = firmware }, .{ .name = "companion-jobs", .module = jobs }, .{ .name = "owned-zon", .module = zon }, .{ .name = "runner-client", .module = client }, .{ .name = "test-profile", .module = basic_profile }, .{ .name = "project", .module = project } },
     }) });

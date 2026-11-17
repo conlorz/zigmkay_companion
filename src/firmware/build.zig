@@ -6,7 +6,7 @@
 //! no process runs and no device access.
 const std = @import("std");
 
-pub const boards = @import("src/boards.zig");
+pub const boards = @import("boards.zig");
 
 /// Source locations inside the selected zigmkay_firmware package.
 pub const Sources = struct {
@@ -102,8 +102,8 @@ pub fn defaultKeymaps(b: *std.Build, sources: Sources, processor: *std.Build.Mod
     for (boards.entries) |board| copied.put(b.allocator, board.default_keymap, {}) catch @panic("OOM");
     for (boards.default_keymap_support) |path| copied.put(b.allocator, path, {}) catch @panic("OOM");
     for (copied.keys()) |path| _ = files.addCopyFile(sources.keyboards.path(b, path), b.fmt("keyboards/{s}", .{path}));
-    _ = files.add("boards.zig", @embedFile("src/boards.zig"));
-    _ = files.add("processing_descriptors.zig", @embedFile("src/processing_descriptors.zig"));
+    _ = files.add("boards.zig", @embedFile("boards.zig"));
+    _ = files.add("processing_descriptors.zig", @embedFile("processing_descriptors.zig"));
     _ = files.add("default_keymaps.zig", defaultKeymapsSource(b));
     return b.createModule(.{
         .root_source_file = files.getDirectory().path(b, "default_keymaps.zig"),

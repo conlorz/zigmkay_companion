@@ -1,5 +1,5 @@
 //! Board inventory from the companion firmware adapter
-//! (`packages/firmware-adapter`), with host-owned display capabilities.
+//! (`src/firmware`), with host-owned display capabilities.
 const std = @import("std");
 const model = @import("layout-model");
 const defaults = @import("firmware-defaults");
