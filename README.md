@@ -5,7 +5,7 @@
 **Make your keyboard yours. Learn it as you go.**
 
 A native visual editor, an on-demand keyboard companion, and a typing tutor
-for programmable keyboards running [Zigmkay firmware](https://github.com/EuroZig/zigmkay_firmware).
+for programmable keyboards running [Zigmkay firmware](https://github.com/zigmkay/zigmkay_firmware).
 Written in Zig.
 
 [Get started](#get-started-with-mise) · [Companion](#your-layout-one-hotkey-away) · [Editor](#program-your-keyboard-visually) · [Tutor](#learn-your-layout-with-the-typing-tutor) · [Development](#development)
