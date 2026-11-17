@@ -4,7 +4,8 @@ const zon = @import("owned-zon");
 pub const Digest = [32]u8;
 pub const version: u16 = 1;
 pub const compiler_origin_version: u16 = 2;
-pub const repository = "EuroZig/zigmkay_firmware";
+/// Repository of the pinned `zigmkay_firmware` dependency in build.zig.zon.
+pub const repository = "conlorz/zigmkay_firmware";
 pub const CompilerKind = enum { checked_bundle, selected_installation };
 pub const Lock = struct {
     version: u16 = version,
@@ -138,7 +139,7 @@ pub fn fixture() Lock {
 test "target locks roundtrip without compiling and reject future contracts" {
     const gpa = std.testing.allocator;
     const original = fixture();
-    try std.testing.expectEqualStrings("7f916d9d2142394294678bcd551d03375c48eff7b97cbd1be487a284345b0333", &std.fmt.bytesToHex(original.digest(), .lower));
+    try std.testing.expectEqualStrings("50a39d92a50b779bdef38805eff449c15637f05276ef5150984309982482a71a", &std.fmt.bytesToHex(original.digest(), .lower));
     const bytes = try original.serialize(gpa);
     defer gpa.free(bytes);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "compiler_kind") == null);

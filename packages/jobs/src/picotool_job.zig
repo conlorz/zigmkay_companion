@@ -1,4 +1,4 @@
-//! Controlled wrapper contract 1. This module never transfers firmware itself.
+//! Controlled picotool_flash wrapper job. This module never transfers firmware itself.
 const std = @import("std");
 pub const output_limit = 64 * 1024;
 /// unique_bootsel delegates zero/multiple-device handling to the wrapper's

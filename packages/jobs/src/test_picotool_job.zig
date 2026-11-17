@@ -89,7 +89,7 @@ test "frozen digest literal arguments bounded output freshness and controlled ca
     try t.expectEqualStrings("controlled-exit\n", expired.process.stderr);
 }
 
-test "firmware wrapper controlled cancellation reaps its direct fake picotool child" {
+test "wrapper controlled cancellation reaps its direct fake picotool child" {
     if (!@hasDecl(options, "wrapper") or !@hasDecl(options, "picotool_fixture") or @import("builtin").os.tag == .windows) return error.SkipZigTest;
     const wrapper = try std.Io.Dir.cwd().realPathFileAlloc(t.io, options.wrapper, t.allocator);
     defer t.allocator.free(wrapper);

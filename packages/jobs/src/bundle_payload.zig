@@ -160,7 +160,7 @@ test "single executable materializes shipped bytes once and recovers an interrup
     try tmp.dir.writeFile(io, .{ .sub_path = "editor", .data = "executable fixture" });
     try tmp.dir.createDirPath(io, "resources/toolchain/lib");
     try tmp.dir.writeFile(io, .{ .sub_path = "resources/toolchain/lib/input", .data = "shipped compiler input" });
-    const manifest: bundle.Manifest = .{ .id = @splat(7), .firmware_revision = "e122f7502df4ad58e831f0b37439085774b670cb", .wrapper_hash = @splat(1), .picotool_hash = @splat(2) };
+    const manifest: bundle.Manifest = .{ .id = @splat(7), .firmware_revision = "ae8e40ca9e05dd43f968d5c27108a05dea1937f7", .wrapper_hash = @splat(1), .picotool_hash = @splat(2) };
     var text: std.Io.Writer.Allocating = .init(a);
     try std.zon.stringify.serialize(manifest, .{}, &text.writer);
     try tmp.dir.writeFile(io, .{ .sub_path = "resources/application.zon", .data = text.written() });
