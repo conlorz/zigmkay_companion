@@ -2,6 +2,7 @@
 const std = @import("std");
 const policy = @import("bootsel-policy");
 const native = @import("bootsel-native");
+
 fn cancellation(io: std.Io) void {
     var byte: [1]u8 = undefined;
     var reader = std.Io.File.stdin().reader(io, &byte);
@@ -11,15 +12,24 @@ fn cancellation(io: std.Io) void {
     }
     native.ExitProcess(2);
 }
+
 fn watchdog(io: std.Io, budget: u32) void {
     std.Io.sleep(io, .fromMilliseconds(budget), .awake) catch return;
-    std.Io.File.stderr().writeStreamingAll(io, "BOOTSEL native I/O deadline exceeded; transfer was not retried\n") catch {};
+    std.Io.File.stderr().writeStreamingAll(
+        io,
+        "BOOTSEL native I/O deadline exceeded; transfer was not retried\n",
+    ) catch {};
     native.ExitProcess(3);
 }
+
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const args = try init.minimal.args.toSlice(a);
-    if (args.len != 9 or !std.mem.eql(u8, args[2], "--sha256") or !std.mem.eql(u8, args[4], "--discovery-ms") or !std.mem.eql(u8, args[6], "--command-ms") or !std.mem.eql(u8, args[8], "--cancel-stdin")) return error.InvalidTransferArguments;
+    if (args.len != 9 or
+        !std.mem.eql(u8, args[2], "--sha256") or
+        !std.mem.eql(u8, args[4], "--discovery-ms") or
+        !std.mem.eql(u8, args[6], "--command-ms") or
+        !std.mem.eql(u8, args[8], "--cancel-stdin")) return error.InvalidTransferArguments;
     if (!std.fs.path.isAbsolute(args[1])) return error.AbsolutePathRequired;
     const discovery = try std.fmt.parseInt(u32, args[5], 10);
     const command = try std.fmt.parseInt(u32, args[7], 10);
@@ -42,7 +52,10 @@ pub fn main(init: std.process.Init) !void {
             var stderr = std.Io.File.stderr().writer(init.io, &diagnostics);
             try stderr.interface.writeAll("phase: load-verify\nBOOTSEL copy; flash read-back unavailable\n");
             try stderr.interface.flush();
-            var ops: native.Ops = .{ .io = init.io, .deadline = std.Io.Clock.awake.now(init.io).toMilliseconds() + command };
+            var ops: native.Ops = .{
+                .io = init.io,
+                .deadline = std.Io.Clock.awake.now(init.io).toMilliseconds() + command,
+            };
             policy.transfer(a, &ops, volume, bytes, hash) catch |err| {
                 if (err == error.TransferTimeout) {
                     std.debug.print("BOOTSEL transfer deadline exceeded; transfer was not retried\n", .{});

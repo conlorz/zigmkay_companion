@@ -7,10 +7,12 @@ const zon = @import("owned-zon");
 pub const Reply = struct {
     allocator: std.mem.Allocator,
     value: wire.Output,
+
     /// UI consumers must compare their current draft before promoting a reply.
     pub fn fresh(self: Reply, current: [32]u8) bool {
         return std.mem.eql(u8, &self.value.snapshot_id, &current);
     }
+
     pub fn deinit(self: *Reply) void {
         zon.free(self.allocator, self.value);
         self.* = undefined;
@@ -27,7 +29,13 @@ pub const Client = struct {
 
     /// Heap allocation keeps the pipe reader's address stable throughout its
     /// lifetime. Starting this explicitly selected executable is code execution.
-    pub fn create(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8, expected: [32]u8, timeout_ms: u32) !*Client {
+    pub fn create(
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        argv: []const []const u8,
+        expected: [32]u8,
+        timeout_ms: u32,
+    ) !*Client {
         const self = try gpa.create(Client);
         self.* = .{ .allocator = gpa, .io = io, .snapshot_id = expected };
         errdefer self.destroy();
@@ -49,7 +57,9 @@ pub const Client = struct {
         errdefer zon.free(self.allocator, output);
         if (output.version != wire.version) return error.UnsupportedRunnerVersion;
         if (!std.mem.eql(u8, &output.snapshot_id, &self.snapshot_id)) return error.RunnerSnapshotMismatch;
-        if (output.commands.len > wire.max_events or output.events.len > wire.max_events or output.signals.len > wire.max_events) return error.RunnerEventLimit;
+        if (output.commands.len > wire.max_events or
+            output.events.len > wire.max_events or
+            output.signals.len > wire.max_events) return error.RunnerEventLimit;
         return .{ .allocator = self.allocator, .value = output };
     }
 
@@ -63,7 +73,12 @@ pub const Client = struct {
         const sequence = self.sequence + 1;
         var encoded: std.Io.Writer.Allocating = .init(self.allocator);
         defer encoded.deinit();
-        try std.zon.stringify.serializeMaxDepth(wire.Input{ .sequence = sequence, .time_us = time_us, .command = command }, .{ .whitespace = false }, &encoded.writer, 16);
+        try std.zon.stringify.serializeMaxDepth(
+            wire.Input{ .sequence = sequence, .time_us = time_us, .command = command },
+            .{ .whitespace = false },
+            &encoded.writer,
+            16,
+        );
         var reply = try self.receive(encoded.written(), timeout_ms);
         errdefer reply.deinit();
         if (reply.value.sequence != sequence) return error.RunnerSequenceMismatch;

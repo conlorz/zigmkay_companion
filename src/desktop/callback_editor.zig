@@ -3,6 +3,7 @@ const std = @import("std");
 const p = @import("project");
 const Model = @import("model.zig").Model;
 pub const Kind = enum { attach, check, refresh };
+
 pub const Request = struct {
     arena: std.heap.ArenaAllocator,
     loaded: p.snapshot.Loaded,
@@ -14,7 +15,14 @@ pub const Request = struct {
     ids: []const u8,
     required_layers: []const p.LayerId,
 
-    pub fn capture(model: *const Model, kind: Kind, index: usize, entry: []const u8, ids: []const u8, required_layers: []const p.LayerId) !Request {
+    pub fn capture(
+        model: *const Model,
+        kind: Kind,
+        index: usize,
+        entry: []const u8,
+        ids: []const u8,
+        required_layers: []const p.LayerId,
+    ) !Request {
         if (kind != .attach) {
             if (index >= model.document().callbacks.len) return error.InvalidCallback;
             if (model.document().callbacks[index].kind != .attached) return error.RegisteredCallbackReadOnly;
@@ -29,13 +37,25 @@ pub const Request = struct {
         var loaded = try p.snapshot.clone(model.gpa, model.current.snapshot);
         errdefer loaded.deinit();
         const digest = try model.id();
-        return .{ .arena = arena, .loaded = loaded, .board = board, .snapshot = digest, .kind = kind, .index = index, .entry = owned_entry, .ids = owned_ids, .required_layers = owned_layers };
+        return .{
+            .arena = arena,
+            .loaded = loaded,
+            .board = board,
+            .snapshot = digest,
+            .kind = kind,
+            .index = index,
+            .entry = owned_entry,
+            .ids = owned_ids,
+            .required_layers = owned_layers,
+        };
     }
+
     pub fn deinit(self: *Request) void {
         self.loaded.deinit();
         self.arena.deinit();
         self.* = undefined;
     }
+
     /// Explicit caller-selected source/project directory. Never compiles source.
     /// The request must remain alive until preparation returns.
     pub fn prepare(self: *const Request, gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !Prepared {
@@ -43,25 +63,42 @@ pub const Request = struct {
             .attach => blk: {
                 var bundle = try p.sources.capture(gpa, io, dir, self.entry);
                 defer bundle.deinit();
-                break :blk try p.sources.attachForBoard(gpa, self.loaded.snapshot, self.board, bundle, self.ids, self.required_layers);
+                break :blk try p.sources.attachForBoard(
+                    gpa,
+                    self.loaded.snapshot,
+                    self.board,
+                    bundle,
+                    self.ids,
+                    self.required_layers,
+                );
             },
-            .check, .refresh => try p.sources.refreshForBoard(gpa, io, dir, self.loaded.snapshot, self.board, self.index),
+            .check, .refresh => try p.sources.refreshForBoard(
+                gpa,
+                io,
+                dir,
+                self.loaded.snapshot,
+                self.board,
+                self.index,
+            ),
         };
         errdefer next.deinit();
         const digest = try p.snapshot.projectDigest(gpa, next.snapshot, self.board);
         return .{ .loaded = next, .captured = self.snapshot, .next = digest, .kind = self.kind };
     }
 };
+
 pub const Prepared = struct {
     loaded: p.snapshot.Loaded,
     captured: [32]u8,
     next: [32]u8,
     kind: Kind,
     consumed: bool = false,
+
     pub fn deinit(self: *Prepared) void {
         self.loaded.deinit();
         self.* = undefined;
     }
+
     /// Check reports differences without changing history. Each result is single use.
     pub fn promote(self: *Prepared, model: *Model) !bool {
         if (self.consumed or !std.mem.eql(u8, &self.captured, &(try model.id()))) return error.StaleCallbackAction;

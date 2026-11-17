@@ -9,10 +9,24 @@ pub const Job = struct {
     frozen: inputs.Frozen,
     process: flash.Job,
 
-    pub fn init(gpa: std.mem.Allocator, io: std.Io, frozen: inputs.Frozen, request: inputs.Request, selection: flash.Selection) !Job {
+    pub fn init(
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        frozen: inputs.Frozen,
+        request: inputs.Request,
+        selection: flash.Selection,
+    ) !Job {
         return initWithDiscovery(gpa, io, frozen, request, selection, 30_000);
     }
-    pub fn initWithDiscovery(gpa: std.mem.Allocator, io: std.Io, frozen: inputs.Frozen, request: inputs.Request, selection: flash.Selection, discovery_ms: u32) !Job {
+
+    pub fn initWithDiscovery(
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        frozen: inputs.Frozen,
+        request: inputs.Request,
+        selection: flash.Selection,
+        discovery_ms: u32,
+    ) !Job {
         try request.validate();
         var tools = try inputs.Tools.clone(gpa, frozen.tools.record);
         errdefer tools.deinit();

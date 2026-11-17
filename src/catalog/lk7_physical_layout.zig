@@ -1,6 +1,7 @@
 //! LK7 schematic geometry in key units, not mechanical measurements.
 //! IDs are explicit and remain stable when geometry or GPIO assignments change.
 const model = @import("layout-model");
+
 pub const keys = [_]model.physical_layout.Key{
     .{ .id = 0x100, .key_index = 0, .x = 0, .y = 0, .hand = .left, .group = .finger },
     .{ .id = 0x101, .key_index = 1, .x = 1, .y = 0, .hand = .left, .group = .finger },

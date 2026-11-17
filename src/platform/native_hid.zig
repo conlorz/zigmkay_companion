@@ -19,6 +19,7 @@ pub fn Native(comptime sdl: type) type {
         pub fn now(self: *Self) u64 {
             return @intCast(std.Io.Clock.awake.now(self.io).toMilliseconds());
         }
+
         pub fn discover(self: *Self, requested: ?[]const u8) !adapter.Discovery {
             if (self.device != null) return error.HidAlreadyOpen;
             if (!self.hint_prepared) {
@@ -54,17 +55,20 @@ pub fn Native(comptime sdl: type) type {
             }
             return .no_device;
         }
+
         pub fn read(self: *Self, bytes: *[33]u8) !usize {
             const device = self.device orelse return error.HidNotOpen;
             const count = sdl.SDL_hid_read_timeout(device, bytes, bytes.len, 0);
             if (count < 0 or count > bytes.len) return error.HidReadFailed;
             return @intCast(count);
         }
+
         pub fn write(self: *Self, bytes: []const u8) !void {
             const device = self.device orelse return error.HidNotOpen;
             const count = sdl.SDL_hid_write(device, bytes.ptr, bytes.len);
             if (count < 0 or count != bytes.len) return error.HidWriteFailed;
         }
+
         pub fn close(self: *Self) void {
             if (self.device) |device| _ = sdl.SDL_hid_close(device);
             self.device = null;

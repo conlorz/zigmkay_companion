@@ -1,5 +1,6 @@
 const std = @import("std");
 const p = @import("keymap-project");
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
     const io = init.io;
@@ -32,5 +33,8 @@ pub fn main(init: std.process.Init) !void {
         p.exporter.freeManifest(gpa, manifest);
     } else if (!std.mem.eql(u8, args[1], "validate")) return error.Usage;
     const identity = try p.snapshot.identity(gpa, project.snapshot, p.profiles.board);
-    std.debug.print("Validated LK7 profile: {s}; identity {s}\n", .{ project.snapshot.document.name, std.fmt.bytesToHex(identity.digest, .lower) });
+    std.debug.print("Validated LK7 profile: {s}; identity {s}\n", .{
+        project.snapshot.document.name,
+        std.fmt.bytesToHex(identity.digest, .lower),
+    });
 }

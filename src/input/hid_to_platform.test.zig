@@ -17,7 +17,10 @@ test "toPlatformMods: right_shift sets bit 0" {
 }
 
 test "toPlatformMods: both shifts collapse to bit 0" {
-    try testing.expectEqual(@as(u8, 0b0001), hid.toPlatformMods(.{ .left_shift = true, .right_shift = true }));
+    try testing.expectEqual(
+        @as(u8, 0b0001),
+        hid.toPlatformMods(.{ .left_shift = true, .right_shift = true }),
+    );
 }
 
 test "toPlatformMods: left_ctrl sets bit 1" {
@@ -64,7 +67,7 @@ test "toPlatformMods: no modifiers returns 0" {
 test "Modifiers roundtrip: all 256 byte values" {
     var i: u16 = 0;
     while (i < 256) : (i += 1) {
-        const mods: hid.Modifiers = @bitCast(@as(u8, @intCast(i)));
+        const mods = hid.Modifiers.fromByte(@intCast(i));
         try testing.expectEqual(@as(u8, @intCast(i)), mods.toByte());
     }
 }

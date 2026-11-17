@@ -25,46 +25,61 @@ pub const State = struct {
         self.view = view;
         return true;
     }
+
     pub fn chooseMode(self: *State, mode: Mode) void {
         if (mode == self.mode) return;
         self.release();
         self.mode = mode;
     }
+
     pub fn focus(self: *State, focused: bool) void {
         if (!focused) self.release();
         self.focused = focused and self.view == .try_it_out;
         if (self.focused and self.mode == .free_typing and self.preparation == .ready) self.owner = .free_typing;
     }
+
     pub fn release(self: *State) void {
         self.focused = false;
         self.owner = .none;
         self.pending = null;
         if (self.preparation == .preparing) self.preparation = .idle;
     }
+
     pub fn invalidate(self: *State) void {
         self.release();
         self.generation +%= 1;
         self.preparation = .idle;
     }
+
     pub fn prepare(self: *State) ?Ticket {
-        if (self.view != .try_it_out or self.mode != .free_typing or !self.focused or self.preparation != .idle) return null;
+        if (self.view != .try_it_out or
+            self.mode != .free_typing or
+            !self.focused or
+            self.preparation != .idle) return null;
         self.sequence +%= 1;
         const ticket: Ticket = .{ .generation = self.generation, .sequence = self.sequence };
         self.pending = ticket;
         self.preparation = .preparing;
         return ticket;
     }
+
     pub fn complete(self: *State, ticket: Ticket, success: bool) bool {
         const pending = self.pending orelse return false;
-        if (!std.meta.eql(ticket, pending) or ticket.generation != self.generation or self.view != .try_it_out or self.mode != .free_typing or !self.focused) return false;
+        if (!std.meta.eql(ticket, pending) or
+            ticket.generation != self.generation or
+            self.view != .try_it_out or
+            self.mode != .free_typing or
+            !self.focused) return false;
         self.pending = null;
         self.preparation = if (success) .ready else .failed;
         self.owner = if (success) .free_typing else .none;
         return true;
     }
+
     pub fn retry(self: *State) void {
         if (self.preparation == .failed) self.preparation = .idle;
     }
+
     /// Scoring starts only through the deliberate test controls.
     pub fn startTest(self: *State) bool {
         if (self.view != .try_it_out or self.mode != .typing_test or !self.focused) return false;

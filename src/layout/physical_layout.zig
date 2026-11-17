@@ -5,6 +5,7 @@ const types = @import("zigmkay").core;
 pub const KeyId = u16;
 pub const Hand = enum { left, right, neutral };
 pub const Group = enum { finger, thumb };
+
 pub const Key = struct {
     id: KeyId,
     key_index: types.KeyIndex,
@@ -71,7 +72,11 @@ fn validateHold(hold: types.HoldDef, layer_count: types.LayerIndex) ValidationEr
     }
 }
 
-pub fn validateLogical(comptime dimensions: types.KeymapDimensions, keymap: *const [dimensions.layer_count][dimensions.key_count]?types.KeyDef, combos: []const types.Combo2Def) ValidationError!void {
+pub fn validateLogical(
+    comptime dimensions: types.KeymapDimensions,
+    keymap: *const [dimensions.layer_count][dimensions.key_count]?types.KeyDef,
+    combos: []const types.Combo2Def,
+) ValidationError!void {
     if (dimensions.key_count == 0 or dimensions.layer_count == 0) return error.InvalidDimensions;
     for (keymap) |layer| {
         for (layer) |entry| {
@@ -85,14 +90,4 @@ pub fn validateLogical(comptime dimensions: types.KeymapDimensions, keymap: *con
         if (combo.key_indexes[0] == combo.key_indexes[1]) return error.InvalidCombo;
         try validateAction(combo.key_def, dimensions.layer_count);
     }
-}
-
-pub fn findById(keys: []const Key, id: KeyId) ?Key {
-    for (keys) |key| if (key.id == id) return key;
-    return null;
-}
-
-pub fn findByIndex(keys: []const Key, index: types.KeyIndex) ?Key {
-    for (keys) |key| if (key.key_index == index) return key;
-    return null;
 }

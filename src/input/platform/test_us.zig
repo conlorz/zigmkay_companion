@@ -1,12 +1,16 @@
 //! Deterministic injected US fixture for offline wrapper tests. Never a native backend.
 const root = @import("../root.zig");
+
 pub const Fixture = struct {
     var instance: Fixture = .{};
+
     pub fn init() *Fixture {
         return &instance;
     }
+
     pub fn deinit(_: *Fixture) void {}
     pub fn refresh(_: *Fixture) void {}
+
     pub fn keyToText(_: *Fixture, input: root.KeyCodeFire) root.TextResult {
         const shift = input.tap_modifiers.left_shift or input.tap_modifiers.right_shift;
         const code = input.tap_keycode;

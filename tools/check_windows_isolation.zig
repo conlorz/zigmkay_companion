@@ -36,7 +36,10 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("Child network isolation failed: {s}", .{child.stderr});
         return error.ChildNetworkIsolationFailed;
     }
-    std.log.info("Isolation verified: installation readable, writes and checkout reads denied, parent and child network denied", .{});
+    std.log.info(
+        "Isolation verified: installation readable, writes and checkout reads denied, parent and child network denied",
+        .{},
+    );
 }
 
 fn networkDenied(io: std.Io) !void {
@@ -58,7 +61,12 @@ const Winsock = struct {
     extern "ws2_32" fn WSAGetLastError() callconv(.winapi) c_int;
     extern "ws2_32" fn socket(family: c_int, kind: c_int, protocol: c_int) callconv(.winapi) usize;
     extern "ws2_32" fn closesocket(handle: usize) callconv(.winapi) c_int;
-    extern "ws2_32" fn connect(handle: usize, address: *const std.os.windows.ws2_32.sockaddr, length: c_int) callconv(.winapi) c_int;
+
+    extern "ws2_32" fn connect(
+        handle: usize,
+        address: *const std.os.windows.ws2_32.sockaddr,
+        length: c_int,
+    ) callconv(.winapi) c_int;
 };
 
 fn windowsNetworkDenied() !void {
@@ -73,7 +81,8 @@ fn windowsNetworkDenied() !void {
     if (socket == std.math.maxInt(usize)) return error.SocketCreationFailed;
     defer _ = Winsock.closesocket(socket);
     const address: w.sockaddr.in = .{ .port = std.mem.nativeToBig(u16, 443), .addr = 0x01010101 };
-    if (Winsock.connect(socket, @ptrCast(&address), @sizeOf(@TypeOf(address))) == 0) return error.NetworkIsolationIneffective;
+    if (Winsock.connect(socket, @ptrCast(&address), @sizeOf(@TypeOf(address))) == 0)
+        return error.NetworkIsolationIneffective;
     const code = Winsock.WSAGetLastError();
     if (code != 10013) { // WSAEACCES: an explicit local policy denial.
         std.log.err("Expected firewall denial, got Winsock error {d}", .{code});

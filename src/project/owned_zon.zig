@@ -5,7 +5,11 @@ pub fn clone(gpa: std.mem.Allocator, value: anytype) !@TypeOf(value) {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
         .pointer => |info| {
-            if (info.size != .slice or info.sentinel() != null) @compileError("Unsupported owned ZON pointer");
+            if (info.size != .slice or info.sentinel() != null) {
+                @compileError(
+                    "Unsupported owned ZON pointer",
+                );
+            }
             const out = try gpa.alloc(info.child, value.len);
             var initialized: usize = 0;
             errdefer {
@@ -33,7 +37,13 @@ pub fn clone(gpa: std.mem.Allocator, value: anytype) !@TypeOf(value) {
         },
         .@"union" => |info| {
             inline for (info.field_names) |name| {
-                if (std.meta.activeTag(value) == @field(std.meta.Tag(T), name)) return @unionInit(T, name, try clone(gpa, @field(value, name)));
+                if (std.meta.activeTag(value) == @field(std.meta.Tag(T), name)) {
+                    return @unionInit(
+                        T,
+                        name,
+                        try clone(gpa, @field(value, name)),
+                    );
+                }
             }
             unreachable;
         },
@@ -50,6 +60,7 @@ pub fn clone(gpa: std.mem.Allocator, value: anytype) !@TypeOf(value) {
         else => return value,
     }
 }
+
 pub fn free(gpa: std.mem.Allocator, value: anytype) void {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
@@ -67,19 +78,33 @@ pub fn free(gpa: std.mem.Allocator, value: anytype) void {
         else => {},
     }
 }
+
 pub fn parse(comptime T: type, gpa: std.mem.Allocator, source: [:0]const u8) !T {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     var diagnostics: std.zon.parse.Diagnostics = undefined;
-    return clone(gpa, try std.zon.parse.fromSlice(T, .{ .gpa = gpa, .arena = arena.allocator(), .source = source, .diagnostics = &diagnostics }));
+    return clone(gpa, try std.zon.parse.fromSlice(T, .{
+        .gpa = gpa,
+        .arena = arena.allocator(),
+        .source = source,
+        .diagnostics = &diagnostics,
+    }));
 }
 
 test "owned ZON clone releases partial nested allocations on failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationScenario, .{});
 }
+
 fn allocationScenario(gpa: std.mem.Allocator) !void {
-    const Fixture = struct { name: []const u8, entries: []const union(enum) { text: []const u8, names: ?[]const []const u8 } };
-    const value = try parse(Fixture, gpa, ".{ .name = \"fixture\", .entries = .{ .{ .text = \"value\" }, .{ .names = .{ \"first\", \"second\" } } } }");
+    const Fixture = struct {
+        name: []const u8,
+        entries: []const union(enum) { text: []const u8, names: ?[]const []const u8 },
+    };
+    const value = try parse(
+        Fixture,
+        gpa,
+        ".{ .name = \"fixture\", .entries = .{ .{ .text = \"value\" }, .{ .names = .{ \"first\", \"second\" } } } }",
+    );
     defer free(gpa, value);
     try std.testing.expectEqualStrings("second", value.entries[1].names.?[1]);
 }

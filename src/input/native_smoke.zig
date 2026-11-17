@@ -1,6 +1,7 @@
 //! Compile/link only. Default checks never execute this entry point.
 const keymap = @import("zkeymap");
 const source = @import("input-source");
+
 pub fn main() !void {
     var map: keymap.KeyMap = undefined;
     keymap.KeyMap.init(&map);

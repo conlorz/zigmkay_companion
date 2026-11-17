@@ -1,6 +1,7 @@
 //! Deterministic traversal only; callers own exclusions and digest formats.
 const std = @import("std");
 pub const Entry = struct { path: []const u8, kind: std.Io.File.Kind };
+
 pub const Policy = struct {
     excluded: *const fn (path: []const u8, basename: []const u8, kind: std.Io.File.Kind) bool,
     included: ?*const fn (path: []const u8, kind: std.Io.File.Kind) bool = null,
@@ -28,7 +29,12 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
         stack.deinit(gpa);
     }
     const empty = try gpa.dupe(u8, "");
-    stack.append(gpa, .{ .dir = root, .iterator = root.iterate(), .prefix = empty, .owns_dir = false }) catch |err| {
+    stack.append(gpa, .{
+        .dir = root,
+        .iterator = root.iterate(),
+        .prefix = empty,
+        .owns_dir = false,
+    }) catch |err| {
         gpa.free(empty);
         return err;
     };
@@ -53,7 +59,12 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
                 gpa.free(path);
                 return err;
             };
-            stack.append(gpa, .{ .dir = child, .iterator = child.iterate(), .prefix = path, .owns_dir = true }) catch |err| {
+            stack.append(gpa, .{
+                .dir = child,
+                .iterator = child.iterate(),
+                .prefix = path,
+                .owns_dir = true,
+            }) catch |err| {
                 child.close(io);
                 gpa.free(path);
                 return err;
@@ -153,6 +164,7 @@ test "traversal preserves caller policy, sorts paths and enforces bounds" {
         fn excluded(_: []const u8, name: []const u8, kind: std.Io.File.Kind) bool {
             return kind == .directory and std.mem.startsWith(u8, name, ".");
         }
+
         fn included(path: []const u8, kind: std.Io.File.Kind) bool {
             return kind == .file and (std.mem.endsWith(u8, path, ".zig") or std.mem.endsWith(u8, path, ".zon"));
         }

@@ -1,9 +1,23 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const Action = enum(i32) { open_editor = 1, toggle_companion = 2, quit = 3, zoom_out = 4, zoom_in = 5, zoom_reset = 6, bind_saved_project = 7 };
+pub const Action = enum(i32) {
+    open_editor = 1,
+    toggle_companion = 2,
+    quit = 3,
+    zoom_out = 4,
+    zoom_in = 5,
+    zoom_reset = 6,
+    bind_saved_project = 7,
+};
+
 pub const Status = enum { offline, connecting, live, stale, disconnected, incompatible };
-pub const MenuState = struct { live_mode: bool = false, status: Status = .offline, companion_visible: bool = true };
+
+pub const MenuState = struct {
+    live_mode: bool = false,
+    status: Status = .offline,
+    companion_visible: bool = true,
+};
 
 /// UI-thread-owned lifecycle. Window visibility never owns document lifetime.
 pub const Lifecycle = struct {
@@ -25,12 +39,15 @@ pub const Lifecycle = struct {
             .bind_saved_project => {}, // Application owns saved-project IO and live negotiation.
         }
     }
+
     pub fn cancelQuit(self: *Lifecycle) void {
         self.quit_requested = false;
     }
+
     pub fn finishQuit(self: *Lifecycle) void {
         self.running = false;
     }
+
     pub fn keepRunning(self: Lifecycle) bool {
         return self.running and (self.resident or self.companion_visible or self.editor_visible);
     }
@@ -47,26 +64,39 @@ pub fn Tray(comptime Backend: type) type {
             var self = Self{ .backend = backend };
             if (enabled) {
                 self.backend.install() catch |err| {
-                    if (!builtin.is_test) std.log.warn("Tray unavailable: {s}; closing windows will exit", .{@errorName(err)});
+                    if (!builtin.is_test) {
+                        std.log.warn(
+                            "Tray unavailable: {s}; closing windows will exit",
+                            .{@errorName(err)},
+                        );
+                    }
                     return self;
                 };
                 self.installed = true;
             }
             return self;
         }
+
         pub fn update(self: *Self, state: MenuState) void {
             if (!self.installed or (self.previous != null and std.meta.eql(self.previous.?, state))) return;
             self.backend.menu(state) catch |err| {
-                if (!builtin.is_test) std.log.warn("Tray menu unavailable: {s}; restoring window lifecycle", .{@errorName(err)});
+                if (!builtin.is_test) {
+                    std.log.warn(
+                        "Tray menu unavailable: {s}; restoring window lifecycle",
+                        .{@errorName(err)},
+                    );
+                }
                 self.deinit();
                 return;
             };
             self.previous = state;
         }
+
         pub fn poll(self: *Self) ?Action {
             if (!self.installed) return null;
             return self.backend.poll();
         }
+
         pub fn deinit(self: *Self) void {
             if (self.installed) self.backend.shutdown();
             self.installed = false;
@@ -76,19 +106,31 @@ pub fn Tray(comptime Backend: type) type {
 
 const Fake = struct {
     counters: *Counters,
-    const Counters = struct { installs: usize = 0, menus: usize = 0, shutdowns: usize = 0, fail: bool = false, fail_menu: bool = false, next: ?Action = null };
+
+    const Counters = struct {
+        installs: usize = 0,
+        menus: usize = 0,
+        shutdowns: usize = 0,
+        fail: bool = false,
+        fail_menu: bool = false,
+        next: ?Action = null,
+    };
+
     fn install(self: Fake) !void {
         self.counters.installs += 1;
         if (self.counters.fail) return error.Unavailable;
     }
+
     fn menu(self: Fake, _: MenuState) !void {
         self.counters.menus += 1;
         if (self.counters.fail_menu) return error.Unavailable;
     }
+
     fn poll(self: Fake) ?Action {
         defer self.counters.next = null;
         return self.counters.next;
     }
+
     fn shutdown(self: Fake) void {
         self.counters.shutdowns += 1;
     }
@@ -121,6 +163,7 @@ test "resident lifecycle hides both windows, reopens, and cancels quit" {
     life.finishQuit();
     try std.testing.expect(!life.keepRunning());
 }
+
 test "tray caches status, polls actions, and tears down exactly once" {
     var counters = Fake.Counters{};
     var tray = Tray(Fake).init(.{ .counters = &counters }, true);
@@ -135,6 +178,7 @@ test "tray caches status, polls actions, and tears down exactly once" {
     tray.deinit();
     try std.testing.expectEqual(@as(usize, 1), counters.shutdowns);
 }
+
 test "finite modes and tray failure do not leave invisible resident processes" {
     var counters = Fake.Counters{};
     var tray = Tray(Fake).init(.{ .counters = &counters }, false);

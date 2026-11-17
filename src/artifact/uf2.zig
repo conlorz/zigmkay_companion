@@ -18,7 +18,9 @@ pub fn validate(gpa: std.mem.Allocator, bytes: []const u8) !void {
     defer seen.deinit(gpa);
     for (0..count) |index| {
         const block = bytes[index * 512 ..][0..512];
-        if (word(block, 0) != 0x0a324655 or word(block, 4) != 0x9e5d5157 or word(block, 508) != 0x0ab16f30) return error.InvalidUf2Magic;
+        if (word(block, 0) != 0x0a324655 or
+            word(block, 4) != 0x9e5d5157 or
+            word(block, 508) != 0x0ab16f30) return error.InvalidUf2Magic;
         const flags = word(block, 8);
         if (flags & 0x2000 == 0 or word(block, 28) != 0xe48bff56) return error.MissingOrWrongRP2040Family;
         if (flags != 0x2000 or word(block, 16) != 256) return error.InvalidUf2FlashBlock;

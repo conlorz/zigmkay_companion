@@ -7,6 +7,7 @@ pub const compiler_origin_version: u16 = 2;
 /// Repository of the pinned `zigmkay_firmware` dependency in build.zig.zon.
 pub const repository = "conlorz/zigmkay_firmware";
 pub const CompilerKind = enum { checked_bundle, selected_installation };
+
 pub const Lock = struct {
     version: u16 = version,
     firmware_repository: []const u8 = repository,
@@ -30,30 +31,48 @@ pub const Lock = struct {
     toolchain_receipt_digest: Digest = @splat(0),
 
     pub fn validate(self: Lock) !void {
-        if (self.version != 1 and self.version != 2) return error.UnsupportedLockVersion;
-        const zero: Digest = @splat(0);
-        if (self.version == 1 and (self.compiler_kind != .checked_bundle or !std.mem.eql(u8, &self.compiler_tree_digest, &zero) or !std.mem.eql(u8, &self.toolchain_receipt_digest, &zero))) return error.InvalidLegacyCompilerOrigin;
-        if (self.version == 2 and (std.mem.eql(u8, &self.compiler_tree_digest, &zero) or std.mem.eql(u8, &self.toolchain_receipt_digest, &zero))) return error.MissingCompilerOrigin;
-        if (self.compiler_kind == .selected_installation and (std.mem.eql(u8, &self.compiler_tree_digest, &zero) or std.mem.eql(u8, &self.toolchain_receipt_digest, &zero) or !std.mem.eql(u8, &self.compiler_bundle_digest, &zero))) return error.InvalidSelectedCompilerOrigin;
-        if (self.version == 2 and self.compiler_kind == .checked_bundle and std.mem.eql(u8, &self.compiler_bundle_digest, &zero)) return error.InvalidCheckedCompilerOrigin;
+        if (self.version != version and self.version != compiler_origin_version) return error.UnsupportedLockVersion;
+        try self.validateCompilerOrigin();
         if (!std.mem.eql(u8, self.firmware_repository, repository)) return error.UnsupportedFirmwareRepository;
         if (self.firmware_revision.len != 40) return error.InvalidFirmwareRevision;
-        for (self.firmware_revision) |c| if (!std.ascii.isDigit(c) and (c < 'a' or c > 'f')) return error.InvalidFirmwareRevision;
+        for (self.firmware_revision) |c| {
+            if (!std.ascii.isDigit(c) and (c < 'a' or c > 'f')) return error.InvalidFirmwareRevision;
+        }
         if (!std.mem.eql(u8, self.zig_version, "0.17.0")) return error.UnsupportedCompilerVersion;
         if (self.board.len == 0 or self.board.len > 64) return error.InvalidBoardSelector;
-        for (self.board) |c| if (!std.ascii.isAlphanumeric(c) and c != '_') return error.InvalidBoardSelector;
+        for (self.board) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '_') return error.InvalidBoardSelector;
+        }
         if (!std.mem.eql(u8, self.target, "thumb-freestanding-eabi")) return error.UnsupportedTarget;
         if (!std.mem.eql(u8, self.optimize, "ReleaseSafe")) return error.UnsupportedOptimization;
-        if (self.action_abi != 1 or self.export_version != 1 or self.runner_version != 1 or self.device_version != 2) return error.UnsupportedTargetContract;
+        if (self.action_abi != 1 or
+            self.export_version != 1 or
+            self.runner_version != 1 or
+            self.device_version != 2) return error.UnsupportedTargetContract;
+    }
+
+    fn validateCompilerOrigin(self: Lock) !void {
+        const has_tree = !isZero(self.compiler_tree_digest);
+        const has_receipt = !isZero(self.toolchain_receipt_digest);
+        const has_bundle = !isZero(self.compiler_bundle_digest);
+        const records_origin = self.version == compiler_origin_version;
+        if (!records_origin and (self.compiler_kind != .checked_bundle or has_tree or has_receipt))
+            return error.InvalidLegacyCompilerOrigin;
+        if (records_origin and (!has_tree or !has_receipt)) return error.MissingCompilerOrigin;
+        if (self.compiler_kind == .selected_installation and (!has_tree or !has_receipt or has_bundle))
+            return error.InvalidSelectedCompilerOrigin;
+        if (records_origin and self.compiler_kind == .checked_bundle and !has_bundle)
+            return error.InvalidCheckedCompilerOrigin;
     }
 
     /// Fixed-field framing avoids dependence on ZON formatting or struct padding.
     pub fn digest(self: Lock) Digest {
         var hash = std.crypto.hash.sha2.Sha256.init(.{});
-        hash.update(if (self.version == 1) "zigmkay-target-lock-v1\x00" else "zigmkay-target-lock-v2\x00");
+        hash.update(
+            if (self.version == version) "zigmkay-target-lock-v1\x00" else "zigmkay-target-lock-v2\x00",
+        );
         inline for (@typeInfo(Lock).@"struct".field_names) |name| {
-            const origin = comptime std.mem.eql(u8, name, "compiler_kind") or std.mem.eql(u8, name, "compiler_tree_digest") or std.mem.eql(u8, name, "toolchain_receipt_digest");
-            if (self.version != 1 or !origin) {
+            if (self.version != version or comptime !isOriginField(name)) {
                 const value = @field(self, name);
                 const T = @TypeOf(value);
                 if (T == []const u8) {
@@ -87,6 +106,18 @@ pub const Lock = struct {
         return writer.toOwnedSlice();
     }
 };
+
+fn isZero(digest: Digest) bool {
+    return std.mem.allEqual(u8, &digest, 0);
+}
+
+/// Fields introduced by version 2; version 1 digests and files omit them.
+fn isOriginField(comptime name: []const u8) bool {
+    return std.mem.eql(u8, name, "compiler_kind") or
+        std.mem.eql(u8, name, "compiler_tree_digest") or
+        std.mem.eql(u8, name, "toolchain_receipt_digest");
+}
+
 // Frozen v1 serialization: newer origin fields must not reach older readers.
 const Legacy = struct {
     version: u16,
@@ -139,7 +170,10 @@ pub fn fixture() Lock {
 test "target locks roundtrip without compiling and reject future contracts" {
     const gpa = std.testing.allocator;
     const original = fixture();
-    try std.testing.expectEqualStrings("50a39d92a50b779bdef38805eff449c15637f05276ef5150984309982482a71a", &std.fmt.bytesToHex(original.digest(), .lower));
+    try std.testing.expectEqualStrings(
+        "50a39d92a50b779bdef38805eff449c15637f05276ef5150984309982482a71a",
+        &std.fmt.bytesToHex(original.digest(), .lower),
+    );
     const bytes = try original.serialize(gpa);
     defer gpa.free(bytes);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "compiler_kind") == null);

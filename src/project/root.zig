@@ -12,6 +12,7 @@ pub const assessment = @import("assessment.zig");
 pub const owned_zon = @import("owned-zon");
 
 pub const schema_version = 1;
+
 pub const Limits = struct {
     pub const document_bytes = 1024 * 1024;
     pub const source_bytes = 1024 * 1024;
@@ -22,12 +23,15 @@ pub const Limits = struct {
     pub const name_bytes = 128;
     pub const path_bytes = 240;
 };
+
 pub const LayerId = u32;
+
 pub const Hold = struct {
     hold_modifiers: model.Modifiers = .{},
     layer_id: ?LayerId = null,
     custom: ?u8 = null,
 };
+
 pub const Tap = struct {
     key_press: ?model.KeyCodeFire = null,
     one_shot: ?Hold = null,
@@ -35,6 +39,7 @@ pub const Tap = struct {
     media_key: ?model.MediaCode = null,
     mouse_action: ?model.MouseAction = null,
 };
+
 pub const Action = union(enum) {
     none,
     tap_only: Tap,
@@ -42,9 +47,18 @@ pub const Action = union(enum) {
     tap_hold: struct { tap: Tap, hold: Hold, tapping_term: model.TimeSpan, retro_tapping: bool = false },
     tap_with_autofire: struct { tap: Tap, initial_delay: model.TimeSpan, repeat_interval: model.TimeSpan },
 };
+
 pub const Layer = struct { id: LayerId, name: []const u8, actions: []const ?Action };
-pub const Combo = struct { key_ids: [2][]const u8, layer_id: LayerId, timeout: model.TimeSpan, action: Action };
+
+pub const Combo = struct {
+    key_ids: [2][]const u8,
+    layer_id: LayerId,
+    timeout: model.TimeSpan,
+    action: Action,
+};
+
 pub const Source = struct { path: []const u8, digest: [32]u8 };
+
 pub const Callback = struct {
     kind: enum { registered, attached },
     // Registered IDs resolve through a curated registry; attached IDs name their entry file.
@@ -56,6 +70,7 @@ pub const Callback = struct {
     index_constraints: ?[]const LayerId = null,
     sources: []const Source,
 };
+
 pub const Document = struct {
     schema_version: u32,
     board_id: [8]u8,
@@ -68,6 +83,7 @@ pub const Document = struct {
     encoders: []const Tap = &.{},
     callbacks: []const Callback = &.{},
 };
+
 /// Board-owned facts supplied by the catalog, never accepted from an editable document.
 pub const Board = struct {
     id: [8]u8,
@@ -76,6 +92,7 @@ pub const Board = struct {
     sides: []const model.Side,
     encoder_actions: usize = 0,
 };
+
 pub const ValidationError = error{
     UnsupportedVersion,
     DocumentTooLarge,
@@ -101,12 +118,14 @@ pub const Diagnostics = struct {
     parser: std.zon.parse.Diagnostics = .{ .errors = &.{} },
     arena: ?std.heap.ArenaAllocator = null,
     source: ?[:0]u8 = null,
+
     pub fn deinit(self: *Diagnostics, gpa: std.mem.Allocator) void {
         if (self.arena) |*arena| arena.deinit();
         if (self.source) |source| gpa.free(source);
         self.* = .{};
     }
 };
+
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, diagnostics: ?*Diagnostics) !Document {
     if (bytes.len > Limits.document_bytes) return error.DocumentTooLarge;
     if (diagnostics) |diag| std.debug.assert(diag.source == null);
@@ -121,15 +140,22 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8, diagnostics: ?*Diagnosti
         break :blk &diag.parser;
     } else &local_diagnostics;
     const arena = if (diagnostics) |diag| diag.arena.?.allocator() else local_arena.allocator();
-    const parsed = try std.zon.parse.fromSlice(Document, .{ .gpa = gpa, .arena = arena, .source = terminated, .diagnostics = parser_diagnostics });
+    const parsed = try std.zon.parse.fromSlice(Document, .{
+        .gpa = gpa,
+        .arena = arena,
+        .source = terminated,
+        .diagnostics = parser_diagnostics,
+    });
     const doc = try owned_zon.clone(gpa, parsed);
     errdefer deinit(gpa, doc);
     if (doc.schema_version != schema_version) return error.UnsupportedVersion;
     return doc;
 }
+
 pub fn deinit(gpa: std.mem.Allocator, doc: Document) void {
     owned_zon.free(gpa, doc);
 }
+
 pub fn serialize(gpa: std.mem.Allocator, doc: Document) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
@@ -137,24 +163,29 @@ pub fn serialize(gpa: std.mem.Allocator, doc: Document) ![]u8 {
     if (out.written().len > Limits.document_bytes) return error.DocumentTooLarge;
     return out.toOwnedSlice();
 }
+
 fn nameValid(name: []const u8) bool {
     if (name.len == 0 or name.len > Limits.name_bytes or !std.unicode.utf8ValidateSlice(name)) return false;
     for (name) |byte| if (byte < 0x20 or byte == 0x7f) return false;
     return true;
 }
+
 pub fn pathValid(path: []const u8) bool {
     return @import("portable_path.zig").valid(path, Limits.path_bytes) and std.mem.endsWith(u8, path, ".zig");
 }
+
 pub fn layerIndex(doc: Document, id: LayerId) ValidationError!model.LayerIndex {
     if (doc.layers.len > Limits.layers) return error.InvalidDimensions;
     for (doc.layers, 0..) |layer, index| if (layer.id == id) return @intCast(index);
     return error.InvalidLayer;
 }
+
 pub fn keyIndex(doc: Document, id: []const u8) ValidationError!model.KeyIndex {
     if (doc.key_ids.len > Limits.keys) return error.InvalidDimensions;
     for (doc.key_ids, 0..) |key, index| if (std.mem.eql(u8, key, id)) return @intCast(index);
     return error.InvalidKey;
 }
+
 fn customValid(doc: Document, id: ?u8, reserved: bool) ValidationError!void {
     const value = id orelse return;
     if (value == 0) return error.InvalidCallback;
@@ -165,14 +196,27 @@ fn customValid(doc: Document, id: ?u8, reserved: bool) ValidationError!void {
     for (doc.callbacks) |callback| for (callback.ids) |declared| if (value == declared) return;
     return error.InvalidCallback;
 }
+
 pub fn lowerHold(doc: Document, value: Hold) ValidationError!model.HoldDef {
     try customValid(doc, value.custom, true);
-    return .{ .hold_modifiers = value.hold_modifiers, .hold_layer = if (value.layer_id) |id| try layerIndex(doc, id) else null, .custom = value.custom };
+    return .{
+        .hold_modifiers = value.hold_modifiers,
+        .hold_layer = if (value.layer_id) |id| try layerIndex(doc, id) else null,
+        .custom = value.custom,
+    };
 }
+
 pub fn lowerTap(doc: Document, value: Tap) ValidationError!model.TapDef {
     try customValid(doc, value.custom, true);
-    return .{ .key_press = value.key_press, .one_shot = if (value.one_shot) |hold| try lowerHold(doc, hold) else null, .custom = value.custom, .media_key = value.media_key, .mouse_action = value.mouse_action };
+    return .{
+        .key_press = value.key_press,
+        .one_shot = if (value.one_shot) |hold| try lowerHold(doc, hold) else null,
+        .custom = value.custom,
+        .media_key = value.media_key,
+        .mouse_action = value.mouse_action,
+    };
 }
+
 pub fn lowerAction(doc: Document, value: Action) ValidationError!model.KeyDef {
     return switch (value) {
         .none => .none,
@@ -180,20 +224,42 @@ pub fn lowerAction(doc: Document, value: Action) ValidationError!model.KeyDef {
         .hold_only => |hold| .{ .hold_only = try lowerHold(doc, hold) },
         .tap_hold => |th| blk: {
             if (th.tapping_term.ms == 0) return error.InvalidTiming;
-            break :blk .{ .tap_hold = .{ .tap = try lowerTap(doc, th.tap), .hold = try lowerHold(doc, th.hold), .tapping_term = th.tapping_term, .retro_tapping = th.retro_tapping } };
+            break :blk .{ .tap_hold = .{
+                .tap = try lowerTap(doc, th.tap),
+                .hold = try lowerHold(doc, th.hold),
+                .tapping_term = th.tapping_term,
+                .retro_tapping = th.retro_tapping,
+            } };
         },
         .tap_with_autofire => |fire| blk: {
             if (fire.repeat_interval.ms == 0) return error.InvalidTiming;
-            break :blk .{ .tap_with_autofire = .{ .tap = try lowerTap(doc, fire.tap), .initial_delay = fire.initial_delay, .repeat_interval = fire.repeat_interval } };
+            break :blk .{ .tap_with_autofire = .{
+                .tap = try lowerTap(doc, fire.tap),
+                .initial_delay = fire.initial_delay,
+                .repeat_interval = fire.repeat_interval,
+            } };
         },
     };
 }
+
 pub fn validate(doc: Document, board: Board) !void {
     if (doc.schema_version != schema_version) return error.UnsupportedVersion;
-    if (!std.mem.eql(u8, &doc.board_id, &board.id) or !std.mem.eql(u8, doc.physical_layout, board.physical_layout)) return error.InvalidBoard;
-    try protocol.validateIdentity(.{ .board_id = doc.board_id, .profile_id = doc.profile_id, .digest = @splat(0), .dimensions = .{ .key_count = 1, .layer_count = 1 } });
+    if (!std.mem.eql(u8, &doc.board_id, &board.id) or
+        !std.mem.eql(u8, doc.physical_layout, board.physical_layout)) return error.InvalidBoard;
+    try protocol.validateIdentity(.{
+        .board_id = doc.board_id,
+        .profile_id = doc.profile_id,
+        .digest = @splat(0),
+        .dimensions = .{ .key_count = 1, .layer_count = 1 },
+    });
     if (!nameValid(doc.name)) return error.InvalidName;
-    if (doc.key_ids.len == 0 or doc.key_ids.len > Limits.keys or doc.key_ids.len != board.key_ids.len or board.sides.len != doc.key_ids.len or doc.layers.len == 0 or doc.layers.len > Limits.layers or doc.encoders.len != board.encoder_actions) return error.InvalidDimensions;
+    if (doc.key_ids.len == 0 or
+        doc.key_ids.len > Limits.keys or
+        doc.key_ids.len != board.key_ids.len or
+        board.sides.len != doc.key_ids.len or
+        doc.layers.len == 0 or
+        doc.layers.len > Limits.layers or
+        doc.encoders.len != board.encoder_actions) return error.InvalidDimensions;
     for (doc.key_ids, board.key_ids, 0..) |key, expected, index| {
         if (!nameValid(key) or !std.mem.eql(u8, key, expected)) return error.InvalidKey;
         for (doc.key_ids[0..index]) |earlier| if (std.mem.eql(u8, earlier, key)) return error.InvalidKey;
@@ -202,30 +268,40 @@ pub fn validate(doc: Document, board: Board) !void {
     var ids: [253]bool = @splat(false);
     if (doc.callbacks.len > 252) return error.InvalidCallback;
     for (doc.callbacks, 0..) |callback, ci| {
-        if (callback.abi_version != 1 or callback.ids.len == 0 or callback.sources.len == 0) return error.InvalidCallback;
+        if (callback.abi_version != 1 or
+            callback.ids.len == 0 or
+            callback.sources.len == 0) return error.InvalidCallback;
         switch (callback.kind) {
             .attached => if (!pathValid(callback.binding)) return error.InvalidPath,
             .registered => {
                 if (callback.binding.len == 0 or callback.binding.len > Limits.name_bytes) return error.InvalidCallback;
-                for (callback.binding) |byte| if (!(std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-')) return error.InvalidCallback;
+                for (callback.binding) |byte| {
+                    if (!(std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-')) return error.InvalidCallback;
+                }
             },
         }
-        for (doc.callbacks[0..ci]) |earlier| if (std.mem.eql(u8, callback.binding, earlier.binding)) return error.InvalidCallback;
+        for (doc.callbacks[0..ci]) |earlier| {
+            if (std.mem.eql(u8, callback.binding, earlier.binding)) return error.InvalidCallback;
+        }
         for (callback.ids) |id| {
             if (id == 0 or id >= 253 or ids[id]) return error.InvalidCallback;
             ids[id] = true;
         }
         for (callback.required_layers) |id| _ = try layerIndex(doc, id);
-        if (callback.index_constraints) |constraints| for (constraints) |id| {
-            _ = try layerIndex(doc, id);
-        };
+        if (callback.index_constraints) |constraints| {
+            for (constraints) |id| {
+                _ = try layerIndex(doc, id);
+            }
+        }
         source_count += callback.sources.len;
         if (source_count > Limits.source_files) return error.SourceLimit;
         var entry_found = false;
         for (callback.sources, 0..) |source, si| {
             if (!pathValid(source.path)) return error.InvalidPath;
             if (std.mem.eql(u8, source.path, callback.binding)) entry_found = true;
-            for (callback.sources[0..si]) |earlier| if (std.mem.eql(u8, source.path, earlier.path)) return error.DuplicateSource;
+            for (callback.sources[0..si]) |earlier| {
+                if (std.mem.eql(u8, source.path, earlier.path)) return error.DuplicateSource;
+            }
         }
         if (callback.kind == .attached and !entry_found) return error.InvalidCallback;
     }
@@ -254,12 +330,15 @@ pub fn validate(doc: Document, board: Board) !void {
     }
     for (doc.encoders) |tap| _ = try lowerTap(doc, tap);
 }
+
 fn holdReferences(hold: Hold, id: LayerId) bool {
     return hold.layer_id == id;
 }
+
 fn tapReferences(tap: Tap, id: LayerId) bool {
     return if (tap.one_shot) |hold| holdReferences(hold, id) else false;
 }
+
 fn actionReferences(action: Action, id: LayerId) bool {
     return switch (action) {
         .none => false,
@@ -269,6 +348,7 @@ fn actionReferences(action: Action, id: LayerId) bool {
         .tap_with_autofire => |fire| tapReferences(fire.tap, id),
     };
 }
+
 /// Checks deletion only. The editor applies it as one undoable edit after validation.
 pub fn canDeleteLayer(doc: Document, id: LayerId) ValidationError!void {
     const index = try layerIndex(doc, id);
@@ -279,7 +359,9 @@ pub fn canDeleteLayer(doc: Document, id: LayerId) ValidationError!void {
             if (actionReferences(value, id)) return error.LayerReferenced;
         };
     }
-    for (doc.combos) |combo| if (combo.layer_id == id or actionReferences(combo.action, id)) return error.LayerReferenced;
+    for (doc.combos) |combo| {
+        if (combo.layer_id == id or actionReferences(combo.action, id)) return error.LayerReferenced;
+    }
     for (doc.encoders) |tap| if (tapReferences(tap, id)) return error.LayerReferenced;
     for (doc.callbacks) |callback| {
         for (callback.required_layers) |required| if (required == id) return error.LayerReferenced;

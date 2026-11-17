@@ -32,6 +32,7 @@ const SideSource = enum {
 /// What each entrypoint owns beyond its keymap. Every selected entrypoint must
 /// be listed here, so that adding a board forces a review of its main file.
 const Binding = struct { root: []const u8, sides: SideSource = .keymap, encoder_actions: usize = 0 };
+
 const bindings = [_]Binding{
     .{ .root = "my_keyboards/rollercole/clacky_chan.zig" },
     .{ .root = "my_keyboards/janbeelte/clackychan_main.zig" },
@@ -57,7 +58,11 @@ fn unassignedSides(comptime count: usize) []const core.Side {
 
 pub const entries = blk: {
     @setEvalBranchQuota(100_000);
-    if (profiles.len != boards.entries.len) @compileError("Default keymap profiles do not match the board inventory");
+    if (profiles.len != boards.entries.len) {
+        @compileError(
+            "Default keymap profiles do not match the board inventory",
+        );
+    }
     var result: [boards.entries.len]Entry = undefined;
     for (boards.entries, profiles, 0..) |board, Profile, index| {
         var selected: ?Binding = null;
@@ -65,7 +70,9 @@ pub const entries = blk: {
             if (selected != null) @compileError("Duplicate processing descriptor root binding");
             selected = binding;
         };
-        const binding = selected orelse @compileError("Missing processing descriptor for " ++ board.root_source_file);
+        const binding = selected orelse @compileError(
+            "Missing processing descriptor for " ++ board.root_source_file,
+        );
         const key_count = @typeInfo(@typeInfo(@TypeOf(Profile.keymap)).array.child).array.len;
         if (@hasDecl(Profile, "key_count") and Profile.key_count != key_count)
             @compileError("Default keymap key_count differs from its layer width: " ++ board.default_keymap);
@@ -73,8 +80,17 @@ pub const entries = blk: {
             .keymap => &Profile.sides,
             .unassigned => unassignedSides(key_count),
         };
-        if (sides.len != key_count) @compileError("Default keymap sides differ from its key count: " ++ board.default_keymap);
-        result[index] = .{ .selector = board.name, .key_count = key_count, .sides = sides, .encoder_actions = binding.encoder_actions };
+        if (sides.len != key_count) {
+            @compileError(
+                "Default keymap sides differ from its key count: " ++ board.default_keymap,
+            );
+        }
+        result[index] = .{
+            .selector = board.name,
+            .key_count = key_count,
+            .sides = sides,
+            .encoder_actions = binding.encoder_actions,
+        };
     }
     break :blk result;
 };

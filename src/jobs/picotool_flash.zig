@@ -43,7 +43,15 @@ pub fn parse(args: []const []const u8) !Config {
     var seen: u8 = 0;
     while (index < args.len) {
         const flag = args[index];
-        const names = [_][]const u8{ "--sha256", "--discovery-ms", "--command-ms", "--bus", "--address", "--serial", "--cancel-stdin" };
+        const names = [_][]const u8{
+            "--sha256",
+            "--discovery-ms",
+            "--command-ms",
+            "--bus",
+            "--address",
+            "--serial",
+            "--cancel-stdin",
+        };
         const tag = for (names, 0..) |name, tag| {
             if (std.mem.eql(u8, name, flag)) break tag;
         } else return error.InvalidArguments;
@@ -91,7 +99,10 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const config = parse(args[1..]) catch std.process.fatal("{s}", .{usage});
     controlledExecute(init.gpa, init.io, config) catch |err| {
-        std.process.fatal("flash stopped: {t}; interrupted load/reboot requires explicit recovery, never automatic retry", .{err});
+        std.process.fatal(
+            "flash stopped: {t}; interrupted load/reboot requires explicit recovery, never automatic retry",
+            .{err},
+        );
     };
 }
 
@@ -122,12 +133,24 @@ fn readCancel(io: std.Io) anyerror!void {
 
 pub fn execute(gpa: std.mem.Allocator, io: std.Io, config: Config) !void {
     const hash = try validateFile(gpa, io, config);
-    std.debug.print("Firmware: {s}\nSHA-256: {s}\nphase: discovery\n", .{ config.firmware, std.fmt.bytesToHex(hash, .lower) });
-    const deadline = std.Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromMilliseconds(config.discovery_ms), .clock = .awake });
+    std.debug.print(
+        "Firmware: {s}\nSHA-256: {s}\nphase: discovery\n",
+        .{ config.firmware, std.fmt.bytesToHex(hash, .lower) },
+    );
+    const deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+        .raw = .fromMilliseconds(config.discovery_ms),
+        .clock = .awake,
+    });
     while (true) {
         const remaining = std.Io.Clock.Timestamp.now(io, .awake).durationTo(deadline).raw.toMilliseconds();
         if (remaining <= 0) return error.DiscoveryTimeout;
-        var result = tool(gpa, io, config, &.{"info"}, @min(config.command_ms, @as(u32, @intCast(remaining)))) catch |err| {
+        var result = tool(
+            gpa,
+            io,
+            config,
+            &.{"info"},
+            @min(config.command_ms, @as(u32, @intCast(remaining))),
+        ) catch |err| {
             if (err == error.CommandTimeout) return error.DiscoveryTimeout;
             return err;
         };
@@ -167,7 +190,10 @@ pub fn execute(gpa: std.mem.Allocator, io: std.Io, config: Config) !void {
     defer freeResult(gpa, reboot);
     std.debug.print("{s}{s}", .{ reboot.stdout, reboot.stderr });
     if (!reboot.term.success()) return error.RebootFailed;
-    std.debug.print("phase: reboot-complete (running identity still requires host reconnect verification)\n", .{});
+    std.debug.print(
+        "phase: reboot-complete (running identity still requires host reconnect verification)\n",
+        .{},
+    );
 }
 
 fn validateFile(gpa: std.mem.Allocator, io: std.Io, config: Config) ![32]u8 {
@@ -205,14 +231,20 @@ fn freeResult(gpa: std.mem.Allocator, result: std.process.RunResult) void {
 
 fn invoke(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) anyerror!std.process.RunResult {
     try io.checkCancel();
-    var child = try std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .pipe, .stderr = .pipe });
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
     defer child.kill(io);
     var buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var reader: std.Io.File.MultiReader = undefined;
     reader.init(gpa, io, buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
     defer reader.deinit();
     while (reader.fill(4096, .none)) |_| {
-        if (reader.reader(0).buffered().len > 64 * 1024 or reader.reader(1).buffered().len > 64 * 1024) return error.StreamTooLong;
+        if (reader.reader(0).buffered().len > 64 * 1024 or
+            reader.reader(1).buffered().len > 64 * 1024) return error.StreamTooLong;
     } else |err| switch (err) {
         error.EndOfStream => {},
         else => return err,
@@ -238,7 +270,13 @@ fn expire(io: std.Io, ms: u32) anyerror!void {
 
 /// The watchdog covers child wait, even if a hung child closes its output pipes.
 /// On cancellation the invocation kills and reaps the child before returning.
-pub fn tool(gpa: std.mem.Allocator, io: std.Io, config: Config, command: []const []const u8, ms: u32) !std.process.RunResult {
+pub fn tool(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    config: Config,
+    command: []const []const u8,
+    ms: u32,
+) !std.process.RunResult {
     var argv: [10][]const u8 = undefined;
     argv[0] = config.picotool;
     @memcpy(argv[1..][0..command.len], command);

@@ -4,6 +4,7 @@ const cache = @import("label_cache.zig");
 const companion = @import("session");
 const protocol = @import("device-protocol");
 const model = @import("layout-model");
+
 pub const Frame = struct {
     labels: ?*const cache.LabelCache = null,
     profile: [8]u8 = @splat(0),
@@ -12,32 +13,52 @@ pub const Frame = struct {
     active: u16 = 1,
     modifiers: model.Modifiers = .{},
     pressed: []const bool = &.{},
+
     pub fn content(self: Frame, index: usize) ?*const cache.CachedKeyContent {
         const labels = self.labels orelse return null;
         if (index >= labels.key_count) return null;
         return labels.lookupActiveChecked(self.layer, index, self.modifiers, self.active) catch null;
     }
 };
+
 pub const Presenter = struct {
     accepted_identity: ?protocol.Identity = null,
+
     pub fn invalidate(self: *Presenter) void {
         self.accepted_identity = null;
     }
+
     /// Labels are built from the immutable project matching `binding`. Missing
     /// or newly mismatched identity cannot promote a draft as a live layout.
     /// The caller owns labels, session and output until the draw has finished.
-    pub fn select(self: *Presenter, labels: ?*const cache.LabelCache, binding: ?protocol.Identity, session: ?*const companion.Session, output: []bool) !Frame {
+    pub fn select(
+        self: *Presenter,
+        labels: ?*const cache.LabelCache,
+        binding: ?protocol.Identity,
+        session: ?*const companion.Session,
+        output: []bool,
+    ) !Frame {
         const verified = labels orelse return .{};
         const identity = binding orelse return .{};
         const current = session orelse return .{};
         try protocol.validateIdentity(identity);
-        if (!std.meta.eql(identity, current.expected) or !std.meta.eql(identity.dimensions, current.state.dimensions) or verified.key_count != identity.dimensions.key_count or verified.layer_count != identity.dimensions.layer_count) {
+        if (!std.meta.eql(identity, current.expected) or
+            !std.meta.eql(identity.dimensions, current.state.dimensions) or
+            verified.key_count != identity.dimensions.key_count or
+            verified.layer_count != identity.dimensions.layer_count)
+        {
             self.invalidate();
             return .{};
         }
         const coherent = current.token != 0 and current.hasCoherentState();
         if (output.len < verified.key_count) return error.LiveFrameStorageTooSmall;
-        if (coherent) try protocol.validateLayers(current.state.active_layers, current.state.highest_layer, identity.dimensions);
+        if (coherent) {
+            try protocol.validateLayers(
+                current.state.active_layers,
+                current.state.highest_layer,
+                identity.dimensions,
+            );
+        }
         if (coherent) self.accepted_identity = identity else {
             const accepted = self.accepted_identity orelse return .{};
             if (!std.meta.eql(accepted, identity)) {
@@ -88,9 +109,11 @@ pub const Visibility = struct {
     down: bool = false,
     pressed_at: u64 = 0,
     pub const hold_ms = 250;
+
     pub fn update(self: *Visibility, frame: Frame, signals: []const Signal) bool {
         return self.updateAt(frame, signals, 0);
     }
+
     pub fn updateAt(self: *Visibility, frame: Frame, signals: []const Signal, now: u64) bool {
         if (frame.labels == null or frame.stale) {
             self.held = false;
@@ -196,11 +219,17 @@ test "verified visibility preserves releases and clears holds on stale or mismat
     try t.expect(!toggle.update(frame, &press));
     try t.expect(!toggle.update(.{}, &press));
 }
+
 test "live frame waits for coherent identity and clears stale held state" {
     const t = std.testing;
     var labels = try cache.LabelCache.init(t.allocator, 4, 34);
     defer labels.deinit();
-    const identity = protocol.Identity{ .board_id = "lk7\x00\x00\x00\x00\x00".*, .profile_id = "eurmac\x00\x00".*, .digest = @splat(1), .dimensions = .{ .key_count = 34, .layer_count = 4 } };
+    const identity = protocol.Identity{
+        .board_id = "lk7\x00\x00\x00\x00\x00".*,
+        .profile_id = "eurmac\x00\x00".*,
+        .digest = @splat(1),
+        .dimensions = .{ .key_count = 34, .layer_count = 4 },
+    };
     var session = try companion.Session.init(identity);
     var presenter = Presenter{};
     var storage: [34]bool = @splat(true);
@@ -229,16 +258,25 @@ test "live frame waits for coherent identity and clears stale held state" {
     try t.expect((try presenter.select(&labels, changed, &session, &storage)).labels == null);
     try t.expect(presenter.accepted_identity == null);
 }
+
 test "hello and the first state promote the verified presentation atomically" {
     const t = std.testing;
     var labels = try cache.LabelCache.init(t.allocator, 2, 3);
     defer labels.deinit();
-    const identity = protocol.Identity{ .board_id = "fixture\x00".*, .profile_id = "profile\x00".*, .digest = @splat(2), .dimensions = .{ .key_count = 3, .layer_count = 2 } };
+    const identity = protocol.Identity{
+        .board_id = "fixture\x00".*,
+        .profile_id = "profile\x00".*,
+        .digest = @splat(2),
+        .dimensions = .{ .key_count = 3, .layer_count = 2 },
+    };
     var session = try companion.Session.init(identity);
     var presenter = Presenter{};
     var output: [3]bool = @splat(false);
     _ = try session.connect(0, 42);
-    const hello = try protocol.encode(.{ .hello = .{ .dimensions = identity.dimensions, .keymap_id = protocol.keymapId(identity) } }, identity.dimensions);
+    const hello = try protocol.encode(.{ .hello = .{
+        .dimensions = identity.dimensions,
+        .keymap_id = protocol.keymapId(identity),
+    } }, identity.dimensions);
     _ = session.receive(&hello, 1);
     try t.expect((try presenter.select(&labels, identity, &session, &output)).labels == null);
     var state = protocol.State{ .sequence = 9, .active_layers = 3, .highest_layer = 1 };
@@ -252,7 +290,12 @@ test "hello and the first state promote the verified presentation atomically" {
     var visibility = Visibility{ .mode = .hold };
     try t.expect(visibility.update(frame, &.{.{ .kind = .overlay_toggle, .pressed = true }}));
     // A sequence gap makes the presentation stale until the keyboard resends state.
-    const gap = try protocol.encode(.{ .key = .{ .sequence = 13, .event = .{ .key_index = 2, .pressed = false, .layer = 1, .modifiers = .{} } } }, identity.dimensions);
+    const gap = try protocol.encode(.{ .key = .{ .sequence = 13, .event = .{
+        .key_index = 2,
+        .pressed = false,
+        .layer = 1,
+        .modifiers = .{},
+    } } }, identity.dimensions);
     try t.expectEqual(@as(?protocol.Command, .connect), session.receive(&gap, 3).send);
     const stale = try presenter.select(&labels, identity, &session, &output);
     try t.expect(stale.stale and !stale.pressed[2]);
@@ -261,6 +304,12 @@ test "hello and the first state promote the verified presentation atomically" {
 
 test "keyboard signals convert to overlay signals" {
     var buffer: [max_signals]Signal = undefined;
-    const converted = fromKeyboard(&buffer, &.{ .{ .kind = .overlay_toggle, .pressed = true }, .{ .kind = .shutdown, .pressed = false } });
-    try std.testing.expectEqualSlices(Signal, &.{ .{ .kind = .overlay_toggle, .pressed = true }, .{ .kind = .shutdown, .pressed = false } }, converted);
+    const converted = fromKeyboard(&buffer, &.{
+        .{ .kind = .overlay_toggle, .pressed = true },
+        .{ .kind = .shutdown, .pressed = false },
+    });
+    try std.testing.expectEqualSlices(Signal, &.{
+        .{ .kind = .overlay_toggle, .pressed = true },
+        .{ .kind = .shutdown, .pressed = false },
+    }, converted);
 }

@@ -1,4 +1,4 @@
-//! Offline vertical slice: an existing curated project exported for official LK7.
+//! Offline export of an existing curated project for the official LK7 board.
 const std = @import("std");
 const project = @import("keymap-project");
 

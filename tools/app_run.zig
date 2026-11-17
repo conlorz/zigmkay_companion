@@ -1,5 +1,6 @@
 //! AppDir entrypoint. Derive paths from this executable, never APPDIR or cwd.
 const std = @import("std");
+
 pub fn main(init: std.process.Init) !void {
     const a = init.arena.allocator();
     const executable = try std.process.executablePathAlloc(init.io, a);

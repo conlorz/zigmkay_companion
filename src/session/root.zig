@@ -48,6 +48,7 @@ pub const Mismatch = enum { unsupported_version, dimensions, unknown_keymap, key
 /// The enter-bootloader command has no acknowledgement. `sent` survives the
 /// disconnect caused by the reboot and is cleared by the next connect.
 pub const BootloaderStatus = enum { idle, sent };
+
 /// What one received report produced: a command to send, a validated key
 /// event for history consumers, or neither.
 pub const Outcome = struct {
@@ -175,7 +176,10 @@ pub const Session = struct {
     /// Decodes and applies one keyboard report. Malformed reports resynchronise
     /// a coherent session; unknown report ids are ignored.
     pub fn receive(self: *Session, bytes: []const u8, now: u64) Outcome {
-        const decoded = protocol.decode(bytes, self.expected.dimensions) catch |err| return self.malformed(now, err);
+        const decoded = protocol.decode(
+            bytes,
+            self.expected.dimensions,
+        ) catch |err| return self.malformed(now, err);
         const message = decoded orelse return .{};
         return self.apply(message, now);
     }
@@ -191,7 +195,8 @@ pub const Session = struct {
                 self.observed = hello;
                 if (!std.meta.eql(hello.dimensions, self.expected.dimensions)) return self.refuse(.dimensions);
                 if (protocol.isUnknownKeymap(hello.keymap_id)) return self.refuse(.unknown_keymap);
-                if (!std.mem.eql(u8, &hello.keymap_id, &protocol.keymapId(self.expected))) return self.refuse(.keymap_id);
+                if (!std.mem.eql(u8, &hello.keymap_id, &protocol.keymapId(self.expected)))
+                    return self.refuse(.keymap_id);
                 // A repeated hello restarts synchronisation; a state follows it.
                 self.phase = .synchronizing;
                 self.state = State.init(self.expected.dimensions) catch unreachable;
@@ -226,7 +231,12 @@ pub const Session = struct {
 };
 
 test "bootloader request is sent once per connection and survives the reboot disconnect" {
-    const identity = protocol.Identity{ .board_id = "lk7\x00\x00\x00\x00\x00".*, .profile_id = "default\x00".*, .digest = @splat(1), .dimensions = .{ .key_count = 1, .layer_count = 1 } };
+    const identity = protocol.Identity{
+        .board_id = "lk7\x00\x00\x00\x00\x00".*,
+        .profile_id = "default\x00".*,
+        .digest = @splat(1),
+        .dimensions = .{ .key_count = 1, .layer_count = 1 },
+    };
     var session = try Session.init(identity);
     try std.testing.expectEqual(@as(?protocol.Command, null), session.requestBootloader());
     _ = try session.connect(0, 42);

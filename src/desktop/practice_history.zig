@@ -9,6 +9,7 @@ const analysis = @import("practice_analysis.zig");
 const retention = @import("practice_retention.zig");
 pub const Record = results.Record;
 pub const max_record_bytes = 512 * 1024;
+
 pub const Query = struct {
     all: results.Aggregate = .{},
     recent: results.Aggregate = .{},
@@ -32,6 +33,7 @@ pub const Query = struct {
     database_events: usize = 0,
     exported: bool = false,
     imported: ?usize = null,
+
     pub fn deinit(self: *Query) void {
         if (self.page.len != 0) self.progress_allocator.free(self.page);
         self.page = &.{};
@@ -44,26 +46,45 @@ pub const Query = struct {
         self.analysis = null;
         self.retention = null;
     }
+
+    /// Records the newest scored runs, ordered newest first.
+    fn setRecent(self: *Query, newest: []const Record) !void {
+        for (newest, 0..) |*record, index| {
+            try self.recent.add(record);
+            self.recent_ids[index] = record.id;
+        }
+        self.recent_count = newest.len;
+        if (newest.len == 10) self.oldest_recent = newest[9];
+    }
 };
+
 pub fn newer(a: Record, b: Record) bool {
     return if (a.timestamp == b.timestamp) std.mem.order(u8, &a.id, &b.id) == .gt else a.timestamp > b.timestamp;
 }
+
 fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Record {
     const terminated = try gpa.dupeSentinel(u8, bytes, 0);
     defer gpa.free(terminated);
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     var diagnostics: std.zon.parse.Diagnostics = undefined;
-    const record = try std.zon.parse.fromSlice(Record, .{ .gpa = gpa, .arena = arena.allocator(), .source = terminated, .diagnostics = &diagnostics });
+    const record = try std.zon.parse.fromSlice(Record, .{
+        .gpa = gpa,
+        .arena = arena.allocator(),
+        .source = terminated,
+        .diagnostics = &diagnostics,
+    });
     try record.validate();
     return record;
 }
+
 fn filename(id: [16]u8, buffer: *[36]u8) []const u8 {
     const hex = std.fmt.bytesToHex(id, .lower);
     @memcpy(buffer[0..32], &hex);
     @memcpy(buffer[32..], ".zon");
     return buffer;
 }
+
 pub fn save(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, record: *const Record) !void {
     try record.validate();
     var encoded: std.Io.Writer.Allocating = .init(gpa);
@@ -82,12 +103,27 @@ pub fn save(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, record: *
         if (!std.mem.eql(u8, old, encoded.written())) return error.PracticeRunCollision;
     };
 }
+
 /// Each page uses a frozen exclusive upper boundary. New writes cannot make
 /// older pages duplicate runs. All-history aggregation still includes every run.
-pub fn query(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, cohort: results.Cohort, before: ?Record) !Query {
+pub fn query(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    directory: std.Io.Dir,
+    cohort: results.Cohort,
+    before: ?Record,
+) !Query {
     return queryTracked(gpa, io, directory, cohort, before, null);
 }
-fn queryTracked(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, cohort: results.Cohort, before: ?Record, current_id: ?[16]u8) !Query {
+
+fn queryTracked(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    directory: std.Io.Dir,
+    cohort: results.Cohort,
+    before: ?Record,
+    current_id: ?[16]u8,
+) !Query {
     var output: Query = .{ .requested_id = current_id, .progress_allocator = gpa };
     errdefer output.deinit();
     output.page = try gpa.alloc(Record, 10);
@@ -96,7 +132,7 @@ fn queryTracked(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, cohor
     var newest_count: usize = 0;
     var iterator = directory.iterate();
     while (try iterator.next(io)) |entry| {
-        if (entry.kind != .file or entry.name.len != 36 or !std.mem.endsWith(u8, entry.name, ".zon")) continue;
+        if (!isRecordFile(entry)) continue;
         const bytes = directory.readFileAlloc(io, entry.name, gpa, .limited(max_record_bytes)) catch {
             output.rejected += 1;
             continue;
@@ -113,22 +149,20 @@ fn queryTracked(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir, cohor
         }
         if (!std.meta.eql(record.cohort, cohort)) continue;
         output.total += 1;
-        if (current_id) |id| if (std.mem.eql(u8, &id, &record.id)) {
-            output.contains_requested = true;
-        };
+        if (current_id) |id| {
+            if (std.mem.eql(u8, &id, &record.id)) {
+                output.contains_requested = true;
+            }
+        }
         try output.all.add(&record);
         if (record.scored) insert(&newest, &newest_count, record);
         if (before) |boundary| if (!newer(boundary, record)) continue;
         insert(output.page, &output.page_count, record);
     }
-    for (newest[0..newest_count], 0..) |*record, index| {
-        try output.recent.add(record);
-        output.recent_ids[index] = record.id;
-    }
-    output.recent_count = newest_count;
-    if (newest_count == 10) output.oldest_recent = newest[9];
+    try output.setRecent(newest[0..newest_count]);
     return output;
 }
+
 fn insert(page: []Record, count: *usize, record: Record) void {
     var index: usize = 0;
     while (index < count.* and !newer(record, page[index])) : (index += 1) {}
@@ -139,6 +173,7 @@ fn insert(page: []Record, count: *usize, record: Record) void {
     page[index] = record;
     count.* = @min(count.* + 1, 10);
 }
+
 /// Explicit clearing first validates every named result. Corrupt/future files
 /// are retained and require deliberate user handling rather than silent loss.
 pub fn clear(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir) !void {
@@ -146,7 +181,7 @@ pub fn clear(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir) !void {
     var names: std.ArrayList([36]u8) = .empty;
     defer names.deinit(gpa);
     while (try iterator.next(io)) |entry| {
-        if (entry.kind != .file or entry.name.len != 36 or !std.mem.endsWith(u8, entry.name, ".zon")) continue;
+        if (!isRecordFile(entry)) continue;
         const bytes = try directory.readFileAlloc(io, entry.name, gpa, .limited(max_record_bytes));
         defer gpa.free(bytes);
         const record = try parse(gpa, bytes);
@@ -156,6 +191,7 @@ pub fn clear(gpa: std.mem.Allocator, io: std.Io, directory: std.Io.Dir) !void {
     }
     for (names.items) |name| try directory.deleteFile(io, &name);
 }
+
 pub const Request = struct {
     arena: std.heap.ArenaAllocator,
     path: []const u8,
@@ -168,21 +204,20 @@ pub const Request = struct {
     timing: ?timing.Payload = null,
     transfer: enum { none, export_database, import_database } = .none,
     transfer_path: []const u8 = "",
+
     pub fn init(gpa: std.mem.Allocator, path: []const u8, cohort: results.Cohort) !Request {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         errdefer arena.deinit();
         const owned_path = try arena.allocator().dupe(u8, path);
         return .{ .arena = arena, .path = owned_path, .cohort = cohort };
     }
+
     pub fn deinit(self: *Request) void {
         self.arena.deinit();
     }
+
     pub fn prepare(self: *Request, gpa: std.mem.Allocator, io: std.Io) !Query {
-        // A missing read-only history is ordinary. Only a completed save creates it.
-        const directory = if (self.record != null or self.transfer != .none) try std.Io.Dir.cwd().createDirPathOpen(io, self.path, .{ .open_options = .{ .iterate = true } }) else std.Io.Dir.cwd().openDir(io, self.path, .{ .iterate = true }) catch |err| {
-            if (err == error.FileNotFound) return .{};
-            return err;
-        };
+        const directory = try self.openDirectory(io) orelse return .{};
         defer directory.close(io);
         const root = try directory.realPathFileAlloc(io, ".", gpa);
         defer gpa.free(root);
@@ -193,62 +228,24 @@ pub const Request = struct {
             else => return err,
         };
         if (existing) |file| file.close(io);
-        if (existing == null and self.record == null and self.transfer == .none and !self.clearing) {
-            var entries = directory.iterate();
-            var legacy = false;
-            while (try entries.next(io)) |entry| {
-                if (entry.kind == .file and entry.name.len == 36 and std.mem.endsWith(u8, entry.name, ".zon")) legacy = true;
-            }
-            if (!legacy) return .{};
-        }
+        const writes = self.record != null or self.transfer != .none or self.clearing;
+        if (existing == null and !writes and !try hasRecordFiles(io, directory)) return .{};
         const mutating = self.record != null or self.clearing or self.transfer == .import_database;
         var db = try database.Database.open(gpa, io, path, existing != null and !mutating);
         defer db.deinit();
         if (!try db.currentSchema()) try db.makeWritable(io, path);
-        var rejected: usize = 0;
-        var iterator = directory.iterate();
-        while (try iterator.next(io)) |entry| {
-            if (entry.kind != .file or entry.name.len != 36 or !std.mem.endsWith(u8, entry.name, ".zon")) continue;
-            const bytes = directory.readFileAlloc(io, entry.name, gpa, .limited(max_record_bytes)) catch {
-                rejected += 1;
-                continue;
-            };
-            defer gpa.free(bytes);
-            const legacy = parse(gpa, bytes) catch |err| {
-                if (err == error.UnsupportedPracticeHistory) return err;
-                rejected += 1;
-                continue;
-            };
-            var name: [36]u8 = undefined;
-            if (!std.mem.eql(u8, entry.name, filename(legacy.id, &name))) {
-                rejected += 1;
-                continue;
-            }
-            const imported = db.legacyImported(&legacy) catch |err| {
-                if (err == error.PracticeRunCollision) {
-                    rejected += 1;
-                    continue;
-                }
-                return err;
-            };
-            if (!imported) {
-                try db.makeWritable(io, path);
-                db.importLegacy(&legacy) catch |err| {
-                    if (err == error.PracticeRunCollision) {
-                        rejected += 1;
-                        continue;
-                    }
-                    return err;
-                };
-            }
-        }
+        const rejected = try importLegacyFiles(gpa, io, directory, &db, path);
         if (self.clearing) {
             if (rejected != 0) return error.InvalidPracticeHistory;
             try db.clear();
         }
         if (self.record) |*record| try db.save(record, self.timing);
-        var output: Query = .{ .requested_id = self.current_id, .rejected = rejected };
-        output.progress_allocator = gpa;
+
+        var output: Query = .{
+            .requested_id = self.current_id,
+            .rejected = rejected,
+            .progress_allocator = gpa,
+        };
         errdefer output.deinit();
         output.page = try gpa.alloc(Record, 10);
         @memset(output.page, .{});
@@ -256,7 +253,10 @@ pub const Request = struct {
         output.progress.?.* = .{};
         output.retention = try gpa.create(retention.Summary);
         output.retention.?.* = .{ .now = @intCast(std.Io.Clock.real.now(io).toNanoseconds()) };
-        output.progress.?.today = @divFloor(@as(i64, @intCast(std.Io.Clock.real.now(io).toNanoseconds())), progress.day_ns);
+        output.progress.?.today = @divFloor(
+            @as(i64, @intCast(std.Io.Clock.real.now(io).toNanoseconds())),
+            progress.day_ns,
+        );
         switch (self.transfer) {
             .none => {},
             .export_database => {
@@ -268,6 +268,48 @@ pub const Request = struct {
         try db.exec("BEGIN");
         defer db.exec("ROLLBACK") catch {};
         output.database_runs = try db.runCount();
+        try self.collectCohortRuns(gpa, &db, &output);
+        // Raw payloads are decoded one at a time on this background worker.
+        // The GUI receives only bounded derived character timing summaries.
+        for (output.progress.?.points[0..output.progress.?.count]) |*point| {
+            if (!point.timing) continue;
+            if (try db.timingFor(point.id, gpa)) |value| {
+                var owned = value;
+                defer owned.deinit();
+                try point.enrich(gpa, owned.payload);
+            }
+        }
+        output.database_events = try db.eventCount();
+        try self.collectPracticeRuns(gpa, &db, &output);
+        if (output.requested_record) |record| {
+            if (record.timing_available) {
+                output.timing = try db.timingFor(record.id, gpa);
+                if (output.timing) |owned| output.analysis = try analysis.analyze(gpa, owned.payload);
+            }
+        }
+        return output;
+    }
+
+    /// Returns null for a missing history that this request only reads:
+    /// only a completed save or a transfer creates the directory.
+    fn openDirectory(self: *const Request, io: std.Io) !?std.Io.Dir {
+        const cwd = std.Io.Dir.cwd();
+        if (self.record != null or self.transfer != .none) {
+            return try cwd.createDirPathOpen(io, self.path, .{ .open_options = .{ .iterate = true } });
+        }
+        return cwd.openDir(io, self.path, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => err,
+        };
+    }
+
+    /// Aggregates the stored runs of the requested cohort into `output`.
+    fn collectCohortRuns(
+        self: *const Request,
+        gpa: std.mem.Allocator,
+        db: *database.Database,
+        output: *Query,
+    ) !void {
         var rows = try db.rowsFor(self.cohort);
         defer rows.deinit();
         var newest: [10]Record = @splat(.{});
@@ -284,53 +326,111 @@ pub const Request = struct {
             }
             if (!std.meta.eql(record.cohort, self.cohort)) continue;
             output.total += 1;
-            if (self.current_id) |id| if (std.mem.eql(u8, &id, &record.id)) {
-                output.contains_requested = true;
-                output.requested_record = record;
-            };
+            if (self.current_id) |id| {
+                if (std.mem.eql(u8, &id, &record.id)) {
+                    output.contains_requested = true;
+                    output.requested_record = record;
+                }
+            }
             output.progress.?.add(&record);
             try output.all.add(&record);
             if (record.scored) insert(&newest, &newest_count, record);
             if (self.before) |boundary| if (!newer(boundary, record)) continue;
             insert(output.page, &output.page_count, record);
         }
-        for (newest[0..newest_count], 0..) |*record, index| {
-            try output.recent.add(record);
-            output.recent_ids[index] = record.id;
-        }
-        output.recent_count = newest_count;
-        if (newest_count == 10) output.oldest_recent = newest[9];
-        // Raw payloads are decoded one at a time on this background worker.
-        // The GUI receives only bounded derived character timing summaries.
-        for (output.progress.?.points[0..output.progress.?.count]) |*point| if (point.timing) {
-            if (try db.timingFor(point.id, gpa)) |value| {
-                var owned = value;
-                defer owned.deinit();
-                try point.enrich(gpa, owned.payload);
-            }
-        };
-        output.database_events = try db.eventCount();
-        var curriculum_rows = try db.rowsForPractice(self.cohort);
-        defer curriculum_rows.deinit();
-        while (try curriculum_rows.step()) {
-            const candidate = parse(gpa, try curriculum_rows.blob(1)) catch |err| {
+        try output.setRecent(newest[0..newest_count]);
+    }
+
+    /// Feeds retention and the latest curriculum run from every run of the
+    /// same practice, across verification and assistance variants.
+    fn collectPracticeRuns(
+        self: *const Request,
+        gpa: std.mem.Allocator,
+        db: *database.Database,
+        output: *Query,
+    ) !void {
+        var rows = try db.rowsForPractice(self.cohort);
+        defer rows.deinit();
+        while (try rows.step()) {
+            const candidate = parse(gpa, try rows.blob(1)) catch |err| {
                 if (err == error.UnsupportedPracticeHistory) return err;
                 continue;
             };
-            if (!std.mem.eql(u8, &candidate.id, try curriculum_rows.blob(0)) or !std.meta.eql(database.practiceKey(candidate.cohort), database.practiceKey(self.cohort))) continue;
+            if (!std.mem.eql(u8, &candidate.id, try rows.blob(0))) continue;
+            if (!std.meta.eql(database.practiceKey(candidate.cohort), database.practiceKey(self.cohort))) continue;
             if (candidate.cohort.verified == self.cohort.verified) output.retention.?.add(&candidate);
-            if (output.latest_curriculum == null and candidate.cohort.curriculum.version == 1 and candidate.scored and candidate.status == .completed and candidate.cohort.mode == .normal) {
+            if (output.latest_curriculum == null and
+                candidate.cohort.curriculum.version == 1 and
+                candidate.scored and
+                candidate.status == .completed and
+                candidate.cohort.mode == .normal)
+            {
                 output.latest_curriculum = candidate;
             }
         }
-        if (output.requested_record) |record| if (record.timing_available) {
-            output.timing = try db.timingFor(record.id, gpa);
-            if (output.timing) |owned| output.analysis = try analysis.analyze(gpa, owned.payload);
-        };
-        return output;
     }
 };
+
+fn isRecordFile(entry: std.Io.Dir.Entry) bool {
+    return entry.kind == .file and entry.name.len == 36 and std.mem.endsWith(u8, entry.name, ".zon");
+}
+
+fn hasRecordFiles(io: std.Io, directory: std.Io.Dir) !bool {
+    var entries = directory.iterate();
+    var found = false;
+    while (try entries.next(io)) |entry| {
+        if (isRecordFile(entry)) found = true;
+    }
+    return found;
+}
+
+/// Imports legacy ZON record files into the database once. Returns the
+/// number of files that were rejected as unreadable, misnamed or colliding.
+fn importLegacyFiles(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    directory: std.Io.Dir,
+    db: *database.Database,
+    path: []const u8,
+) !usize {
+    var rejected: usize = 0;
+    var iterator = directory.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (!isRecordFile(entry)) continue;
+        const bytes = directory.readFileAlloc(io, entry.name, gpa, .limited(max_record_bytes)) catch {
+            rejected += 1;
+            continue;
+        };
+        defer gpa.free(bytes);
+        const legacy = parse(gpa, bytes) catch |err| {
+            if (err == error.UnsupportedPracticeHistory) return err;
+            rejected += 1;
+            continue;
+        };
+        var name: [36]u8 = undefined;
+        if (!std.mem.eql(u8, entry.name, filename(legacy.id, &name))) {
+            rejected += 1;
+            continue;
+        }
+        const imported = db.legacyImported(&legacy) catch |err| switch (err) {
+            error.PracticeRunCollision => {
+                rejected += 1;
+                continue;
+            },
+            else => return err,
+        };
+        if (imported) continue;
+        try db.makeWritable(io, path);
+        db.importLegacy(&legacy) catch |err| switch (err) {
+            error.PracticeRunCollision => rejected += 1,
+            else => return err,
+        };
+    }
+    return rejected;
+}
+
 pub const Worker = @import("owned_worker.zig").Owner(Request, Query, error.InvalidPracticeGeneration);
+
 test "frozen legacy ZON imports unchanged and unsupported current payloads remain visible as errors" {
     const t = std.testing;
     var temp = t.tmpDir(.{ .iterate = true });
@@ -354,6 +454,7 @@ test "frozen legacy ZON imports unchanged and unsupported current payloads remai
     try t.expectError(error.UnsupportedPracticeHistory, request.prepare(t.allocator, t.io));
     try t.expectEqual(@as(usize, 1), try db.runCount());
 }
+
 test "immutable publication restart pages cohorts weighted history and corrupt preservation" {
     const t = std.testing;
     var temp = t.tmpDir(.{ .iterate = true });
@@ -389,7 +490,10 @@ test "immutable publication restart pages cohorts weighted history and corrupt p
     record.cohort.assistance = .guided;
     try t.expectError(error.PracticeRunCollision, save(t.allocator, t.io, temp.dir, &record));
     var corrupt_name: [36]u8 = undefined;
-    try temp.dir.writeFile(t.io, .{ .sub_path = filename(@splat(99), &corrupt_name), .data = ".{ .version = 999 }" });
+    try temp.dir.writeFile(t.io, .{
+        .sub_path = filename(@splat(99), &corrupt_name),
+        .data = ".{ .version = 999 }",
+    });
     var partial = try query(t.allocator, t.io, temp.dir, .{}, null);
     defer partial.deinit();
     try t.expectEqual(@as(usize, 1), partial.rejected);
@@ -437,7 +541,11 @@ test "native Unicode directories atomic interruption and independent writers pre
     const t = std.testing;
     var temp = t.tmpDir(.{ .iterate = true });
     defer temp.cleanup();
-    var directory = try temp.dir.createDirPathOpen(t.io, "practice data café", .{ .open_options = .{ .iterate = true } });
+    var directory = try temp.dir.createDirPathOpen(
+        t.io,
+        "practice data café",
+        .{ .open_options = .{ .iterate = true } },
+    );
     defer directory.close(t.io);
     const Writer = struct {
         fn write(io: std.Io, dir: std.Io.Dir, id: u8) !void {

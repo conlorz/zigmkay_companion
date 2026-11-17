@@ -6,6 +6,7 @@ const model = @import("layout-model");
 pub const SourceBytes = struct { callback_index: usize, path: []const u8, bytes: []const u8 };
 /// Sources are caller-owned immutable bytes. Each declared file appears exactly once.
 pub const Snapshot = struct { document: p.Document, sources: []const SourceBytes };
+
 pub fn clone(gpa: std.mem.Allocator, snapshot: Snapshot) !Loaded {
     const bytes = try p.serialize(gpa, snapshot.document);
     defer gpa.free(bytes);
@@ -24,7 +25,11 @@ pub fn clone(gpa: std.mem.Allocator, snapshot: Snapshot) !Loaded {
         for (document.callbacks[source.callback_index].sources) |entry| if (std.mem.eql(u8, entry.path, source.path)) {
             owned_path = entry.path;
         };
-        try sources.append(gpa, .{ .callback_index = source.callback_index, .path = owned_path orelse return error.UnexpectedSource, .bytes = data });
+        try sources.append(gpa, .{
+            .callback_index = source.callback_index,
+            .path = owned_path orelse return error.UnexpectedSource,
+            .bytes = data,
+        });
     }
     return .{ .snapshot = .{ .document = document, .sources = try sources.toOwnedSlice(gpa) }, .gpa = gpa };
 }
@@ -35,6 +40,7 @@ fn addFramed(hash: *std.crypto.hash.sha2.Sha256, bytes: []const u8) void {
     hash.update(&length);
     hash.update(bytes);
 }
+
 /// Bundle location depends on ordered paths and their hashes, not mutable directory state.
 pub fn bundleDigest(callback: p.Callback) [32]u8 {
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
@@ -48,10 +54,14 @@ pub fn bundleDigest(callback: p.Callback) [32]u8 {
     }
     return hash.finalResult();
 }
+
 pub fn find(snapshot: Snapshot, callback_index: usize, path: []const u8) ![]const u8 {
-    for (snapshot.sources) |source| if (source.callback_index == callback_index and std.mem.eql(u8, source.path, path)) return source.bytes;
+    for (snapshot.sources) |source| {
+        if (source.callback_index == callback_index and std.mem.eql(u8, source.path, path)) return source.bytes;
+    }
     return error.MissingSource;
 }
+
 pub fn validate(snapshot: Snapshot, board: p.Board) !void {
     try p.validate(snapshot.document, board);
     var total: usize = 0;
@@ -75,7 +85,10 @@ pub fn validate(snapshot: Snapshot, board: p.Board) !void {
             declared = true;
         };
         if (!declared) return error.UnexpectedSource;
-        for (snapshot.sources[0..index]) |earlier| if (source.callback_index == earlier.callback_index and std.mem.eql(u8, source.path, earlier.path)) return error.DuplicateSource;
+        for (snapshot.sources[0..index]) |earlier| {
+            if (source.callback_index == earlier.callback_index and
+                std.mem.eql(u8, source.path, earlier.path)) return error.DuplicateSource;
+        }
     }
 }
 
@@ -89,7 +102,12 @@ pub fn identity(gpa: std.mem.Allocator, snapshot: Snapshot, board: p.Board) !pro
     };
     const combos = try gpa.alloc(model.Combo2Def, doc.combos.len);
     defer gpa.free(combos);
-    for (doc.combos, combos) |combo, *lowered| lowered.* = .{ .key_indexes = .{ try p.keyIndex(doc, combo.key_ids[0]), try p.keyIndex(doc, combo.key_ids[1]) }, .layer = try p.layerIndex(doc, combo.layer_id), .timeout = combo.timeout, .key_def = try p.lowerAction(doc, combo.action) };
+    for (doc.combos, combos) |combo, *lowered| lowered.* = .{
+        .key_indexes = .{ try p.keyIndex(doc, combo.key_ids[0]), try p.keyIndex(doc, combo.key_ids[1]) },
+        .layer = try p.layerIndex(doc, combo.layer_id),
+        .timeout = combo.timeout,
+        .key_def = try p.lowerAction(doc, combo.action),
+    };
     const encoders = try gpa.alloc(model.EncoderAction, doc.encoders.len);
     defer gpa.free(encoders);
     for (doc.encoders, encoders) |tap, *lowered| lowered.* = .{ .tap = try p.lowerTap(doc, tap) };
@@ -101,12 +119,24 @@ pub fn identity(gpa: std.mem.Allocator, snapshot: Snapshot, board: p.Board) !pro
     for (doc.callbacks) |callback| {
         const digest = bundleDigest(callback);
         for (callback.ids) |id| {
-            const behavior = try std.fmt.allocPrint(gpa, "source-v1:{s}:{s}", .{ callback.binding, std.fmt.bytesToHex(digest, .lower) });
+            const behavior = try std.fmt.allocPrint(gpa, "source-v1:{s}:{s}", .{
+                callback.binding,
+                std.fmt.bytesToHex(digest, .lower),
+            });
             errdefer gpa.free(behavior);
             try callbacks.append(gpa, .{ .id = id, .behavior = behavior });
         }
     }
-    return protocol.computeIdentity(.{ .board_id = doc.board_id, .profile_id = doc.profile_id, .dimensions = .{ .key_count = @intCast(doc.key_ids.len), .layer_count = @intCast(doc.layers.len) }, .keys = keys, .sides = board.sides, .combos = combos, .encoders = encoders, .callbacks = callbacks.items });
+    return protocol.computeIdentity(.{
+        .board_id = doc.board_id,
+        .profile_id = doc.profile_id,
+        .dimensions = .{ .key_count = @intCast(doc.key_ids.len), .layer_count = @intCast(doc.layers.len) },
+        .keys = keys,
+        .sides = board.sides,
+        .combos = combos,
+        .encoders = encoders,
+        .callbacks = callbacks.items,
+    });
 }
 
 /// Metadata-inclusive freshness hash; telemetry identity deliberately excludes layer names.
@@ -125,6 +155,7 @@ pub fn sourceLocation(gpa: std.mem.Allocator, callback: p.Callback, path: []cons
     const digest = bundleDigest(callback);
     return std.fmt.allocPrint(gpa, ".sources/{s}/{s}", .{ std.fmt.bytesToHex(digest, .lower), path });
 }
+
 fn atomicWrite(io: std.Io, dir: std.Io.Dir, path: []const u8, bytes: []const u8, replace: bool) !void {
     var file = try dir.createFileAtomic(io, path, .{ .replace = replace });
     defer file.deinit(io);
@@ -132,6 +163,7 @@ fn atomicWrite(io: std.Io, dir: std.Io.Dir, path: []const u8, bytes: []const u8,
     try file.file.sync(io);
     if (replace) try file.replace(io) else try file.link(io);
 }
+
 /// Save into an explicitly selected project directory. Never writes profile source files.
 /// Immutable source bundles are materialized before the single atomic document commit.
 /// Failures may leave unreferenced bundles; the previous document and bundles stay readable.
@@ -141,7 +173,14 @@ pub fn save(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot: Snaps
 
 /// Cooperating writers keep the same lock inode across atomic document replaces.
 /// The lock file is retained; unlinking it would let later writers bypass a holder.
-pub fn saveChecked(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot: Snapshot, board: p.Board, expected: ?[32]u8) !void {
+pub fn saveChecked(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    snapshot: Snapshot,
+    board: p.Board,
+    expected: ?[32]u8,
+) !void {
     const lock = try dir.createFile(io, ".project.lock", .{ .truncate = false, .lock = .exclusive });
     defer lock.close(io);
     if (expected) |baseline| {
@@ -153,7 +192,8 @@ pub fn saveChecked(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot
             file.close(io);
             var previous = try load(gpa, io, dir, board);
             defer previous.deinit();
-            if (!std.mem.eql(u8, &baseline, &try projectDigest(gpa, previous.snapshot, board))) return error.ExternalProjectChanged;
+            if (!std.mem.eql(u8, &baseline, &try projectDigest(gpa, previous.snapshot, board)))
+                return error.ExternalProjectChanged;
         }
     }
     try validate(snapshot, board);
@@ -175,9 +215,11 @@ pub fn saveChecked(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot
     };
     try atomicWrite(io, dir, "project.zon", document, true);
 }
+
 pub const Loaded = struct {
     snapshot: Snapshot,
     gpa: std.mem.Allocator,
+
     pub fn deinit(self: *Loaded) void {
         for (self.snapshot.sources) |source| self.gpa.free(source.bytes);
         self.gpa.free(self.snapshot.sources);
@@ -185,6 +227,7 @@ pub const Loaded = struct {
         self.* = undefined;
     }
 };
+
 pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, board: p.Board) !Loaded {
     const bytes = try dir.readFileAlloc(io, "project.zon", gpa, .limited(p.Limits.document_bytes));
     defer gpa.free(bytes);

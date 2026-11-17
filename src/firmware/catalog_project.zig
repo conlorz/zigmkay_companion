@@ -57,7 +57,12 @@ pub const OwnedBoard = struct {
             for (board.key_ids, ids) |id, *copy| copy.* = try a.dupe(u8, id);
             board.key_ids = ids;
             board.sides = try a.dupe(model.Side, board.sides);
-            return .{ .arena = arena, .board = board, .entry = catalog.find("lk7").?, .uses_schematic_sides = false };
+            return .{
+                .arena = arena,
+                .board = board,
+                .entry = catalog.find("lk7").?,
+                .uses_schematic_sides = false,
+            };
         }
         for (catalog.entries) |entry| {
             const id = boardId(entry.selector);
@@ -89,11 +94,17 @@ test "document board resolution preserves curated identity and validates every c
         try std.testing.expectEqualStrings(entry.selector, resolved.entry.selector);
         var malformed = fixture.snapshot.document;
         malformed.physical_layout = "different";
-        try std.testing.expectError(error.InvalidBoard, OwnedBoard.fromDocument(std.testing.allocator, malformed));
+        try std.testing.expectError(
+            error.InvalidBoard,
+            OwnedBoard.fromDocument(std.testing.allocator, malformed),
+        );
     }
     var unknown = curated.snapshot.document;
     unknown.board_id = "unknown1".*;
-    try std.testing.expectError(error.UnknownDocumentBoard, OwnedBoard.fromDocument(std.testing.allocator, unknown));
+    try std.testing.expectError(
+        error.UnknownDocumentBoard,
+        OwnedBoard.fromDocument(std.testing.allocator, unknown),
+    );
 }
 
 test "owned board arena remains valid for allocations after handoff" {
@@ -144,7 +155,9 @@ pub fn createSynthetic(gpa: std.mem.Allocator, owned_board: OwnedBoard) !OwnedPr
     const ids = try a.alloc([]const u8, board.key_ids.len);
     for (board.key_ids, ids) |id, *copy| copy.* = try a.dupe(u8, id);
     const actions = try a.alloc(?project.Action, ids.len);
-    for (actions, 0..) |*action, i| action.* = .{ .tap_only = .{ .key_press = .{ .tap_keycode = @intCast(4 + i % 26) } } };
+    for (actions, 0..) |*action, i| action.* = .{ .tap_only = .{ .key_press = .{
+        .tap_keycode = @intCast(4 + i % 26),
+    } } };
     const layers = try a.alloc(project.Layer, 1);
     layers[0] = .{ .id = 1, .name = "Synthetic", .actions = actions };
     const encoders = try a.alloc(project.Tap, board.encoder_actions);
@@ -192,8 +205,15 @@ pub fn createData(gpa: std.mem.Allocator, owned_board: OwnedBoard, data: catalog
     }
     const combos = try a.alloc(project.Combo, data.combos.len);
     for (data.combos, combos) |combo, *dest| {
-        if (combo.layer >= layers.len or combo.key_indexes[0] >= ids.len or combo.key_indexes[1] >= ids.len) return error.InvalidCombo;
-        dest.* = .{ .key_ids = .{ ids[combo.key_indexes[0]], ids[combo.key_indexes[1]] }, .layer_id = layers[combo.layer].id, .timeout = combo.timeout, .action = try project.adapter.liftAction(layers, combo.key_def) };
+        if (combo.layer >= layers.len or
+            combo.key_indexes[0] >= ids.len or
+            combo.key_indexes[1] >= ids.len) return error.InvalidCombo;
+        dest.* = .{
+            .key_ids = .{ ids[combo.key_indexes[0]], ids[combo.key_indexes[1]] },
+            .layer_id = layers[combo.layer].id,
+            .timeout = combo.timeout,
+            .action = try project.adapter.liftAction(layers, combo.key_def),
+        };
     }
     const encoders = try a.alloc(project.Tap, board.encoder_actions);
     @memset(encoders, .{});
@@ -203,69 +223,94 @@ pub fn createData(gpa: std.mem.Allocator, owned_board: OwnedBoard, data: catalog
     }
     const callbacks = try a.alloc(project.Callback, if (data.has_callbacks) 1 else 0);
     const sources = try a.alloc(project.snapshot.SourceBytes, data.callback_sources.len);
-    if (data.has_callbacks) {
-        if (sources.len == 0) return error.DefaultCallbacksRequireBinding;
-        const metadata = try a.alloc(project.Source, sources.len);
-        for (data.callback_sources, sources, metadata) |source, *bytes, *meta| {
-            const path = try a.dupe(u8, source.path);
-            const content = try a.dupe(u8, source.bytes);
-            var digest: [32]u8 = undefined;
-            std.crypto.hash.sha2.Sha256.hash(content, &digest, .{});
-            bytes.* = .{ .callback_index = 0, .path = path, .bytes = content };
-            meta.* = .{ .path = path, .digest = digest };
-        }
-        // Collect the custom IDs actually referenced by typed actions, including
-        // hold/one-shot and ordered combos. Reserved processor signals are not
-        // callback declarations. A callback-only default without IDs is explicitly
-        // unsupported by schema 1 rather than silently discarded.
-        var used: [253]bool = @splat(false);
-        for (data.layers) |layer| for (layer) |action| if (action) |value| collectAction(&used, value);
-        for (data.combos) |combo| collectAction(&used, combo.key_def);
-        if (data.encoder_actions) |actions| for (actions) |encoder| collectTap(&used, encoder.tap);
-        var count: usize = 0;
-        for (used) |present| if (present) {
-            count += 1;
-        };
-        if (count == 0) return error.DefaultCallbackWithoutIds;
-        const custom_ids = try a.alloc(u8, count);
-        var cursor: usize = 0;
-        for (used, 0..) |present, id| if (present) {
-            custom_ids[cursor] = @intCast(id);
-            cursor += 1;
-        };
-        const constraints = try a.alloc(project.LayerId, layers.len);
-        for (layers, constraints) |layer, *id| id.* = layer.id;
-        callbacks[0] = .{ .kind = .attached, .binding = sources[0].path, .ids = custom_ids, .required_layers = constraints, .index_constraints = constraints, .sources = metadata };
-    }
-    const snapshot: project.snapshot.Snapshot = .{ .document = .{
-        .schema_version = project.schema_version,
-        .board_id = board.id,
-        .profile_id = "default1".*,
-        .physical_layout = try a.dupe(u8, board.physical_layout),
-        .name = try std.fmt.allocPrint(a, "{s} firmware default", .{owned_board.entry.selector}),
-        .key_ids = ids,
-        .layers = layers,
-        .combos = combos,
-        .encoders = encoders,
-        .callbacks = callbacks,
-    }, .sources = sources };
+    if (data.has_callbacks) callbacks[0] = try attachCallbackSources(a, data, layers, sources);
+    const snapshot: project.snapshot.Snapshot = .{
+        .document = .{
+            .schema_version = project.schema_version,
+            .board_id = board.id,
+            .profile_id = "default1".*,
+            .physical_layout = try a.dupe(u8, board.physical_layout),
+            .name = try std.fmt.allocPrint(a, "{s} firmware default", .{owned_board.entry.selector}),
+            .key_ids = ids,
+            .layers = layers,
+            .combos = combos,
+            .encoders = encoders,
+            .callbacks = callbacks,
+        },
+        .sources = sources,
+    };
     try project.snapshot.validate(snapshot, board);
     try project.sources.verify(a, snapshot);
     return .{ .arena = arena, .snapshot = snapshot };
 }
 
-fn collectId(used: *[253]bool, id: ?u8) void {
-    if (id) |value| if (value > 0 and value < used.len) {
-        used[value] = true;
+/// Copies the default's callback sources into `sources` and returns the
+/// attached callback that owns them.
+fn attachCallbackSources(
+    a: std.mem.Allocator,
+    data: catalog.DefaultData,
+    layers: []const project.Layer,
+    sources: []project.snapshot.SourceBytes,
+) !project.Callback {
+    if (sources.len == 0) return error.DefaultCallbacksRequireBinding;
+    const metadata = try a.alloc(project.Source, sources.len);
+    for (data.callback_sources, sources, metadata) |source, *bytes, *meta| {
+        const path = try a.dupe(u8, source.path);
+        const content = try a.dupe(u8, source.bytes);
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(content, &digest, .{});
+        bytes.* = .{ .callback_index = 0, .path = path, .bytes = content };
+        meta.* = .{ .path = path, .digest = digest };
+    }
+    const constraints = try a.alloc(project.LayerId, layers.len);
+    for (layers, constraints) |layer, *id| id.* = layer.id;
+    return .{
+        .kind = .attached,
+        .binding = sources[0].path,
+        .ids = try usedCustomIds(a, data),
+        .required_layers = constraints,
+        .index_constraints = constraints,
+        .sources = metadata,
     };
 }
+
+/// Collects the custom IDs actually referenced by typed actions, including
+/// hold/one-shot and ordered combos. Reserved processor signals are not
+/// callback declarations. A callback-only default without IDs is explicitly
+/// unsupported by schema 1 rather than silently discarded.
+fn usedCustomIds(a: std.mem.Allocator, data: catalog.DefaultData) ![]u8 {
+    var used: [253]bool = @splat(false);
+    for (data.layers) |layer| for (layer) |action| if (action) |value| collectAction(&used, value);
+    for (data.combos) |combo| collectAction(&used, combo.key_def);
+    if (data.encoder_actions) |actions| for (actions) |encoder| collectTap(&used, encoder.tap);
+    const count = std.mem.countScalar(bool, &used, true);
+    if (count == 0) return error.DefaultCallbackWithoutIds;
+    const custom_ids = try a.alloc(u8, count);
+    var cursor: usize = 0;
+    for (used, 0..) |present, id| if (present) {
+        custom_ids[cursor] = @intCast(id);
+        cursor += 1;
+    };
+    return custom_ids;
+}
+
+fn collectId(used: *[253]bool, id: ?u8) void {
+    if (id) |value| {
+        if (value > 0 and value < used.len) {
+            used[value] = true;
+        }
+    }
+}
+
 fn collectHold(used: *[253]bool, hold: model.HoldDef) void {
     collectId(used, hold.custom);
 }
+
 fn collectTap(used: *[253]bool, tap: model.TapDef) void {
     collectId(used, tap.custom);
     if (tap.one_shot) |hold| collectHold(used, hold);
 }
+
 fn collectAction(used: *[253]bool, action: model.KeyDef) void {
     switch (action) {
         .none => {},
@@ -299,7 +344,10 @@ test "typed defaults retain every action and exact callback closure" {
             try std.testing.expectEqualStrings(entry.default_profile_source, callback.binding);
             try std.testing.expectEqual(doc.layers.len, callback.required_layers.len);
             try std.testing.expectEqual(doc.layers.len, callback.index_constraints.?.len);
-            try std.testing.expectError(error.LayerReferenced, project.canDeleteLayer(doc, doc.layers[doc.layers.len - 1].id));
+            try std.testing.expectError(
+                error.LayerReferenced,
+                project.canDeleteLayer(doc, doc.layers[doc.layers.len - 1].id),
+            );
         }
         for (data.layers, doc.layers) |source, layer| for (source, layer.actions) |action, converted| {
             const expected: ?project.Action = if (action) |value| try project.adapter.liftAction(doc.layers, value) else null;
@@ -307,15 +355,33 @@ test "typed defaults retain every action and exact callback closure" {
         };
         try std.testing.expectEqual(data.combos.len, doc.combos.len);
         for (data.combos, doc.combos) |original, imported_combo| {
-            try std.testing.expectEqualStrings(doc.key_ids[original.key_indexes[0]], imported_combo.key_ids[0]);
-            try std.testing.expectEqualStrings(doc.key_ids[original.key_indexes[1]], imported_combo.key_ids[1]);
+            try std.testing.expectEqualStrings(
+                doc.key_ids[original.key_indexes[0]],
+                imported_combo.key_ids[0],
+            );
+            try std.testing.expectEqualStrings(
+                doc.key_ids[original.key_indexes[1]],
+                imported_combo.key_ids[1],
+            );
             try std.testing.expectEqual(doc.layers[original.layer].id, imported_combo.layer_id);
             try std.testing.expectEqualDeep(original.timeout, imported_combo.timeout);
-            try std.testing.expectEqualDeep(try project.adapter.liftAction(doc.layers, original.key_def), imported_combo.action);
+            try std.testing.expectEqualDeep(
+                try project.adapter.liftAction(doc.layers, original.key_def),
+                imported_combo.action,
+            );
         }
-        if (data.encoder_actions) |actions| for (actions, doc.encoders) |original, imported_encoder|
-            try std.testing.expectEqualDeep(try project.adapter.liftTap(doc.layers, original.tap), imported_encoder);
-        const generated = try project.exporter.generate(std.testing.allocator, imported.snapshot, board.board);
+        if (data.encoder_actions) |actions| {
+            for (actions, doc.encoders) |original, imported_encoder|
+                try std.testing.expectEqualDeep(
+                    try project.adapter.liftTap(doc.layers, original.tap),
+                    imported_encoder,
+                );
+        }
+        const generated = try project.exporter.generate(
+            std.testing.allocator,
+            imported.snapshot,
+            board.board,
+        );
         defer std.testing.allocator.free(generated);
     }
 }
@@ -356,9 +422,19 @@ test "all fourteen actual defaults save reopen and export deterministically with
         defer project.exporter.freeManifest(gpa, other);
         try std.testing.expectEqualDeep(manifest, other);
         for (manifest.files) |file| {
-            const one = try first.dir.readFileAlloc(io, file.path, gpa, .limited(project.Limits.source_bytes));
+            const one = try first.dir.readFileAlloc(
+                io,
+                file.path,
+                gpa,
+                .limited(project.Limits.source_bytes),
+            );
             defer gpa.free(one);
-            const two = try second.dir.readFileAlloc(io, file.path, gpa, .limited(project.Limits.source_bytes));
+            const two = try second.dir.readFileAlloc(
+                io,
+                file.path,
+                gpa,
+                .limited(project.Limits.source_bytes),
+            );
             defer gpa.free(two);
             try std.testing.expectEqualSlices(u8, one, two);
         }
@@ -375,25 +451,46 @@ test "all fourteen actual defaults save reopen and export deterministically with
             try std.testing.expectError(error.MissingSource, project.snapshot.validate(missing, board.board));
             if (original.snapshot.sources.len > 1)
                 try std.testing.expectError(error.UnresolvedImport, project.sources.verify(gpa, missing));
-            const exported = try std.fmt.allocPrint(gpa, "callback_0/{s}", .{original.snapshot.sources[0].path});
+            const exported = try std.fmt.allocPrint(
+                gpa,
+                "callback_0/{s}",
+                .{original.snapshot.sources[0].path},
+            );
             defer gpa.free(exported);
             try first.dir.writeFile(io, .{ .sub_path = exported, .data = "different source" });
-            try std.testing.expectError(error.ExportOwnershipConflict, project.exporter.write(gpa, io, first.dir, original.snapshot, board.board));
+            try std.testing.expectError(
+                error.ExportOwnershipConflict,
+                project.exporter.write(gpa, io, first.dir, original.snapshot, board.board),
+            );
             // Corrupt an owned source without changing its recorded digest.
             @constCast(original.snapshot.sources[0].bytes)[0] ^= 1;
-            try std.testing.expectError(error.SourceMismatch, project.snapshot.validate(original.snapshot, board.board));
+            try std.testing.expectError(
+                error.SourceMismatch,
+                project.snapshot.validate(original.snapshot, board.board),
+            );
         }
     }
 }
 
 test "callback ID inventory includes simultaneous tap hold one shot autofire and combo fields" {
     var used: [253]bool = @splat(false);
-    collectAction(&used, .{ .tap_hold = .{ .tap = .{ .custom = 3, .one_shot = .{ .custom = 7 } }, .hold = .{ .custom = 11 }, .tapping_term = .{ .ms = 200 } } });
-    collectAction(&used, .{ .tap_with_autofire = .{ .tap = .{ .custom = 9 }, .initial_delay = .{ .ms = 200 }, .repeat_interval = .{ .ms = 100 } } });
+    collectAction(&used, .{ .tap_hold = .{
+        .tap = .{ .custom = 3, .one_shot = .{ .custom = 7 } },
+        .hold = .{ .custom = 11 },
+        .tapping_term = .{ .ms = 200 },
+    } });
+    collectAction(&used, .{ .tap_with_autofire = .{
+        .tap = .{ .custom = 9 },
+        .initial_delay = .{ .ms = 200 },
+        .repeat_interval = .{ .ms = 100 },
+    } });
     collectAction(&used, .{ .hold_only = .{ .custom = 13 } });
     collectAction(&used, .{ .tap_only = .{ .custom = 253 } });
     collectTap(&used, .{ .custom = 254, .one_shot = .{ .custom = 255 } });
-    for (used, 0..) |present, id| try std.testing.expectEqual(id == 3 or id == 7 or id == 9 or id == 11 or id == 13, present);
+    for (used, 0..) |present, id| try std.testing.expectEqual(
+        id == 3 or id == 7 or id == 9 or id == 11 or id == 13,
+        present,
+    );
 }
 
 test "actual default sources outlive their board and independently owned peers" {
@@ -411,7 +508,10 @@ test "actual default sources outlive their board and independently owned peers" 
     board.deinit();
     try std.testing.expectEqual(@as(usize, 2), first.snapshot.sources.len);
     @constCast(first.snapshot.sources[0].bytes)[0] ^= 1;
-    try std.testing.expectEqualStrings(catalog.defaultData("keycaprio_us_intl_0_7").?.callback_sources[0].bytes, second.snapshot.sources[0].bytes);
+    try std.testing.expectEqualStrings(
+        catalog.defaultData("keycaprio_us_intl_0_7").?.callback_sources[0].bytes,
+        second.snapshot.sources[0].bytes,
+    );
     try project.sources.verify(std.testing.allocator, second.snapshot);
 }
 
@@ -429,7 +529,10 @@ test "all catalog selectors own validated independent synthetic projects" {
         const source = try project.exporter.generate(std.testing.allocator, fixture.snapshot, board.board);
         defer std.testing.allocator.free(source);
         try std.testing.expect(std.mem.indexOf(u8, source, "pub const keymap") != null);
-        try std.testing.expectEqual(entry.default_dimensions.key_count, fixture.snapshot.document.key_ids.len);
+        try std.testing.expectEqual(
+            entry.default_dimensions.key_count,
+            fixture.snapshot.document.key_ids.len,
+        );
         try std.testing.expectEqual(entry.encoder_action_slots, fixture.snapshot.document.encoders.len);
         // A schema-1 round trip proves the adapter did not change the project API.
         const bytes = try project.serialize(std.testing.allocator, fixture.snapshot.document);

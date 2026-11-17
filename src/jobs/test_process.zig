@@ -1,5 +1,6 @@
 const std = @import("std");
 const jobs = @import("companion-jobs");
+
 test "asynchronous jobs own explicit environment before caller mutation" {
     const gpa = std.testing.allocator;
     var environment = std.process.Environ.Map.init(gpa);
@@ -18,11 +19,17 @@ test "asynchronous jobs own explicit environment before caller mutation" {
     try std.testing.expect(result.successful());
     try std.testing.expectEqualStrings("captured", result.process.stdout);
 }
+
 test "direct argv preserves literal arguments and snapshot freshness" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     const exe = @import("options").helper_path;
-    const spec = jobs.Spec{ .argv = &.{ exe, "literal;$(not-a-shell)" }, .cwd = ".", .snapshot_id = @splat(1), .timeout_ms = 1000 };
+    const spec = jobs.Spec{
+        .argv = &.{ exe, "literal;$(not-a-shell)" },
+        .cwd = ".",
+        .snapshot_id = @splat(1),
+        .timeout_ms = 1000,
+    };
     var result = try jobs.run(gpa, io, spec);
     defer result.deinit(gpa);
     try std.testing.expectEqualStrings("literal;$(not-a-shell)", result.process.stdout);
@@ -90,7 +97,11 @@ test "completed jobs transfer result ownership once and cannot restart" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var argument = [_]u8{ 'o', 'w', 'n', 'e', 'd' };
-    var job = try jobs.Job.init(gpa, io, .{ .argv = &.{ @import("options").helper_path, &argument }, .cwd = ".", .snapshot_id = @splat(9) });
+    var job = try jobs.Job.init(gpa, io, .{
+        .argv = &.{ @import("options").helper_path, &argument },
+        .cwd = ".",
+        .snapshot_id = @splat(9),
+    });
     defer job.deinit();
     argument[0] = 'x';
     try job.start();
@@ -98,7 +109,8 @@ test "completed jobs transfer result ownership once and cannot restart" {
     const start = std.Io.Clock.awake.now(io);
     var result = while (true) {
         if (job.poll()) |completion| break try completion;
-        if (start.durationTo(std.Io.Clock.awake.now(io)).nanoseconds > 5 * std.time.ns_per_s) return error.TestJobDidNotComplete;
+        if (start.durationTo(std.Io.Clock.awake.now(io)).nanoseconds > 5 * std.time.ns_per_s)
+            return error.TestJobDidNotComplete;
         try std.Io.sleep(io, .fromMilliseconds(1), .awake);
     };
     defer result.deinit(gpa);
@@ -149,7 +161,13 @@ test "hung runner session timeout terminates the child and clears session state"
 }
 
 test "artifact freshness includes compiler target optimization and dependency inputs" {
-    var input = jobs.ArtifactInput{ .snapshot_id = @splat(1), .build_inputs_digest = @splat(2), .zig_version = "0.17.0", .target = "native", .optimize = "Debug" };
+    var input = jobs.ArtifactInput{
+        .snapshot_id = @splat(1),
+        .build_inputs_digest = @splat(2),
+        .zig_version = "0.17.0",
+        .target = "native",
+        .optimize = "Debug",
+    };
     const original = jobs.artifactKey(input);
     input.zig_version = "future";
     try std.testing.expect(!std.mem.eql(u8, &original, &jobs.artifactKey(input)));

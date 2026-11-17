@@ -7,6 +7,7 @@ const protocol = @import("device-protocol");
 fn word(bytes: []const u8, offset: usize) u32 {
     return std.mem.readInt(u32, bytes[offset..][0..4], .little);
 }
+
 pub fn validate(bytes: []const u8) !void {
     if (bytes.len == 0 or bytes.len % 512 != 0 or bytes.len / 512 > 8192) return error.InvalidUf2Size;
     for (0..bytes.len / 512) |i| {
@@ -31,7 +32,8 @@ pub fn main(init: std.process.Init) !void {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[1], allocator, .limited(4 * 1024 * 1024));
     try validate(bytes);
     const identity = profile.identity(protocol);
-    if (!std.mem.eql(u8, &protocol.keymapId(identity), &profile.custom_functions.companion_keymap_id)) return error.KeymapIdMismatch;
+    if (!std.mem.eql(u8, &protocol.keymapId(identity), &profile.custom_functions.companion_keymap_id))
+        return error.KeymapIdMismatch;
     var sha256: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &sha256, .{});
     const manifest = .{
@@ -56,7 +58,16 @@ test "candidate validation rejects malformed family length ordering and inventor
     var bytes: [1024]u8 = @splat(0);
     for (0..2) |i| {
         const block = bytes[i * 512 ..][0..512];
-        const values = [_]u32{ 0x0a324655, 0x9e5d5157, 0x2000, @as(u32, 0x10000000) + @as(u32, @intCast(i * 256)), 256, @intCast(i), 2, 0xe48bff56 };
+        const values = [_]u32{
+            0x0a324655,
+            0x9e5d5157,
+            0x2000,
+            @as(u32, 0x10000000) + @as(u32, @intCast(i * 256)),
+            256,
+            @intCast(i),
+            2,
+            0xe48bff56,
+        };
         for (values, 0..) |value, index| std.mem.writeInt(u32, block[index * 4 ..][0..4], value, .little);
         std.mem.writeInt(u32, block[508..512], 0x0ab16f30, .little);
     }

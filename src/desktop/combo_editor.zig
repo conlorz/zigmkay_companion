@@ -4,7 +4,17 @@ const p = @import("project");
 const Model = @import("model.zig").Model;
 const Draft = @import("action_form.zig").Draft;
 pub const Kind = enum { save, delete };
-pub const Action = struct { snapshot: [32]u8, index: ?usize, keys: [2]usize, layer: usize, timeout: u16, draft: Draft, kind: Kind };
+
+pub const Action = struct {
+    snapshot: [32]u8,
+    index: ?usize,
+    keys: [2]usize,
+    layer: usize,
+    timeout: u16,
+    draft: Draft,
+    kind: Kind,
+};
+
 pub const Session = struct {
     snapshot: [32]u8,
     index: ?usize = null,
@@ -12,14 +22,17 @@ pub const Session = struct {
     layer: usize = 0,
     timeout: u16 = 30,
     draft: Draft = .{ .mode = 2, .tap = .{ .key_press = .{ .tap_keycode = 4 } } },
+
     pub fn init(model: *const Model) !Session {
         if (model.document().key_ids.len < 2) return error.ComboNeedsTwoKeys;
         return .{ .snapshot = try model.id() };
     }
+
     pub fn fresh(self: Session, model: *const Model) !bool {
         const actual = try model.id();
         return std.mem.eql(u8, &actual, &self.snapshot);
     }
+
     pub fn pick(self: *Session, model: *const Model, index: usize) !void {
         if (!try self.fresh(model)) return error.StaleComboAction;
         const doc = model.document();
@@ -43,14 +56,26 @@ pub const Session = struct {
         self.timeout = combo.timeout.ms;
         self.draft = Draft.from(combo.action);
     }
+
     pub fn new(self: *Session) void {
         self.index = null;
     }
+
     pub fn action(self: Session, kind: Kind) Action {
-        return .{ .snapshot = self.snapshot, .index = self.index, .keys = self.keys, .layer = self.layer, .timeout = self.timeout, .draft = self.draft, .kind = kind };
+        return .{
+            .snapshot = self.snapshot,
+            .index = self.index,
+            .keys = self.keys,
+            .layer = self.layer,
+            .timeout = self.timeout,
+            .draft = self.draft,
+            .kind = kind,
+        };
     }
+
     pub fn dispatch(self: *Session, model: *Model, rendered: Action) !void {
-        if (!std.meta.eql(rendered, self.action(rendered.kind)) or !try self.fresh(model)) return error.StaleComboAction;
+        if (!std.meta.eql(rendered, self.action(rendered.kind)) or
+            !try self.fresh(model)) return error.StaleComboAction;
         try self.draft.validate();
         const doc = model.document();
         if (self.index) |index| if (index >= doc.combos.len) return error.InvalidCombo;
@@ -64,10 +89,18 @@ pub const Session = struct {
         var next_index: ?usize = null;
         switch (rendered.kind) {
             .save => {
-                if (self.layer >= doc.layers.len or self.keys[0] >= doc.key_ids.len or self.keys[1] >= doc.key_ids.len or self.keys[0] == self.keys[1]) return error.InvalidCombo;
+                if (self.layer >= doc.layers.len or
+                    self.keys[0] >= doc.key_ids.len or
+                    self.keys[1] >= doc.key_ids.len or
+                    self.keys[0] == self.keys[1]) return error.InvalidCombo;
                 @memcpy(combos[0..doc.combos.len], doc.combos);
                 const index = self.index orelse doc.combos.len;
-                combos[index] = .{ .key_ids = .{ doc.key_ids[self.keys[0]], doc.key_ids[self.keys[1]] }, .layer_id = doc.layers[self.layer].id, .timeout = .{ .ms = self.timeout }, .action = self.draft.action() orelse return error.ComboCannotBeTransparent };
+                combos[index] = .{
+                    .key_ids = .{ doc.key_ids[self.keys[0]], doc.key_ids[self.keys[1]] },
+                    .layer_id = doc.layers[self.layer].id,
+                    .timeout = .{ .ms = self.timeout },
+                    .action = self.draft.action() orelse return error.ComboCannotBeTransparent,
+                };
                 next_index = index;
             },
             .delete => {

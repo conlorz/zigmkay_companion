@@ -2,6 +2,7 @@
 const std = @import("std");
 const results = @import("practice_results.zig");
 pub const day_ns: i64 = 86_400_000_000_000;
+
 pub const Entry = struct {
     cp: u21 = 0,
     opportunities: u64 = 0,
@@ -11,14 +12,17 @@ pub const Entry = struct {
     last_recall: ?i64 = null,
     recalls: usize = 0,
     context: results.Cohort = .{},
+
     pub fn dueAt(self: Entry) i64 {
         const days: i64 = if (self.recalls <= 1) 1 else if (self.recalls == 2) 3 else if (self.recalls == 3) 7 else 14;
         return if (self.last_recall) |last| last +| days * day_ns else self.last_exposure;
     }
+
     pub fn due(self: Entry, now: i64) bool {
         return self.opportunities >= 5 and self.dueAt() <= now;
     }
 };
+
 pub const Summary = struct {
     entries: [256]Entry = @splat(.{}),
     count: usize = 0,
@@ -26,8 +30,12 @@ pub const Summary = struct {
     unknown_runs: usize = 0,
     eligible_runs: usize = 0,
     truncated: bool = false,
+
     pub fn add(self: *Summary, record: *const results.Record) void {
-        if (!record.scored or record.status != .completed or record.timestamp < 0 or record.timestamp > self.now) return;
+        if (!record.scored or
+            record.status != .completed or
+            record.timestamp < 0 or
+            record.timestamp > self.now) return;
         if (!record.cue_evidence or record.timing_truncated) {
             self.unknown_runs += 1;
             return;
@@ -42,7 +50,11 @@ pub const Summary = struct {
                 continue;
             }
             if (index == self.count) {
-                self.entries[index] = .{ .cp = stat.cp, .last_exposure = record.timestamp, .context = record.cohort };
+                self.entries[index] = .{
+                    .cp = stat.cp,
+                    .last_exposure = record.timestamp,
+                    .context = record.cohort,
+                };
                 self.count += 1;
             }
             const entry = &self.entries[index];
@@ -54,17 +66,32 @@ pub const Summary = struct {
             entry.cued +|= stat.cued;
             entry.uncued +|= stat.uncued;
             // A visible layout is assistance even when no highlight appeared.
-            if (record.active_us > 0 and record.cohort.assistance == .hidden and !record.cohort.hints.revealed and stat.cued == 0 and stat.uncued_clean >= 5 and stat.uncued_misses * 100 <= stat.uncued * 3) {
+            if (record.active_us > 0 and
+                record.cohort.assistance == .hidden and
+                !record.cohort.hints.revealed and
+                stat.cued == 0 and
+                stat.uncued_clean >= 5 and
+                stat.uncued_misses * 100 <= stat.uncued * 3)
+            {
                 entry.recalls += 1;
-                if (entry.last_recall == null or record.timestamp > entry.last_recall.?) entry.last_recall = record.timestamp;
+                if (entry.last_recall == null or record.timestamp > entry.last_recall.?)
+                    entry.last_recall = record.timestamp;
             }
         }
     }
 };
+
 test "recall scheduling distinguishes uncued guided exposure from hidden qualified recall" {
     const t = std.testing;
     var summary: Summary = .{ .now = 10 * day_ns };
-    var record: results.Record = .{ .cue_evidence = true, .timing_available = true, .timestamp = day_ns, .matched = 5, .stat_count = 1, .active_us = 1_000_000 };
+    var record: results.Record = .{
+        .cue_evidence = true,
+        .timing_available = true,
+        .timestamp = day_ns,
+        .matched = 5,
+        .stat_count = 1,
+        .active_us = 1_000_000,
+    };
     record.stats[0] = .{ .cp = 'e', .opportunities = 5, .uncued = 5, .uncued_clean = 5 };
     summary.add(&record);
     try t.expect(summary.entries[0].last_recall == null);
@@ -85,10 +112,18 @@ test "recall scheduling distinguishes uncued guided exposure from hidden qualifi
     summary.add(&record);
     try t.expectEqual(@as(usize, 1), summary.unknown_runs);
 }
+
 test "recall excludes incomplete timing future runs and batch-only exposure" {
     const t = std.testing;
     var summary: Summary = .{ .now = 10 * day_ns };
-    var record: results.Record = .{ .cue_evidence = true, .timing_available = true, .timestamp = day_ns, .matched = 6, .stat_count = 1, .active_us = 1_000_000 };
+    var record: results.Record = .{
+        .cue_evidence = true,
+        .timing_available = true,
+        .timestamp = day_ns,
+        .matched = 6,
+        .stat_count = 1,
+        .active_us = 1_000_000,
+    };
     record.cohort.assistance = .hidden;
     record.stats[0] = .{ .cp = 'e', .opportunities = 6, .uncued = 6, .uncued_clean = 0 };
     summary.add(&record);

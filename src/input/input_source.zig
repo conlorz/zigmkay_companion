@@ -14,6 +14,7 @@ pub const persistent_translation_available = builtin.os.tag == .macos and native
 /// obtained from the active X11/Wayland session. No active-layout injection is
 /// supported by the retained C bridge.
 pub const Provenance = enum { unavailable, active_macos, default_xkb, native_fallback };
+
 pub fn platformProvenance() Provenance {
     if (!native_available) return .unavailable;
     return switch (builtin.os.tag) {
@@ -44,18 +45,23 @@ pub const Source = struct {
     layout_id_buffer: [256]u8 = @splat(0),
     layout_id_len: usize = 0,
     fallback: ?zkeymap.KeyMap = null,
+
     pub fn provenance(_: *const Source) Provenance {
         return platformProvenance();
     }
+
     pub fn hasActiveLayout(self: *const Source) bool {
         return self.provenance() == .active_macos and self.layout != null;
     }
+
     pub fn id(self: *const Source) []const u8 {
         return self.id_buffer[0..self.id_len];
     }
+
     pub fn layoutId(self: *const Source) []const u8 {
         return self.layout_id_buffer[0..self.layout_id_len];
     }
+
     pub fn init() Source {
         var source = Source{};
         if (builtin.os.tag != .macos and native_available) {
@@ -66,6 +72,7 @@ pub const Source = struct {
         _ = source.refresh();
         return source;
     }
+
     pub fn deinit(self: *Source) void {
         if (builtin.os.tag == .macos) {
             if (self.native) |native| CFRelease(native);
@@ -74,6 +81,7 @@ pub const Source = struct {
         if (self.fallback) |*km| zkeymap.KeyMap.deinit(km);
         self.* = .{};
     }
+
     /// Poll actual ID; IME sources use the active keyboard layout as a fallback.
     pub fn refresh(self: *Source) bool {
         if (builtin.os.tag != .macos) {
@@ -102,12 +110,25 @@ pub const Source = struct {
         self.id_len = len;
         self.layout_source = layout_source;
         if (self.layout_source) |native| {
-            if (TISGetInputSourceProperty(native, kTISPropertyInputSourceID)) |property| _ = CFStringGetCString(property, &self.layout_id_buffer, self.layout_id_buffer.len, 0x08000100);
-            self.layout_id_len = std.mem.indexOfScalar(u8, &self.layout_id_buffer, 0) orelse self.layout_id_buffer.len;
-            if (TISGetInputSourceProperty(native, kTISPropertyUnicodeKeyLayoutData)) |data| self.layout = CFDataGetBytePtr(data);
+            if (TISGetInputSourceProperty(native, kTISPropertyInputSourceID)) |property| {
+                _ = CFStringGetCString(
+                    property,
+                    &self.layout_id_buffer,
+                    self.layout_id_buffer.len,
+                    0x08000100,
+                );
+            }
+            self.layout_id_len = std.mem.indexOfScalar(
+                u8,
+                &self.layout_id_buffer,
+                0,
+            ) orelse self.layout_id_buffer.len;
+            if (TISGetInputSourceProperty(native, kTISPropertyUnicodeKeyLayoutData)) |data|
+                self.layout = CFDataGetBytePtr(data);
         }
         return true;
     }
+
     pub fn keyToText(self: *Source, input: zkeymap.KeyCodeFire) zkeymap.TextResult {
         if (!zkeymap.isLayoutDependent(input.tap_keycode)) {
             var result = zkeymap.TextResult{};
@@ -133,7 +154,9 @@ pub const Source = struct {
         var state: u32 = 0;
         var count: u32 = 0;
         var chars: [8]u16 = undefined;
-        if (UCKeyTranslate(layout, vk, 0, carbon, LMGetKbdType(), 1, &state, chars.len, &count, &chars) != 0 or count == 0 or count > chars.len) return .{};
+        if (UCKeyTranslate(layout, vk, 0, carbon, LMGetKbdType(), 1, &state, chars.len, &count, &chars) != 0 or
+            count == 0 or
+            count > chars.len) return .{};
         var result = zkeymap.TextResult{};
         const n = std.unicode.utf16LeToUtf8(&result.data, chars[0..count]) catch return .{};
         result.len = @intCast(n);
@@ -146,15 +169,19 @@ pub const Source = struct {
 pub const Session = struct {
     source: Source,
     dead_state: u32 = 0,
+
     pub fn init() Session {
         return .{ .source = Source.init() };
     }
+
     pub fn deinit(self: *Session) void {
         self.source.deinit();
     }
+
     pub fn reset(self: *Session) void {
         self.dead_state = 0;
     }
+
     pub fn refresh(self: *Session) bool {
         if (self.source.refresh()) {
             self.reset();
@@ -162,12 +189,14 @@ pub const Session = struct {
         }
         return false;
     }
+
     pub fn eurkey(self: *const Session) bool {
         var lower: [256]u8 = undefined;
         const id = self.source.id();
         for (id, lower[0..id.len]) |c, *out| out.* = std.ascii.toLower(c);
         return std.mem.indexOf(u8, lower[0..id.len], "eurkey") != null;
     }
+
     pub fn translate(self: *Session, key: zkeymap.KeyCodeFire, output: *[128]u8) ![]const u8 {
         if (builtin.os.tag != .macos) return error.NativeTranslationUnavailable;
         if (!self.eurkey()) return error.SelectEurKeyInputSource;
@@ -181,7 +210,8 @@ pub const Session = struct {
         if (mods.left_gui or mods.right_gui) carbon |= 1;
         var count: u32 = 0;
         var chars: [32]u16 = undefined;
-        if (UCKeyTranslate(native_layout, vk, 0, carbon, LMGetKbdType(), 0, &self.dead_state, chars.len, &count, &chars) != 0 or count > chars.len) return error.NativeTranslationFailed;
+        if (UCKeyTranslate(native_layout, vk, 0, carbon, LMGetKbdType(), 0, &self.dead_state, chars.len, &count, &chars) != 0 or
+            count > chars.len) return error.NativeTranslationFailed;
         const n = try std.unicode.utf16LeToUtf8(output, chars[0..count]);
         return output[0..n];
     }

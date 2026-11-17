@@ -2,6 +2,7 @@
 //! Offline picotool stand-in for the flash wrapper tests. Never opens a device.
 //! The `--ser` value selects a behavior: `mode` or `mode|path`.
 const std = @import("std");
+
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var serial: []const u8 = "ok";
@@ -31,7 +32,10 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, mode, "absent")) std.process.exit(249);
         if (std.mem.eql(u8, mode, "ambiguous")) {
-            try std.Io.File.stdout().writeStreamingAll(init.io, "Multiple RP-series devices in BOOTSEL mode found:\n");
+            try std.Io.File.stdout().writeStreamingAll(
+                init.io,
+                "Multiple RP-series devices in BOOTSEL mode found:\n",
+            );
             return;
         }
         if (std.mem.eql(u8, mode, "failure")) std.process.exit(1);

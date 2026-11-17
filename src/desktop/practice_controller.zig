@@ -9,6 +9,7 @@ const curriculum = @import("practice_curriculum.zig");
 const help = @import("practice_help.zig");
 pub const Digest = [32]u8;
 pub const Mode = enum { english, zig };
+
 pub const Config = struct {
     mode: Mode = .english,
     level: usize = 1,
@@ -20,12 +21,15 @@ pub const Config = struct {
     target_count: u8 = 0,
     curriculum: curriculum.Context = .{},
     hints: help.Config = .{},
+
     pub fn validate(self: Config) !void {
         try self.curriculum.validate();
         try self.hints.validate();
         if (self.hints.revealed) return error.InvalidHintPolicy;
         if (self.curriculum.version != 0 and self.challenge != null) return error.CurriculumCannotUseChallenge;
-        if (self.curriculum.version != 0 and self.mode == .zig and self.curriculum.stage != .real_text) return error.CurriculumCodeNeedsRealText;
+        if (self.curriculum.version != 0 and
+            self.mode == .zig and
+            self.curriculum.stage != .real_text) return error.CurriculumCodeNeedsRealText;
         if (self.mode == .zig and self.challenge != null) return error.ChallengeOnlyEnglish;
         if (self.mode == .zig and self.target_count > 0) return error.UnsupportedDrillFamily;
         if (self.challenge != null and self.target_count > 0) return error.ChallengeCannotUseHistory;
@@ -33,13 +37,33 @@ pub const Config = struct {
         if (self.level >= 3) return error.InvalidExerciseLevel;
     }
 };
+
 pub const Operation = struct { generation: u64, snapshot: Digest };
 pub const RunnerState = enum { idle, preparing, prepared, running, stopping, failed, stale };
 pub const Replacement = struct { previous: ?Operation, operation: Operation };
-pub const RunnerEffect = union(enum) { none, stop: Operation, stop_then_prepare: Replacement, stop_then_start: Replacement, start: Operation };
+
+pub const RunnerEffect = union(enum) {
+    none,
+    stop: Operation,
+    stop_then_prepare: Replacement,
+    stop_then_start: Replacement,
+    start: Operation,
+};
+
 pub const Effect = struct { runner: RunnerEffect = .none, reset_text: bool = false };
-pub const Intent = union(enum) { drill: Config, choose: Config, start: bool, new_exercise, pause, resume_run, stop };
+
+pub const Intent = union(enum) {
+    drill: Config,
+    choose: Config,
+    start: bool,
+    new_exercise,
+    pause,
+    resume_run,
+    stop,
+};
+
 pub const Action = struct { generation: u64, snapshot: Digest, intent: Intent };
+
 pub const Controller = struct {
     session: practice.Session = .{},
     config: Config = .{},
@@ -66,12 +90,15 @@ pub const Controller = struct {
     runner_state: RunnerState = .idle,
     last_sequence: ?u64 = null,
     failure: ?anyerror = null,
+
     pub fn init(snapshot: Digest) Controller {
         return .{ .current = snapshot };
     }
+
     pub fn configCohort(self: *const Controller) results.Cohort {
         return self.cohortFor(self.config);
     }
+
     pub fn cohortFor(self: *const Controller, config: Config) results.Cohort {
         var cohort = self.cohort;
         cohort.source = config.source;
@@ -85,16 +112,20 @@ pub const Controller = struct {
         cohort.hints = config.hints.effective();
         return cohort;
     }
+
     pub fn operation(self: *const Controller) Operation {
         return .{ .generation = self.generation, .snapshot = self.captured };
     }
+
     pub fn action(self: *const Controller, intent: Intent) Action {
         return .{ .generation = self.generation, .snapshot = self.current, .intent = intent };
     }
+
     /// Apply one rendered control after drawing. This prevents batched clicks
     /// from losing the operation of a runner that still needs to be stopped.
     pub fn dispatch(self: *Controller, rendered: Action, prepared_snapshot: ?Digest, now: u64) !Effect {
-        if (rendered.generation != self.generation or !std.mem.eql(u8, &rendered.snapshot, &self.current)) return error.StalePracticeAction;
+        if (rendered.generation != self.generation or
+            !std.mem.eql(u8, &rendered.snapshot, &self.current)) return error.StalePracticeAction;
         return switch (rendered.intent) {
             .drill => |config| blk: {
                 try config.validate();
@@ -115,12 +146,15 @@ pub const Controller = struct {
             .stop => self.stop(now),
         };
     }
+
     fn fresh(self: *const Controller) bool {
         return std.mem.eql(u8, &self.current, &self.captured);
     }
+
     fn accepts(self: *const Controller, operation_value: Operation) bool {
         return self.active and self.fresh() and std.meta.eql(self.operation(), operation_value);
     }
+
     pub fn choose(self: *Controller, config: Config, now: u64) !Effect {
         try config.validate();
         if (std.meta.eql(config, self.config)) return .{};
@@ -129,13 +163,16 @@ pub const Controller = struct {
         self.active = false;
         return effect;
     }
+
     /// Only the caller's deliberate Start/Restart/New exercise action calls this.
     /// Preparation completion leaves draft scoring paused until explicit Resume.
     pub fn start(self: *Controller, _: bool, prepared_snapshot: ?Digest, now: u64) !Effect {
         try self.config.validate();
         if (self.save_blocked) return error.PracticeSaveQueueFull;
         if (self.stopped_result_pending and self.completed == null) return error.PracticeResultPending;
-        if (self.session.state == .complete and self.completed == null and self.completion_delivered) return error.PracticeResultPending;
+        if (self.session.state == .complete and
+            self.completed == null and
+            self.completion_delivered) return error.PracticeResultPending;
         if (self.generation == std.math.maxInt(u64)) return error.OperationExhausted;
         const previous: ?Operation = if (self.generation == 0) null else self.operation();
         var buffer: [8192]u8 = undefined;
@@ -177,35 +214,66 @@ pub const Controller = struct {
         self.runner_state = if (already_prepared) .running else .preparing;
         if (!already_prepared) self.session.pause(now);
         const replacement: Replacement = .{ .previous = previous, .operation = self.operation() };
-        return .{ .runner = if (already_prepared) .{ .stop_then_start = replacement } else .{ .stop_then_prepare = replacement }, .reset_text = true };
+        return .{
+            .runner = if (already_prepared) .{ .stop_then_start = replacement } else .{
+                .stop_then_prepare = replacement,
+            },
+            .reset_text = true,
+        };
     }
+
     fn generateReference(self: *const Controller, buffer: []u8) ![]const u8 {
         return self.referenceForConfig(buffer, self.config, self.exercise_seed);
     }
+
     fn referenceForConfig(self: *const Controller, buffer: []u8, config: Config, seed: u64) ![]const u8 {
         if (config.mode == .zig) {
             const text = practice.lessons[config.level];
-            if (config.curriculum.version != 0) try curriculum.validateText(self.curriculum_labels orelse return error.CurriculumLayoutUnavailable, text);
+            if (config.curriculum.version != 0) {
+                try curriculum.validateText(
+                    self.curriculum_labels orelse return error.CurriculumLayoutUnavailable,
+                    text,
+                );
+            }
             return text;
         }
-        if (config.curriculum.version != 0) return curriculum.generate(buffer, config.curriculum, seed, @intCast(config.level), config.preset, config.targets[0..config.target_count], self.curriculum_labels orelse return error.CurriculumLayoutUnavailable);
-        return generator.generateWithCoverage(buffer, .{ .seed = seed, .preset = config.preset, .length = @intCast(config.level) }, config.targets[0..config.target_count], if (config.challenge == null and config.target_count == 0) self.normal_coverage else null);
+        if (config.curriculum.version != 0) {
+            return curriculum.generate(
+                buffer,
+                config.curriculum,
+                seed,
+                @intCast(config.level),
+                config.preset,
+                config.targets[0..config.target_count],
+                self.curriculum_labels orelse return error.CurriculumLayoutUnavailable,
+            );
+        }
+        return generator.generateWithCoverage(
+            buffer,
+            .{ .seed = seed, .preset = config.preset, .length = @intCast(config.level) },
+            config.targets[0..config.target_count],
+            if (config.challenge == null and config.target_count == 0) self.normal_coverage else null,
+        );
     }
+
     pub fn preview(self: *const Controller, buffer: []u8, config: Config) ![]const u8 {
         try config.validate();
         return self.referenceForConfig(buffer, config, self.seed +% 0x9e3779b97f4a7c15);
     }
+
     pub fn matchesSettings(self: *const Controller, original: results.Cohort) bool {
         var cohort = original;
         cohort.hints.revealed = false;
         return std.meta.eql(cohort, self.configCohort());
     }
+
     pub fn prepared(self: *Controller, op: Operation, success: bool) bool {
         if (!self.accepts(op) or self.runner_state != .preparing) return false;
         self.runner_state = if (success) .prepared else .failed;
         self.failure = if (success) null else error.DraftPreparationFailed;
         return true;
     }
+
     /// Called only after the owned runner has stopped/reaped. Accepted prepared
     /// artifact evidence may then retain the reference fast Resume behavior.
     pub fn stopped(self: *Controller, op: Operation, prepared_snapshot: ?Digest) bool {
@@ -214,6 +282,7 @@ pub const Controller = struct {
         self.runner_state = if (prepared_current) .prepared else .idle;
         return true;
     }
+
     pub fn resumeRun(self: *Controller, now: u64) !Effect {
         if (self.failure) |failure| if (failure == error.PracticeContextChanged) return error.PracticeContextChanged;
         if (!self.active or self.session.state != .paused) return error.ExerciseNotPaused;
@@ -225,7 +294,10 @@ pub const Controller = struct {
             self.generation += 1;
             if (self.runner_state != .prepared) {
                 self.runner_state = .preparing;
-                return .{ .runner = .{ .stop_then_prepare = .{ .previous = previous, .operation = self.operation() } }, .reset_text = true };
+                return .{ .runner = .{ .stop_then_prepare = .{
+                    .previous = previous,
+                    .operation = self.operation(),
+                } }, .reset_text = true };
             }
             self.runner_state = .running;
             self.last_sequence = null;
@@ -235,6 +307,7 @@ pub const Controller = struct {
         self.session.resumeRun(now);
         return .{ .reset_text = true };
     }
+
     pub fn pause(self: *Controller, now: u64) Effect {
         if (!self.active) return .{};
         self.session.pause(now);
@@ -244,30 +317,53 @@ pub const Controller = struct {
         }
         return .{ .reset_text = true };
     }
+
     pub fn stop(self: *Controller, now: u64) Effect {
         self.stopped_result_pending = self.active and self.session.state != .complete and self.session.attempts != 0;
         const effect = self.pause(now);
-        if (self.stopped_result_pending) if (self.session.recorder) |recorder| recorder.record(.stop, now, self.session.duration(now), self.session.len, null, .ordinary);
+        if (self.stopped_result_pending) {
+            if (self.session.recorder) |recorder| recorder.record(
+                .stop,
+                now,
+                self.session.duration(now),
+                self.session.len,
+                null,
+                .ordinary,
+            );
+        }
         self.active = false;
         return effect;
     }
+
     pub fn observe(self: *Controller, snapshot: Digest, now: u64) Effect {
         if (std.mem.eql(u8, &snapshot, &self.current)) return .{};
         self.current = snapshot;
         if (!self.active or self.session.source != .draft) return .{};
         const effect = self.pause(now);
         self.failure = error.DraftChangedRestartPractice;
-        if (self.session.recorder) |recorder| recorder.record(.context_changed, now, self.session.duration(now), self.session.len, null, .ordinary);
+        if (self.session.recorder) |recorder| {
+            recorder.record(
+                .context_changed,
+                now,
+                self.session.duration(now),
+                self.session.len,
+                null,
+                .ordinary,
+            );
+        }
         return effect;
     }
+
     pub fn acceptingOsText(self: *const Controller, focused: bool) bool {
         return focused and self.active and self.session.source == .os and (self.session.state == .ready or self.session.state == .running);
     }
+
     pub fn insertOs(self: *Controller, focused: bool, bytes: []const u8, now: u64, paste: bool) !Effect {
         if (!self.acceptingOsText(focused)) return .{};
         try self.session.insert(bytes, now, paste);
         return self.finish(now);
     }
+
     pub fn insertDraft(self: *Controller, op: Operation, sequence: u64, bytes: []const u8, now: u64) !Effect {
         if (!self.accepts(op) or self.runner_state != .running or self.session.source != .draft) return .{};
         if (self.last_sequence) |last| if (sequence <= last) return .{};
@@ -275,6 +371,7 @@ pub const Controller = struct {
         self.last_sequence = sequence;
         return self.finish(now);
     }
+
     pub fn finish(self: *Controller, _: u64) Effect {
         if (!self.active or self.session.state != .complete) return .{};
         self.completion_delivered = true;
@@ -285,6 +382,7 @@ pub const Controller = struct {
         return .{};
     }
 };
+
 test "draft preparation is explicit resume rejects edits and stale completions" {
     const t = std.testing;
     var owner = Controller.init(@splat(1));
@@ -308,6 +406,7 @@ test "draft preparation is explicit resume rejects edits and stale completions" 
     try t.expect(!owner.prepared(op, true));
     try t.expectEqual(@as(usize, 0), owner.session.len);
 }
+
 test "restart binds the prior runner and failed preparation retry gets a new ticket" {
     const t = std.testing;
     var owner = Controller.init(@splat(1));
@@ -321,9 +420,13 @@ test "restart binds the prior runner and failed preparation retry gets a new tic
     try t.expect(!owner.prepared(old, true));
     try t.expect(owner.prepared(retry.runner.stop_then_prepare.operation, true));
     const replacement = try owner.start(false, @as(Digest, @splat(1)), 2);
-    try t.expectEqualDeep(retry.runner.stop_then_prepare.operation, replacement.runner.stop_then_start.previous.?);
+    try t.expectEqualDeep(
+        retry.runner.stop_then_prepare.operation,
+        replacement.runner.stop_then_start.previous.?,
+    );
     try t.expect(!owner.prepared(retry.runner.stop_then_prepare.operation, true));
 }
+
 test "OS text respects focus pause and paste remains unscored" {
     const t = std.testing;
     var owner = Controller.init(@splat(1));
@@ -339,6 +442,7 @@ test "OS text respects focus pause and paste remains unscored" {
     try t.expect(owner.acceptingOsText(true));
     try t.expectError(error.InvalidExerciseLevel, owner.choose(.{ .level = 3 }, 6));
 }
+
 test "rendered tutor actions reject changed project and replaced operation" {
     const t = std.testing;
     var owner = Controller.init(@splat(1));
@@ -355,6 +459,7 @@ fn sameOpening(session: *const practice.Session, text: []const u8) bool {
     for (session.reference[0..12], text[0..12]) |cp, byte| if (cp != byte) return false;
     return true;
 }
+
 test "normal starts stay fresh challenges stay reproducible and completion is idempotent" {
     var owner = Controller.init(@splat(1));
     _ = try owner.start(true, null, 0);
@@ -365,7 +470,11 @@ test "normal starts stay fresh challenges stay reproducible and completion is id
     _ = try owner.start(true, null, 3);
     const challenge = owner.session.reference;
     _ = try owner.start(true, null, 4);
-    try std.testing.expectEqualSlices(u21, challenge[0..owner.session.reference_len], owner.session.reference[0..owner.session.reference_len]);
+    try std.testing.expectEqualSlices(
+        u21,
+        challenge[0..owner.session.reference_len],
+        owner.session.reference[0..owner.session.reference_len],
+    );
     try owner.session.load("a", .os);
     _ = try owner.insertOs(true, "a", 5, false);
     const first_effect = owner.finish(6);
@@ -392,7 +501,10 @@ test "completion and a fresh-run click in one input batch cannot discard the res
     try owner.session.load("a", .os);
     _ = try owner.insertOs(true, "a", 1, false);
     const generation = owner.generation;
-    try std.testing.expectError(error.PracticeResultPending, owner.dispatch(owner.action(.new_exercise), null, 2));
+    try std.testing.expectError(
+        error.PracticeResultPending,
+        owner.dispatch(owner.action(.new_exercise), null, 2),
+    );
     try std.testing.expectEqual(generation, owner.generation);
     try std.testing.expectEqual(practice.State.complete, owner.session.state);
     owner.completed = try results.capture(&owner.session, owner.captured_cohort, null);
@@ -401,6 +513,12 @@ test "completion and a fresh-run click in one input batch cannot discard the res
 }
 
 test "English challenge and drill settings do not reinterpret fixed Zig lessons" {
-    try std.testing.expectError(error.ChallengeOnlyEnglish, (Config{ .mode = .zig, .challenge = 42 }).validate());
-    try std.testing.expectError(error.UnsupportedDrillFamily, (Config{ .mode = .zig, .targets = .{ 'a', 0, 0, 0, 0 }, .target_count = 1 }).validate());
+    try std.testing.expectError(
+        error.ChallengeOnlyEnglish,
+        (Config{ .mode = .zig, .challenge = 42 }).validate(),
+    );
+    try std.testing.expectError(
+        error.UnsupportedDrillFamily,
+        (Config{ .mode = .zig, .targets = .{ 'a', 0, 0, 0, 0 }, .target_count = 1 }).validate(),
+    );
 }

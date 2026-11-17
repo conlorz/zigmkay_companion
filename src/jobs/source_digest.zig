@@ -15,6 +15,7 @@ fn length(hash: *std.crypto.hash.sha2.Sha256, n: usize) void {
 pub fn treeDigest(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !Digest {
     return tree(gpa, io, dir);
 }
+
 pub fn excludedDirectoryName(name: []const u8) bool {
     return std.mem.startsWith(u8, name, ".zig-cache") or
         std.mem.eql(u8, name, ".git") or
@@ -22,6 +23,7 @@ pub fn excludedDirectoryName(name: []const u8) bool {
         std.mem.eql(u8, name, "zig-pkg") or
         std.mem.eql(u8, name, ".slim");
 }
+
 fn excludedDirectory(_: []const u8, name: []const u8, kind: std.Io.File.Kind) bool {
     return kind == .directory and excludedDirectoryName(name);
 }
@@ -70,9 +72,15 @@ test "source trees ignore caches but retain hidden and non-Zig build inputs" {
         try std.testing.expectEqual(original, try treeDigest(gpa, io, tmp.dir));
     }
     try tmp.dir.createDirPath(io, ".slim/worktrees/nested/.slim");
-    try tmp.dir.writeFile(io, .{ .sub_path = ".slim/worktrees/nested/.slim/source.zig", .data = "nested source" });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".slim/worktrees/nested/.slim/source.zig",
+        .data = "nested source",
+    });
     try std.testing.expectEqual(original, try treeDigest(gpa, io, tmp.dir));
-    try tmp.dir.writeFile(io, .{ .sub_path = ".slim/worktrees/nested/.slim/source.zig", .data = "edited nested source" });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".slim/worktrees/nested/.slim/source.zig",
+        .data = "edited nested source",
+    });
     try std.testing.expectEqual(original, try treeDigest(gpa, io, tmp.dir));
     try tmp.dir.writeFile(io, .{ .sub_path = ".zig-cache-note", .data = "hidden project input" });
     try std.testing.expect(!std.mem.eql(u8, &original, &try treeDigest(gpa, io, tmp.dir)));
@@ -94,6 +102,7 @@ test "exported source trees reject links" {
     try tmp.dir.symLink(t.io, "source.zig", "alias.zig", .{});
     try t.expectError(error.UnsupportedSourceKind, treeDigest(t.allocator, t.io, tmp.dir));
 }
+
 test "excluded directories ignore nested contents but same-named files remain inputs" {
     const t = std.testing;
     const names = [_][]const u8{ ".git", ".zig-cache", "zig-out", "zig-pkg" };

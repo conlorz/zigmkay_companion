@@ -3,6 +3,7 @@ const std = @import("std");
 const history = @import("practice_history.zig");
 const results = @import("practice_results.zig");
 const timing = @import("practice_timing.zig");
+
 pub const Runtime = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -18,12 +19,19 @@ pub const Runtime = struct {
     cohort: results.Cohort = .{},
     requested_cohort: results.Cohort = .{},
     error_value: ?anyerror = null,
+
     pub fn init(gpa: std.mem.Allocator, io: std.Io, data_path: ?[]const u8) !Runtime {
         const queue = try gpa.alloc(results.Record, 16);
         errdefer gpa.free(queue);
         @memset(queue, .{});
-        return .{ .gpa = gpa, .io = io, .queue = queue, .path = if (data_path) |path| try std.fs.path.join(gpa, &.{ path, "typing-practice" }) else null };
+        return .{
+            .gpa = gpa,
+            .io = io,
+            .queue = queue,
+            .path = if (data_path) |path| try std.fs.path.join(gpa, &.{ path, "typing-practice" }) else null,
+        };
     }
+
     pub fn deinit(self: *Runtime) void {
         if (self.worker) |worker| {
             if (worker.future) |*future| {
@@ -64,9 +72,11 @@ pub const Runtime = struct {
         self.data.deinit();
         self.gpa.free(self.queue);
     }
+
     pub fn enqueue(self: *Runtime, record: results.Record) !void {
         return self.enqueueWithTiming(record, null);
     }
+
     pub fn enqueueWithTiming(self: *Runtime, record: results.Record, payload: ?timing.Payload) !void {
         for (self.queue[0..self.queued]) |old| if (std.mem.eql(u8, &old.id, &record.id)) return;
         if (self.queued == self.queue.len) return error.PracticeSaveQueueFull;
@@ -74,6 +84,7 @@ pub const Runtime = struct {
         self.queue[self.queued] = record;
         self.queued += 1;
     }
+
     fn popQueue(self: *Runtime) void {
         if (self.timings[0]) |*owned| owned.deinit();
         self.queued -= 1;
@@ -81,28 +92,40 @@ pub const Runtime = struct {
         std.mem.copyForwards(?timing.Owned, self.timings[0..self.queued], self.timings[1 .. self.queued + 1]);
         self.timings[self.queued] = null;
     }
+
     fn discardQueue(self: *Runtime) void {
         while (self.queued != 0) self.popQueue();
     }
+
     pub fn poll(self: *Runtime) void {
-        if (self.worker) |worker| if (worker.poll()) |event| {
-            defer worker.destroy();
-            self.worker = null;
-            const data = event.result catch |err| {
-                self.error_value = err;
-                return;
-            };
-            if (self.clearing) self.discardQueue();
-            self.data.deinit();
-            self.data = data;
-            self.cohort = self.requested_cohort;
-            self.error_value = null;
-            if (self.writing) {
-                self.popQueue();
+        if (self.worker) |worker| {
+            if (worker.poll()) |event| {
+                defer worker.destroy();
+                self.worker = null;
+                const data = event.result catch |err| {
+                    self.error_value = err;
+                    return;
+                };
+                if (self.clearing) self.discardQueue();
+                self.data.deinit();
+                self.data = data;
+                self.cohort = self.requested_cohort;
+                self.error_value = null;
+                if (self.writing) {
+                    self.popQueue();
+                }
             }
-        };
+        }
     }
-    pub fn request(self: *Runtime, cohort: results.Cohort, before: ?results.Record, clearing: bool, retry: bool, current_id: ?[16]u8) !void {
+
+    pub fn request(
+        self: *Runtime,
+        cohort: results.Cohort,
+        before: ?results.Record,
+        clearing: bool,
+        retry: bool,
+        current_id: ?[16]u8,
+    ) !void {
         if (self.worker != null) return;
         if (self.error_value != null and !retry and !clearing) return;
         const path = self.path orelse return error.PracticeStorageUnavailable;
@@ -127,6 +150,7 @@ pub const Runtime = struct {
         self.requested_cohort = cohort;
         self.error_value = null;
     }
+
     pub fn transfer(self: *Runtime, cohort: results.Cohort, path: []const u8, importing: bool) !void {
         if (self.worker != null or self.queued != 0) return error.PracticeWritesPending;
         const root = self.path orelse return error.PracticeStorageUnavailable;
@@ -144,6 +168,17 @@ pub const Runtime = struct {
     }
 };
 
+/// Polls `runtime` until its background worker finishes, failing after five seconds.
+fn finishWorker(runtime: *Runtime) !void {
+    const io = std.testing.io;
+    const deadline = std.Io.Clock.awake.now(io).toMilliseconds() + 5000;
+    while (runtime.worker != null) {
+        runtime.poll();
+        if (std.Io.Clock.awake.now(io).toMilliseconds() > deadline) return error.PracticeWorkerDeadline;
+        try std.Io.sleep(io, .fromMilliseconds(1), .awake);
+    }
+}
+
 test "background saves drain once retries retain IDs and reopening restores completed runs" {
     const t = std.testing;
     var temp = t.tmpDir(.{ .iterate = true });
@@ -158,12 +193,7 @@ test "background saves drain once retries retain IDs and reopening restores comp
     try runtime.enqueue(record);
     try t.expectEqual(@as(usize, 1), runtime.queued);
     try runtime.request(.{}, null, false, false, record.id);
-    const deadline = std.Io.Clock.awake.now(t.io).toMilliseconds() + 5000;
-    while (runtime.worker != null) {
-        runtime.poll();
-        if (std.Io.Clock.awake.now(t.io).toMilliseconds() > deadline) return error.PracticeWorkerDeadline;
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&runtime);
     try t.expect(runtime.error_value == null);
     try t.expectEqual(@as(usize, 0), runtime.queued);
     try t.expect(runtime.data.contains_requested);
@@ -172,11 +202,7 @@ test "background saves drain once retries retain IDs and reopening restores comp
     var reopened = try Runtime.init(t.allocator, t.io, root);
     defer reopened.deinit();
     try reopened.request(.{}, null, false, false, null);
-    while (reopened.worker != null) {
-        reopened.poll();
-        if (std.Io.Clock.awake.now(t.io).toMilliseconds() > deadline) return error.PracticeWorkerDeadline;
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&reopened);
     try t.expectEqual(@as(usize, 1), reopened.data.total);
     // An unwritable storage route preserves the queued record for explicit retry.
     const valid = runtime.path.?;
@@ -189,11 +215,7 @@ test "background saves drain once retries retain IDs and reopening restores comp
     record.id[0] = 8;
     try runtime.enqueue(record);
     try runtime.request(.{}, null, false, false, record.id);
-    while (runtime.worker != null) {
-        runtime.poll();
-        if (std.Io.Clock.awake.now(t.io).toMilliseconds() > deadline) return error.PracticeWorkerDeadline;
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&runtime);
     try t.expect(runtime.error_value != null);
     try t.expectEqual(@as(usize, 1), runtime.queued);
 }
@@ -216,15 +238,13 @@ test "queue limits and failed deliberate clearing retain pending records" {
     try t.expectError(error.PracticeSaveQueueFull, runtime.enqueue(extra));
     var directory = try std.Io.Dir.cwd().createDirPathOpen(t.io, runtime.path.?, .{});
     defer directory.close(t.io);
-    try directory.writeFile(t.io, .{ .sub_path = "00000000000000000000000000000000.zon", .data = ".{ .version = 999 }" });
+    try directory.writeFile(t.io, .{
+        .sub_path = "00000000000000000000000000000000.zon",
+        .data = ".{ .version = 999 }",
+    });
     runtime.error_value = error.PracticeSaveQueueFull;
     try runtime.request(.{}, null, true, false, null);
-    const deadline = std.Io.Clock.awake.now(t.io).toMilliseconds() + 5000;
-    while (runtime.worker != null) {
-        runtime.poll();
-        if (std.Io.Clock.awake.now(t.io).toMilliseconds() > deadline) return error.PracticeWorkerDeadline;
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&runtime);
     try t.expect(runtime.error_value != null);
     try t.expectEqual(@as(usize, 16), runtime.queued);
     // Explicit fixture cleanup prevents shutdown from trying to publish over
@@ -240,7 +260,9 @@ test "queued timing is frozen across new exercises; migration and clear do not r
     defer t.allocator.free(root);
     var runtime = try Runtime.init(t.allocator, t.io, root);
     defer runtime.deinit();
-    var directory = try std.Io.Dir.cwd().createDirPathOpen(t.io, runtime.path.?, .{ .open_options = .{ .iterate = true } });
+    var directory = try std.Io.Dir.cwd().createDirPathOpen(t.io, runtime.path.?, .{
+        .open_options = .{ .iterate = true },
+    });
     defer directory.close(t.io);
     var legacy = results.Record{ .id = @splat(7) };
     try history.save(t.allocator, t.io, directory, &legacy);
@@ -249,15 +271,19 @@ test "queued timing is frozen across new exercises; migration and clear do not r
     recorder.reset(&.{'a'});
     recorder.record(.attempt, 100, 0, 0, 'a', .ordinary);
     recorder.record(.complete, 100, 0, 1, null, .ordinary);
-    var record = results.Record{ .id = @splat(9), .timing_available = true, .matched = 1, .attempts = 1, .correct_attempts = 1, .stat_count = 1 };
+    var record = results.Record{
+        .id = @splat(9),
+        .timing_available = true,
+        .matched = 1,
+        .attempts = 1,
+        .correct_attempts = 1,
+        .stat_count = 1,
+    };
     record.stats[0] = .{ .cp = 'a', .opportunities = 1 };
     try runtime.enqueueWithTiming(record, recorder.payload());
     recorder.reset(&.{'z'});
     try runtime.request(.{}, null, false, false, record.id);
-    while (runtime.worker != null) {
-        runtime.poll();
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&runtime);
     try t.expect(runtime.error_value == null);
     try t.expectEqual(@as(usize, 2), runtime.data.database_runs);
     try t.expectEqual(@as(u21, 'a'), runtime.data.timing.?.payload.reference[0]);
@@ -270,18 +296,12 @@ test "queued timing is frozen across new exercises; migration and clear do not r
     defer saved.deinit();
     try t.expectEqual(@as(u21, 'a'), saved.payload.reference[0]);
     try runtime.request(.{}, null, true, false, null);
-    while (runtime.worker != null) {
-        runtime.poll();
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&runtime);
     try t.expect(runtime.error_value == null);
     try t.expectEqual(@as(usize, 0), runtime.data.database_runs);
     try t.expect(runtime.data.timing == null and runtime.data.analysis == null);
     try runtime.request(.{}, null, false, false, null);
-    while (runtime.worker != null) {
-        runtime.poll();
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&runtime);
     try t.expectEqual(@as(usize, 0), runtime.data.database_runs);
     var count: usize = 0;
     var entries = directory.iterate();
@@ -292,6 +312,7 @@ test "queued timing is frozen across new exercises; migration and clear do not r
     legacy.timestamp = 1;
     try t.expectError(error.PracticeRunCollision, history.save(t.allocator, t.io, directory, &legacy));
 }
+
 test "curriculum resumes across reopen without merging stage or assistance cohorts" {
     const t = std.testing;
     var temp = t.tmpDir(.{ .iterate = true });
@@ -303,20 +324,14 @@ test "curriculum resumes across reopen without merging stage or assistance cohor
     var record: results.Record = .{ .id = @splat(3), .cohort = .{ .curriculum = .{ .version = 1 } } };
     try runtime.enqueue(record);
     try runtime.request(.{}, null, false, false, null);
-    while (runtime.worker != null) {
-        runtime.poll();
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&runtime);
     try t.expect(runtime.error_value == null);
     try t.expectEqual(@as(usize, 0), runtime.data.total);
     try t.expectEqual(record.id, runtime.data.latest_curriculum.?.id);
     var reopened = try Runtime.init(t.allocator, t.io, root);
     defer reopened.deinit();
     try reopened.request(record.cohort, null, false, false, null);
-    while (reopened.worker != null) {
-        reopened.poll();
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&reopened);
     try t.expect(reopened.error_value == null);
     try t.expectEqual(@as(usize, 1), reopened.data.total);
     record.cohort.assistance = .hidden;
@@ -324,10 +339,7 @@ test "curriculum resumes across reopen without merging stage or assistance cohor
     record.timestamp = 1;
     try reopened.enqueue(record);
     try reopened.request(record.cohort, null, false, false, null);
-    while (reopened.worker != null) {
-        reopened.poll();
-        try std.Io.sleep(t.io, .fromMilliseconds(1), .awake);
-    }
+    try finishWorker(&reopened);
     try t.expectEqual(@as(usize, 1), reopened.data.total);
     try t.expectEqual(record.id, reopened.data.latest_curriculum.?.id);
 }

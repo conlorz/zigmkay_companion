@@ -5,8 +5,13 @@ const model = @import("layout-model");
 fn key(usage: u8, modifiers: model.Modifiers) p.Action {
     return .{ .tap_only = .{ .key_press = .{ .tap_keycode = usage, .tap_modifiers = modifiers } } };
 }
+
 fn dual(usage: u8, hold: p.Hold) p.Action {
-    return .{ .tap_hold = .{ .tap = .{ .key_press = .{ .tap_keycode = usage } }, .hold = hold, .tapping_term = .{ .ms = 180 } } };
+    return .{ .tap_hold = .{
+        .tap = .{ .key_press = .{ .tap_keycode = usage } },
+        .hold = hold,
+        .tapping_term = .{ .ms = 180 },
+    } };
 }
 
 pub const letters = [_]u8{ 20, 26, 8, 21, 23, 28, 24, 12, 18, 19, 4, 22, 7, 9, 10, 11, 13, 14, 15, 51, 29, 27, 6, 25, 5, 17, 16, 54, 55, 56 };
@@ -52,21 +57,31 @@ pub fn populate(layers: []p.Layer) void {
     numbers[13] = key(65, .{});
     numbers[14] = key(66, .{});
     const digit_positions = [_]usize{ 26, 27, 28, 16, 17, 18, 6, 7, 8, 25 };
-    for (digit_positions, 0..) |index, digit| numbers[index] = key(if (digit == 9) 39 else @intCast(30 + digit), .{});
+    for (digit_positions, 0..) |index, digit| numbers[index] = key(
+        if (digit == 9) 39 else @intCast(30 + digit),
+        .{},
+    );
     numbers[19] = key(46, .{ .left_shift = true });
     numbers[29] = key(45, .{});
     numbers[24] = key(55, .{});
 
     const symbols = @constCast(layers[3].actions);
     const usages = [_]u8{ 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 47, 48, 47, 48, 49, 45, 46, 51, 52, 53, 54, 55, 56, 45, 46, 49, 56, 51, 52, 53 };
-    for (usages, 0..) |usage, index| symbols[index] = key(usage, if (index < 12 or (index >= 15 and index < 22) or index == 25 or index == 26) .{ .left_shift = true } else .{});
+    for (usages, 0..) |usage, index| symbols[index] = key(
+        usage,
+        if (index < 12 or (index >= 15 and index < 22) or index == 25 or index == 26) .{ .left_shift = true } else .{},
+    );
     // Keep all layer keys and modifier holds usable through transparent fallthrough.
     for (layers[1..]) |layer| {
         const actions = @constCast(layer.actions);
         for (positions, modifiers) |index, mods| {
             if (actions[index]) |action| {
                 const tap = action.tap_only;
-                actions[index] = .{ .tap_hold = .{ .tap = tap, .hold = .{ .hold_modifiers = mods }, .tapping_term = .{ .ms = 180 } } };
+                actions[index] = .{ .tap_hold = .{
+                    .tap = tap,
+                    .hold = .{ .hold_modifiers = mods },
+                    .tapping_term = .{ .ms = 180 },
+                } };
             }
         }
     }
@@ -93,7 +108,9 @@ test "Mac candidate reaches every layer and preserves modifier and recovery acce
         };
         try std.testing.expectEqual(usage, tap.key_press.?.tap_keycode);
     }
-    for (doc.layers[1].actions[0..5]) |action| try std.testing.expect(action.?.tap_only.key_press.?.tap_modifiers.left_gui);
+    for (doc.layers[1].actions[0..5]) |action| try std.testing.expect(
+        action.?.tap_only.key_press.?.tap_modifiers.left_gui,
+    );
     // No function key is lost when the number-pad positions override the top row.
     for (58..70) |usage| {
         var found = false;
@@ -103,15 +120,21 @@ test "Mac candidate reaches every layer and preserves modifier and recovery acce
                 .tap_hold => |value| value.tap,
                 else => continue,
             };
-            if (tap.key_press) |press| if (press.tap_keycode == usage) {
-                found = true;
-            };
+            if (tap.key_press) |press| {
+                if (press.tap_keycode == usage) {
+                    found = true;
+                }
+            }
         };
         try std.testing.expect(found);
     }
     var reference = try p.profiles.create(std.testing.allocator, .danish);
     defer reference.deinit();
     const identity = try p.snapshot.identity(std.testing.allocator, loaded.snapshot, p.profiles.board);
-    const original_identity = try p.snapshot.identity(std.testing.allocator, reference.snapshot, p.profiles.board);
+    const original_identity = try p.snapshot.identity(
+        std.testing.allocator,
+        reference.snapshot,
+        p.profiles.board,
+    );
     try std.testing.expect(!std.mem.eql(u8, &identity.digest, &original_identity.digest));
 }

@@ -9,6 +9,7 @@ const native = @import("native-hid");
 const capture = live.capture;
 
 const Manifest = struct { identity: protocol.Identity };
+
 const help =
     \\usb-acceptance offline <candidate.zon>
     \\usb-acceptance replay <candidate.zon> <capture-file>
@@ -32,15 +33,28 @@ fn identity(init: std.process.Init, path: []const u8) !protocol.Identity {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, path, allocator, .limited(16384));
     const terminated = try allocator.dupeSentinel(u8, bytes, 0);
     var diagnostics: std.zon.parse.Diagnostics = undefined;
-    const manifest = try std.zon.parse.fromSlice(Manifest, .{ .gpa = allocator, .arena = allocator, .source = terminated, .diagnostics = &diagnostics, .ignore_unknown_fields = true });
+    const manifest = try std.zon.parse.fromSlice(Manifest, .{
+        .gpa = allocator,
+        .arena = allocator,
+        .source = terminated,
+        .diagnostics = &diagnostics,
+        .ignore_unknown_fields = true,
+    });
     try protocol.validateIdentity(manifest.identity);
     return manifest.identity;
 }
 
 fn describe(expected: protocol.Identity) void {
     std.debug.print("Expected board={s} profile={s} keys={d} layers={d} digest={s} keymap id=digest\n", .{
-        std.mem.trimEnd(u8, &expected.board_id, &.{0}), std.mem.trimEnd(u8, &expected.profile_id, &.{0}), expected.dimensions.key_count,
-        expected.dimensions.layer_count,                std.fmt.bytesToHex(expected.digest, .lower),
+        std.mem.trimEnd(u8, &expected.board_id, &.{0}),
+        std.mem.trimEnd(
+            u8,
+            &expected.profile_id,
+            &.{0},
+        ),
+        expected.dimensions.key_count,
+        expected.dimensions.layer_count,
+        std.fmt.bytesToHex(expected.digest, .lower),
     });
 }
 
@@ -61,12 +75,20 @@ pub fn main(init: std.process.Init) !void {
     }
     if (args.len == 3 and std.mem.eql(u8, args[1], "offline")) {
         describe(try identity(init, args[2]));
-        std.debug.print("Offline identity validated; Zig {s}; SDL {d}. No device accessed.\n", .{ builtin.zig_version_string, sdl.SDL_GetVersion() });
+        std.debug.print(
+            "Offline identity validated; Zig {s}; SDL {d}. No device accessed.\n",
+            .{ builtin.zig_version_string, sdl.SDL_GetVersion() },
+        );
         return;
     }
     if (args.len == 4 and std.mem.eql(u8, args[1], "replay")) {
         const expected = try identity(init, args[2]);
-        const bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, args[3], allocator, .limited(capture.max_bytes));
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(
+            init.io,
+            args[3],
+            allocator,
+            .limited(capture.max_bytes),
+        );
         const session = try capture.replay(bytes, expected);
         std.debug.print("Offline replay passed; final phase={s}.\n", .{@tagName(session.phase)});
         if (session.observed) |observed| hello("Last device hello", observed);
@@ -84,18 +106,30 @@ pub fn main(init: std.process.Init) !void {
     if (seconds < 2 or seconds > 120) return error.DurationOutOfRange;
     const output: ?[]const u8 = if (discover) null else args[if (recovery or bootloader or reconnect) 3 else 4];
     // Refuse to overwrite prior evidence; check destination before device access.
-    var file: ?std.Io.File = if (output) |path| try std.Io.Dir.cwd().createFile(init.io, path, .{ .exclusive = true }) else null;
+    var file: ?std.Io.File = if (output) |path| try std.Io.Dir.cwd().createFile(
+        init.io,
+        path,
+        .{ .exclusive = true },
+    ) else null;
     defer if (file) |f| f.close(init.io);
     const Native = native.Native(sdl);
     defer _ = sdl.SDL_hid_exit();
     var transport: Native = .{ .io = init.io };
     defer transport.close();
     if (sdl.SDL_hid_init() != 0) return error.HidInitializationFailed;
-    std.debug.print("Explicit HID operation; macOS SDL {d}; compiler {s}\n", .{ sdl.SDL_GetVersion(), builtin.zig_version_string });
+    std.debug.print(
+        "Explicit HID operation; macOS SDL {d}; compiler {s}\n",
+        .{ sdl.SDL_GetVersion(), builtin.zig_version_string },
+    );
     if (discover) {
         const result = try transport.discover(null);
-        std.debug.print("Discovery={s}; vendor collection paths={d}\n", .{ @tagName(result), transport.path_count });
-        for (0..transport.path_count) |i| std.debug.print("  {s}\n", .{transport.paths[i][0..transport.path_lengths[i]]});
+        std.debug.print(
+            "Discovery={s}; vendor collection paths={d}\n",
+            .{ @tagName(result), transport.path_count },
+        );
+        for (0..transport.path_count) |i| std.debug.print("  {s}\n", .{
+            transport.paths[i][0..transport.path_lengths[i]],
+        });
         if (result != .selected) return error.UniqueDeviceRequired;
         return;
     }
@@ -103,14 +137,24 @@ pub fn main(init: std.process.Init) !void {
     var seed: [4]u8 = undefined;
     std.Io.random(init.io, &seed);
     const path = if (args.len == (if (recovery or bootloader or reconnect) @as(usize, 5) else 6)) args[args.len - 1] else null;
-    var driver = try live.Driver(Native).init(transport, expected.?, std.mem.readInt(u32, &seed, .little), path);
+    var driver = try live.Driver(Native).init(
+        transport,
+        expected.?,
+        std.mem.readInt(u32, &seed, .little),
+        path,
+    );
     var recording = try capture.Recorder.init(allocator);
     defer recording.deinit(allocator);
     driver.recording = &recording;
     var saved = false;
     defer {
         driver.disconnect(driver.transport.now());
-        if (!saved) file.?.writeStreamingAll(init.io, recording.encoded()) catch |err| std.debug.print("CAPTURE WRITE FAILED: {s}\n", .{@errorName(err)});
+        if (!saved) {
+            file.?.writeStreamingAll(init.io, recording.encoded()) catch |err| std.debug.print(
+                "CAPTURE WRITE FAILED: {s}\n",
+                .{@errorName(err)},
+            );
+        }
         std.debug.print("Capture: {s}; capacity_exceeded={any}\n", .{ output.?, recording.full });
     }
     const start = driver.transport.now();
@@ -142,7 +186,10 @@ pub fn main(init: std.process.Init) !void {
             if (was_connected) {
                 if (disconnected_token != null) return error.UnexpectedRepeatedDisconnect;
                 disconnected_token = previous_token;
-                std.debug.print("Observed physical disconnect at t={d}ms; waiting for fresh session.\n", .{now -| start});
+                std.debug.print(
+                    "Observed physical disconnect at t={d}ms; waiting for fresh session.\n",
+                    .{now -| start},
+                );
             }
         }
         if (driver.status == .multiple_devices or driver.status == .path_not_found) return error.UniqueDeviceRequired;
@@ -152,7 +199,11 @@ pub fn main(init: std.process.Init) !void {
             return error.IdentityOrProtocolMismatch;
         }
         if (driver.session.phase != last_phase) {
-            std.debug.print("t={d}ms phase={s} token={d}\n", .{ now -| start, @tagName(driver.session.phase), driver.session.token });
+            std.debug.print("t={d}ms phase={s} token={d}\n", .{
+                now -| start,
+                @tagName(driver.session.phase),
+                driver.session.token,
+            });
             last_phase = driver.session.phase;
         }
         for (driver.key_events[0..driver.key_event_count]) |event| {
@@ -164,7 +215,10 @@ pub fn main(init: std.process.Init) !void {
             if (reconnect and disconnected_token != null and driver.session.token != disconnected_token.?) {
                 if (reconnected_at == null) {
                     reconnected_at = now;
-                    std.debug.print("Fresh coherent session after disconnect; token={d}.\n", .{driver.session.token});
+                    std.debug.print(
+                        "Fresh coherent session after disconnect; token={d}.\n",
+                        .{driver.session.token},
+                    );
                 } else if (now -| reconnected_at.? >= 10000) break;
             }
             if (bootloader and !bootloader_sent) {
@@ -207,5 +261,8 @@ pub fn main(init: std.process.Init) !void {
     driver.disconnect(driver.transport.now());
     try file.?.writeStreamingAll(init.io, recording.encoded());
     saved = true;
-    std.debug.print("PASS: matching coherent session; key events={d}; recovery={any}. Physical HID behavior/USB-route acceptance remain separate.\n", .{ key_events, recovery_cuts });
+    std.debug.print(
+        "PASS: matching coherent session; key events={d}; recovery={any}. Physical HID behavior/USB-route acceptance remain separate.\n",
+        .{ key_events, recovery_cuts },
+    );
 }

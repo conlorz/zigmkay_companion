@@ -4,6 +4,7 @@ const p = @import("root.zig");
 pub const Entry = struct { id: []const u8, directory: []const u8 };
 pub const Manifest = struct { version: u32 = 1, projects: []const Entry = &.{} };
 pub const ignore = ".zig-cache/\nzig-out/\n.project.lock\n.workspace.lock\n*.tmp\nexport/\nbuilds/\npractice*.db*\n";
+
 /// Open a contained child without following any directory links.
 pub fn openProject(io: std.Io, root: std.Io.Dir, relative: []const u8) !std.Io.Dir {
     if (!@import("portable_path.zig").valid(relative, 512)) return error.InvalidCollectionPath;
@@ -19,29 +20,38 @@ pub fn openProject(io: std.Io, root: std.Io.Dir, relative: []const u8) !std.Io.D
     }
     return current;
 }
+
 pub fn validate(value: Manifest) !void {
     if (value.version != 1) return error.UnsupportedCollectionVersion;
     if (value.projects.len > 256) return error.CollectionLimit;
     for (value.projects, 0..) |entry, i| {
-        if (!@import("portable_path.zig").valid(entry.id, 128) or std.mem.indexOfScalar(u8, entry.id, '/') != null or !@import("portable_path.zig").valid(entry.directory, 512)) return error.InvalidCollectionPath;
+        if (!@import("portable_path.zig").valid(entry.id, 128) or
+            std.mem.indexOfScalar(u8, entry.id, '/') != null or
+            !@import("portable_path.zig").valid(entry.directory, 512)) return error.InvalidCollectionPath;
         for (value.projects[0..i]) |old| {
-            if (std.mem.eql(u8, old.id, entry.id) or std.mem.eql(u8, old.directory, entry.directory)) return error.DuplicateCollectionEntry;
-            if (nested(old.directory, entry.directory) or nested(entry.directory, old.directory)) return error.OverlappingCollectionProjects;
+            if (std.mem.eql(u8, old.id, entry.id) or
+                std.mem.eql(u8, old.directory, entry.directory)) return error.DuplicateCollectionEntry;
+            if (nested(old.directory, entry.directory) or
+                nested(entry.directory, old.directory)) return error.OverlappingCollectionProjects;
         }
     }
 }
+
 fn nested(parent: []const u8, child: []const u8) bool {
     return child.len > parent.len and std.mem.startsWith(u8, child, parent) and child[parent.len] == '/';
 }
+
 pub const Loaded = struct {
     arena: std.heap.ArenaAllocator,
     manifest: Manifest,
     fingerprint: [32]u8,
+
     pub fn deinit(self: *Loaded) void {
         self.arena.deinit();
         self.* = undefined;
     }
 };
+
 pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !Loaded {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     errdefer arena.deinit();
@@ -51,11 +61,13 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !Loaded {
     try validate(value);
     return .{ .arena = arena, .manifest = value, .fingerprint = digest(bytes) };
 }
+
 fn digest(bytes: []const u8) [32]u8 {
     var result: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &result, .{});
     return result;
 }
+
 /// Membership is published last. Detect external manifest edits under a stable lock.
 pub fn save(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, value: Manifest, expected: ?[32]u8) !void {
     try validate(value);
@@ -87,6 +99,7 @@ pub fn save(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, value: Manifest
     try file.file.sync(io);
     if (expected != null) try file.replace(io) else try file.link(io);
 }
+
 pub fn append(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, entry: Entry, expected: ?[32]u8) !void {
     var current: ?Loaded = if (expected != null) try load(gpa, io, dir) else null;
     defer if (current) |*value| value.deinit();
@@ -100,15 +113,36 @@ pub fn append(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, entry: Entry,
 
 test "portable collection rejects ambiguous paths and detects external edits" {
     const t = std.testing;
-    try t.expectError(error.InvalidCollectionPath, validate(.{ .projects = &.{.{ .id = "x", .directory = "../escape" }} }));
-    try t.expectError(error.DuplicateCollectionEntry, validate(.{ .projects = &.{ .{ .id = "x", .directory = "keyboards/a" }, .{ .id = "x", .directory = "keyboards/b" } } }));
+    try t.expectError(
+        error.InvalidCollectionPath,
+        validate(.{ .projects = &.{.{ .id = "x", .directory = "../escape" }} }),
+    );
+    try t.expectError(error.DuplicateCollectionEntry, validate(.{ .projects = &.{
+        .{ .id = "x", .directory = "keyboards/a" },
+        .{ .id = "x", .directory = "keyboards/b" },
+    } }));
     try t.expectError(error.UnsupportedCollectionVersion, validate(.{ .version = 2 }));
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
     try append(t.allocator, t.io, tmp.dir, .{ .id = "first", .directory = "keyboards/one" }, null);
     var loaded = try load(t.allocator, t.io, tmp.dir);
     defer loaded.deinit();
-    try append(t.allocator, t.io, tmp.dir, .{ .id = "second", .directory = "keyboards/two" }, loaded.fingerprint);
-    try t.expectError(error.CollectionChangedExternally, append(t.allocator, t.io, tmp.dir, .{ .id = "third", .directory = "keyboards/three" }, loaded.fingerprint));
+    try append(
+        t.allocator,
+        t.io,
+        tmp.dir,
+        .{ .id = "second", .directory = "keyboards/two" },
+        loaded.fingerprint,
+    );
+    try t.expectError(
+        error.CollectionChangedExternally,
+        append(
+            t.allocator,
+            t.io,
+            tmp.dir,
+            .{ .id = "third", .directory = "keyboards/three" },
+            loaded.fingerprint,
+        ),
+    );
     try t.expect(std.mem.indexOf(u8, ignore, ".sources") == null);
 }

@@ -1,18 +1,22 @@
 //! Encoder activity supplied by an explicit event source; no telemetry invention.
 const std = @import("std");
+
 pub const State = struct {
     last_action_index: ?usize = null,
     last_activity_ms: ?u64 = null,
+
     pub fn observe(self: *State, action_index: usize, action_count: usize, now_ms: u64) !void {
         if (action_index >= action_count) return error.InvalidEncoderIndex;
         self.last_action_index = action_index;
         self.last_activity_ms = now_ms;
     }
+
     pub fn active(self: State, now_ms: u64) bool {
         const last = self.last_activity_ms orelse return false;
         return now_ms >= last and now_ms - last < 150;
     }
 };
+
 test "encoder activity is bounded and refused indices preserve state" {
     const t = std.testing;
     var state = State{};

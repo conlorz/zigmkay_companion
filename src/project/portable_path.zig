@@ -6,7 +6,9 @@ pub fn valid(path: []const u8, max_bytes: usize) bool {
     var parts = std.mem.splitScalar(u8, path, '/');
     while (parts.next()) |part| {
         if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
-        for (part) |byte| if (!(std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.')) return false;
+        for (part) |byte| {
+            if (!(std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.')) return false;
+        }
     }
     return true;
 }

@@ -2,6 +2,7 @@
 const std = @import("std");
 const Preference = struct { version: u8 = 1, project: []const u8 };
 const filename = "startup-project.zon";
+
 pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !?[]u8 {
     const bytes = dir.readFileAlloc(io, filename, gpa, .limited(4096)) catch |err| switch (err) {
         error.FileNotFound => return null,
@@ -13,11 +14,16 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !?[]u8 {
     const pref = try @import("project").owned_zon.parse(Preference, gpa, text);
     defer @import("project").owned_zon.free(gpa, pref);
     if (pref.version != 1) return error.UnsupportedStartupPreferenceVersion;
-    if (!std.fs.path.isAbsolute(pref.project) or pref.project.len >= 1024 or std.mem.indexOfScalar(u8, pref.project, 0) != null) return error.InvalidStartupProject;
+    if (!std.fs.path.isAbsolute(pref.project) or
+        pref.project.len >= 1024 or
+        std.mem.indexOfScalar(u8, pref.project, 0) != null) return error.InvalidStartupProject;
     return try gpa.dupe(u8, pref.project);
 }
+
 pub fn save(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
-    if (!std.fs.path.isAbsolute(path) or path.len >= 1024 or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidStartupProject;
+    if (!std.fs.path.isAbsolute(path) or
+        path.len >= 1024 or
+        std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidStartupProject;
     // Never replace unsupported or corrupt saved preferences with defaults.
     const previous = try load(gpa, io, dir);
     defer if (previous) |value| gpa.free(value);
@@ -30,6 +36,7 @@ pub fn save(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u
     try file.file.sync(io);
     try file.replace(io);
 }
+
 test "startup preference survives reopening and invalid updates preserve the previous project" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
@@ -82,7 +89,10 @@ test "unsupported startup preferences are preserved byte-exact on save" {
     defer tmp.cleanup();
     const future = ".{ .version = 2, .project = \"/personal/project\" }\n";
     try tmp.dir.writeFile(io, .{ .sub_path = filename, .data = future });
-    try std.testing.expectError(error.UnsupportedStartupPreferenceVersion, save(std.testing.allocator, io, tmp.dir, "/another/project"));
+    try std.testing.expectError(
+        error.UnsupportedStartupPreferenceVersion,
+        save(std.testing.allocator, io, tmp.dir, "/another/project"),
+    );
     const actual = try tmp.dir.readFileAlloc(io, filename, std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(actual);
     try std.testing.expectEqualStrings(future, actual);

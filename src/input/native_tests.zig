@@ -4,6 +4,7 @@ const testing = std.testing;
 const root = @import("root.zig");
 const KeyMap = root.KeyMap;
 const ScanCode = root.ScanCode;
+
 test "KeyMap: basic latin letters (US layout assumed)" {
     var km: KeyMap = undefined;
     KeyMap.init(&km);
@@ -13,7 +14,10 @@ test "KeyMap: basic latin letters (US layout assumed)" {
     try testing.expectEqualStrings("a", r_a.slice());
     try testing.expect(!r_a.isLabel());
 
-    const r_A = km.keyToText(.{ .tap_keycode = @backingInt(ScanCode.KC_A), .tap_modifiers = .{ .left_shift = true } });
+    const r_A = km.keyToText(.{
+        .tap_keycode = @backingInt(ScanCode.KC_A),
+        .tap_modifiers = .{ .left_shift = true },
+    });
     try testing.expectEqualStrings("A", r_A.slice());
     try testing.expect(!r_A.isLabel());
 
@@ -30,7 +34,10 @@ test "KeyMap: digits and shifted digits (US layout)" {
     const r1 = km.keyToText(.{ .tap_keycode = @backingInt(ScanCode.KC_1) });
     try testing.expectEqualStrings("1", r1.slice());
 
-    const r_bang = km.keyToText(.{ .tap_keycode = @backingInt(ScanCode.KC_1), .tap_modifiers = .{ .left_shift = true } });
+    const r_bang = km.keyToText(.{
+        .tap_keycode = @backingInt(ScanCode.KC_1),
+        .tap_modifiers = .{ .left_shift = true },
+    });
     try testing.expectEqualStrings("!", r_bang.slice());
 
     const r0 = km.keyToText(.{ .tap_keycode = @backingInt(ScanCode.KC_0) });
@@ -109,7 +116,10 @@ test "KeyMap: shift modifier produces uppercase" {
     KeyMap.init(&km);
     defer KeyMap.deinit(&km);
 
-    const r = km.keyToText(.{ .tap_keycode = @backingInt(ScanCode.KC_A), .tap_modifiers = .{ .left_shift = true } });
+    const r = km.keyToText(.{
+        .tap_keycode = @backingInt(ScanCode.KC_A),
+        .tap_modifiers = .{ .left_shift = true },
+    });
     try testing.expectEqualStrings("A", r.slice());
 }
 
@@ -136,7 +146,10 @@ test "KeyMap: shift produces uppercase (platform behavior)" {
     KeyMap.init(&km);
     defer KeyMap.deinit(&km);
 
-    const r = km.keyToText(.{ .tap_keycode = @backingInt(ScanCode.KC_A), .tap_modifiers = .{ .left_shift = true } });
+    const r = km.keyToText(.{
+        .tap_keycode = @backingInt(ScanCode.KC_A),
+        .tap_modifiers = .{ .left_shift = true },
+    });
     try testing.expectEqualStrings("A", r.slice());
 }
 

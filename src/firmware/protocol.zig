@@ -49,7 +49,12 @@ pub const MessageId = enum(u8) {
 pub const SignalKind = enum(u8) { log_toggle = 1, overlay_toggle = 2, shutdown = 3 };
 pub const SignalEvent = struct { kind: SignalKind, pressed: bool };
 
-pub const KeyEvent = struct { pressed: bool, key_index: core.KeyIndex, layer: core.LayerIndex, modifiers: core.Modifiers };
+pub const KeyEvent = struct {
+    pressed: bool,
+    key_index: core.KeyIndex,
+    layer: core.LayerIndex,
+    modifiers: core.Modifiers,
+};
 
 pub const Hello = struct {
     version: u8 = protocol_version,
@@ -114,7 +119,11 @@ pub fn validateDimensions(dimensions: core.KeymapDimensions) WireError!void {
 
 /// The mask includes the base layer, only names existing layers, and contains
 /// the reported top layer.
-pub fn validateLayers(active_layers: u16, highest_layer: core.LayerIndex, dimensions: core.KeymapDimensions) WireError!void {
+pub fn validateLayers(
+    active_layers: u16,
+    highest_layer: core.LayerIndex,
+    dimensions: core.KeymapDimensions,
+) WireError!void {
     try validateDimensions(dimensions);
     if (highest_layer >= dimensions.layer_count) return error.InvalidLayer;
     const allowed = (@as(u16, 1) << dimensions.layer_count) - 1;
@@ -133,7 +142,9 @@ pub fn validate(message: Message, dimensions: core.KeymapDimensions) WireError!v
         },
         .state => |state| {
             try validateLayers(state.active_layers, state.highest_layer, dimensions);
-            for (@as(usize, dimensions.key_count)..128) |index| if (state.isPressed(index)) return error.InvalidKeyIndex;
+            for (@as(usize, dimensions.key_count)..128) |index| {
+                if (state.isPressed(index)) return error.InvalidKeyIndex;
+            }
         },
         .key => |key| {
             if (key.event.key_index >= dimensions.key_count) return error.InvalidKeyIndex;
@@ -152,8 +163,15 @@ pub fn decode(bytes: []const u8, dimensions: core.KeymapDimensions) WireError!?M
     const message: Message = switch (id) {
         .hello => blk: {
             if (bytes[1] != protocol_version) return error.UnsupportedVersion;
-            if (bytes[2] == 0 or bytes[2] > std.math.maxInt(core.KeyIndex) or bytes[3] == 0 or bytes[3] > std.math.maxInt(core.LayerIndex)) return error.InvalidDimensions;
-            break :blk .{ .hello = .{ .version = bytes[1], .dimensions = .{ .key_count = @intCast(bytes[2]), .layer_count = @intCast(bytes[3]) }, .keymap_id = bytes[4..20].* } };
+            if (bytes[2] == 0 or
+                bytes[2] > std.math.maxInt(core.KeyIndex) or
+                bytes[3] == 0 or
+                bytes[3] > std.math.maxInt(core.LayerIndex)) return error.InvalidDimensions;
+            break :blk .{ .hello = .{
+                .version = bytes[1],
+                .dimensions = .{ .key_count = @intCast(bytes[2]), .layer_count = @intCast(bytes[3]) },
+                .keymap_id = bytes[4..20].*,
+            } };
         },
         .state => blk: {
             if (bytes[2] > std.math.maxInt(core.LayerIndex)) return error.InvalidLayer;
@@ -179,7 +197,10 @@ pub fn decode(bytes: []const u8, dimensions: core.KeymapDimensions) WireError!?M
         .signal => blk: {
             const kind = std.enums.fromInt(SignalKind, bytes[2]) orelse return error.InvalidSignal;
             if (bytes[3] > 1) return error.InvalidBoolean;
-            break :blk .{ .signal = .{ .sequence = bytes[1], .event = .{ .kind = kind, .pressed = bytes[3] == 1 } } };
+            break :blk .{ .signal = .{
+                .sequence = bytes[1],
+                .event = .{ .kind = kind, .pressed = bytes[3] == 1 },
+            } };
         },
     };
     try validate(message, dimensions);
@@ -250,13 +271,19 @@ fn literal(prefix: []const u8) Report {
 test "hello decodes version dimensions and keymap id" {
     const bytes = literal(&(.{ 0x20, 1, 36, 4 } ++ @as([16]u8, @splat(0xAB))));
     const message = (try decode(&bytes, test_dimensions)).?;
-    try std.testing.expectEqualDeep(Message{ .hello = .{ .dimensions = test_dimensions, .keymap_id = @splat(0xAB) } }, message);
+    try std.testing.expectEqualDeep(Message{ .hello = .{
+        .dimensions = test_dimensions,
+        .keymap_id = @splat(0xAB),
+    } }, message);
     try std.testing.expectEqual(@as(?u8, null), message.sequence());
     try std.testing.expect(!isUnknownKeymap(message.hello.keymap_id));
     // Hello is decoded independently of the expected dimensions.
     const other = literal(&.{ 0x20, 1, 34, 6 });
     const unknown = (try decode(&other, test_dimensions)).?.hello;
-    try std.testing.expectEqual(core.KeymapDimensions{ .key_count = 34, .layer_count = 6 }, unknown.dimensions);
+    try std.testing.expectEqual(
+        core.KeymapDimensions{ .key_count = 34, .layer_count = 6 },
+        unknown.dimensions,
+    );
     try std.testing.expect(isUnknownKeymap(unknown.keymap_id));
 }
 
@@ -276,7 +303,12 @@ test "key decodes sequence press index layer and modifiers" {
     const bytes = literal(&.{ 0x22, 1, 1, 5, 1, 0x81 });
     const key = (try decode(&bytes, test_dimensions)).?.key;
     try std.testing.expectEqual(@as(u8, 1), key.sequence);
-    try std.testing.expectEqualDeep(KeyEvent{ .pressed = true, .key_index = 5, .layer = 1, .modifiers = core.Modifiers.fromByte(0x81) }, key.event);
+    try std.testing.expectEqualDeep(KeyEvent{
+        .pressed = true,
+        .key_index = 5,
+        .layer = 1,
+        .modifiers = core.Modifiers.fromByte(0x81),
+    }, key.event);
 }
 
 test "signal decodes sequence kind and press" {
@@ -316,8 +348,14 @@ test "decoder rejects bad lengths versions dimensions and values" {
     // The base layer is always active, the mask names existing layers only,
     // and the top layer is active.
     try t.expectError(error.InvalidLayerMask, decode(&literal(&.{ 0x21, 1, 0, 0, 0, 0 }), test_dimensions));
-    try t.expectError(error.InvalidLayerMask, decode(&literal(&.{ 0x21, 1, 0, 0, 0b10001, 0 }), test_dimensions));
-    try t.expectError(error.InvalidLayerMask, decode(&literal(&.{ 0x21, 1, 2, 0, 0b0011, 0 }), test_dimensions));
+    try t.expectError(
+        error.InvalidLayerMask,
+        decode(&literal(&.{ 0x21, 1, 0, 0, 0b10001, 0 }), test_dimensions),
+    );
+    try t.expectError(
+        error.InvalidLayerMask,
+        decode(&literal(&.{ 0x21, 1, 2, 0, 0b0011, 0 }), test_dimensions),
+    );
     var pressed = literal(&.{ 0x21, 1, 0, 0, 1, 0 });
     pressed[6 + 4] = 0b10000; // key 36 is past the last key
     try t.expectError(error.InvalidKeyIndex, decode(&pressed, test_dimensions));

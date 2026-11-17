@@ -3,6 +3,7 @@ const std = @import("std");
 pub const State = enum { ready, running, paused, complete };
 pub const Source = enum { os, draft };
 pub const route_modifiers = [_]u8{ 0, 2, 4, 6, 64, 66 };
+
 pub const lessons = [_][]const u8{
     \\const std = @import("std");
     \\
@@ -61,10 +62,16 @@ pub const lessons = [_][]const u8{
     \\}
     \\
 };
-pub const lesson_names = [_][]const u8{ "Functions and tests", "Arrays and a struct", "Errors and optionals" };
+
+pub const lesson_names = [_][]const u8{
+    "Functions and tests",
+    "Arrays and a struct",
+    "Errors and optionals",
+};
+
 pub const lesson_ids = [_][]const u8{ "functions-v1", "arrays-v1", "errors-v1" };
-pub const compiler_version = "0.16.0";
 pub const corpus_version = 1;
+
 pub const Session = struct {
     recorder: ?*@import("practice_timing.zig").Recorder = null,
     input_repeat: bool = false,
@@ -91,6 +98,7 @@ pub const Session = struct {
     active_us: u64 = 0,
     ended: u64 = 0,
     previous_cr: bool = false,
+
     pub fn load(self: *Session, bytes: []const u8, source: Source) !void {
         var view = try std.unicode.Utf8View.init(bytes);
         var it = view.iterator();
@@ -111,6 +119,7 @@ pub const Session = struct {
         self.source = source;
         self.restart();
     }
+
     pub fn restart(self: *Session) void {
         self.len = 0;
         self.observed = 0;
@@ -133,28 +142,27 @@ pub const Session = struct {
         self.input_repeat = false;
         if (self.recorder) |recorder| recorder.reset(self.reference[0..self.reference_len]);
     }
+
     pub fn insert(self: *Session, bytes: []const u8, now: u64, paste: bool) !void {
         if (self.state == .paused or self.state == .complete) return;
-        var view = try std.unicode.Utf8View.init(bytes);
-        var it = view.iterator();
+        const view = try std.unicode.Utf8View.init(bytes);
         if (paste) self.scored = false;
-        var count_it = view.iterator();
-        var scalars: usize = 0;
-        var count_cr = self.previous_cr;
-        while (count_it.nextCodepoint()) |cp| {
-            if (cp == '\n' and count_cr) {
-                count_cr = false;
-                continue;
-            }
-            count_cr = cp == '\r';
-            scalars += 1;
-        }
-        const input: @import("practice_timing.zig").Input = if (paste) .paste else if (scalars > 1) .batch else if (self.input_repeat) .repeat else .ordinary;
+        const scalars = countScalars(view, self.previous_cr);
+        const input: @import("practice_timing.zig").Input = if (paste)
+            .paste
+        else if (scalars > 1)
+            .batch
+        else if (self.input_repeat)
+            .repeat
+        else
+            .ordinary;
         self.input_repeat = false;
         if (scalars != 0) {
             if (self.recorder) |recorder| _ = recorder.nextBatch();
         }
+        var it = view.iterator();
         while (it.nextCodepoint()) |raw| {
+            // A CR LF pair is one newline, also across separate inserts.
             if (raw == '\n' and self.previous_cr) {
                 self.previous_cr = false;
                 continue;
@@ -168,62 +176,107 @@ pub const Session = struct {
                 self.segment = now;
             }
             self.attempts += 1;
-            if (self.recorder) |recorder| recorder.record(.attempt, now, self.duration(now), self.len, cp, input);
-            if (self.len < self.reference_len and self.reference[self.len] == cp) {
-                self.correct_attempts += 1;
-            } else if (self.len < self.reference_len) {
-                const first = std.mem.indexOfScalar(u21, self.reference[0..self.reference_len], self.reference[self.len]).?;
-                self.errors[first] +|= 1;
-                self.missed[self.len] = true;
-                self.position_errors[self.len] +|= 1;
-                var index: usize = 0;
-                while (index < self.substitution_count and !(self.substitutions[index].expected == self.reference[self.len] and self.substitutions[index].typed == cp)) : (index += 1) {}
-                if (index < 256) {
-                    if (index == self.substitution_count) {
-                        self.substitutions[index] = .{ .expected = self.reference[self.len], .typed = cp };
-                        self.substitution_count += 1;
-                    }
-                    self.substitutions[index].count +|= 1;
-                } else self.substitutions_truncated = true;
+            if (self.recorder) |recorder| {
+                recorder.record(
+                    .attempt,
+                    now,
+                    self.duration(now),
+                    self.len,
+                    cp,
+                    input,
+                );
             }
-            if (self.len >= self.reference_len) self.outside_errors += 1;
+            if (self.len < self.reference_len) {
+                if (self.reference[self.len] == cp) self.correct_attempts += 1 else self.recordMiss(cp);
+            } else self.outside_errors += 1;
             self.typed[self.len] = cp;
             self.len += 1;
             self.observed = @max(self.observed, @min(self.len, self.reference_len));
-            if (self.len == self.reference_len and std.mem.eql(u21, self.typed[0..self.len], self.reference[0..self.reference_len])) {
+            if (self.len == self.reference_len and
+                std.mem.eql(u21, self.typed[0..self.len], self.reference[0..self.reference_len]))
+            {
                 self.active_us += now -| self.segment;
                 self.ended = now;
                 self.state = .complete;
-                if (self.recorder) |recorder| recorder.record(.complete, now, self.active_us, self.len, null, .ordinary);
+                if (self.recorder) |recorder| {
+                    recorder.record(.complete, now, self.active_us, self.len, null, .ordinary);
+                }
                 break;
             }
         }
     }
+
+    /// Records typing `cp` where the reference expects a different character.
+    fn recordMiss(self: *Session, cp: u21) void {
+        const expected = self.reference[self.len];
+        const first = std.mem.indexOfScalar(u21, self.reference[0..self.reference_len], expected).?;
+        self.errors[first] +|= 1;
+        self.missed[self.len] = true;
+        self.position_errors[self.len] +|= 1;
+        var index: usize = 0;
+        while (index < self.substitution_count) : (index += 1) {
+            const known = self.substitutions[index];
+            if (known.expected == expected and known.typed == cp) break;
+        }
+        if (index >= 256) {
+            self.substitutions_truncated = true;
+            return;
+        }
+        if (index == self.substitution_count) {
+            self.substitutions[index] = .{ .expected = expected, .typed = cp };
+            self.substitution_count += 1;
+        }
+        self.substitutions[index].count +|= 1;
+    }
+
     pub fn backspace(self: *Session) void {
         self.backspaceAt(if (self.recorder) |recorder| recorder.last_now else 0);
     }
+
     pub fn backspaceAt(self: *Session, now: u64) void {
         if (self.len == 0 or self.state == .paused or self.state == .complete) return;
         self.len -= 1;
-        if (self.recorder) |recorder| recorder.record(.backspace, now, self.duration(now), self.len, null, .ordinary);
+        if (self.recorder) |recorder| {
+            recorder.record(
+                .backspace,
+                now,
+                self.duration(now),
+                self.len,
+                null,
+                .ordinary,
+            );
+        }
         self.previous_cr = false;
         if (self.len >= self.reference_len or self.typed[self.len] != self.reference[self.len]) self.corrected += 1;
     }
+
     pub fn pause(self: *Session, now: u64) void {
         if (self.state == .complete or self.state == .paused) return;
         if (self.state == .running) self.active_us += now -| self.segment;
         self.state = .paused;
         if (self.recorder) |recorder| recorder.record(.pause, now, self.active_us, self.len, null, .ordinary);
     }
+
     pub fn resumeRun(self: *Session, now: u64) void {
         if (self.state != .paused) return;
         self.state = if (self.started == null) .ready else .running;
         self.segment = now;
-        if (self.recorder) |recorder| recorder.record(.resume_run, now, self.active_us, self.len, null, .ordinary);
+        if (self.recorder) |recorder| {
+            recorder.record(
+                .resume_run,
+                now,
+                self.active_us,
+                self.len,
+                null,
+                .ordinary,
+            );
+        }
     }
+
     pub fn duration(self: *const Session, now: u64) u64 {
         return self.active_us + if (self.state == .running) now -| self.segment else 0;
     }
+
     pub fn matched(self: *const Session) usize {
         var count: usize = 0;
         for (self.typed[0..@min(self.len, self.reference_len)], self.reference[0..@min(self.len, self.reference_len)]) |a, b| {
@@ -231,14 +284,27 @@ pub const Session = struct {
         }
         return count;
     }
+
     pub fn wpm(self: *const Session, now: u64) f64 {
-        const us = self.duration(now);
-        return if (us == 0) 0 else @as(f64, @floatFromInt(self.matched())) * 12_000_000 / @as(f64, @floatFromInt(us));
+        return wordsPerMinute(self.matched(), self.duration(now));
     }
+
     pub fn accuracy(self: *const Session) f64 {
-        return if (self.attempts == 0) 100 else 100 * @as(f64, @floatFromInt(self.correct_attempts)) / @as(f64, @floatFromInt(self.attempts));
+        return accuracyPercent(self.correct_attempts, self.attempts);
     }
 };
+
+/// Typing speed with the conventional five characters per word.
+pub fn wordsPerMinute(characters: u64, active_us: u64) f64 {
+    if (active_us == 0) return 0;
+    return @as(f64, @floatFromInt(characters)) * 12_000_000 / @as(f64, @floatFromInt(active_us));
+}
+
+pub fn accuracyPercent(correct: u64, attempts: u64) f64 {
+    if (attempts == 0) return 100;
+    return 100 * @as(f64, @floatFromInt(correct)) / @as(f64, @floatFromInt(attempts));
+}
+
 pub fn english(buffer: []u8, seed: u64, length: usize) ![]const u8 {
     const level: u8 = switch (length) {
         2 => 0,
@@ -248,6 +314,7 @@ pub fn english(buffer: []u8, seed: u64, length: usize) ![]const u8 {
     };
     return @import("practice_generator.zig").generate(buffer, .{ .seed = seed, .length = level }, &.{});
 }
+
 test "Unicode corrections, pauses and literal scoring" {
     var s: Session = .{};
     try s.load("é a\n", .os);
@@ -289,8 +356,12 @@ test "session captures normalized raw timing and correction events without chang
     try t.expectEqual(@as(u64, 800), session.active_us);
     try t.expectEqual(@as(?u21, 'x'), recorder.events.items[1].typed);
     try t.expectEqual(@as(?u21, '\n'), recorder.events.items[6].typed);
-    try t.expectEqual(@import("practice_timing.zig").Eligibility.boundary, recorder.events.items[5].eligibility);
+    try t.expectEqual(
+        @import("practice_timing.zig").Eligibility.boundary,
+        recorder.events.items[5].eligibility,
+    );
 }
+
 test "English seed reproducibility and length" {
     var a: [4096]u8 = undefined;
     var b: [4096]u8 = undefined;
@@ -340,33 +411,46 @@ pub const Label = struct {
     provider_unknown: bool = false,
     unproven: bool = false,
 };
+
 pub const Labels = struct {
     context: *const anyopaque,
     key_count: usize,
     layer_count: usize,
     lookup: *const fn (*const anyopaque, usize, usize, u8, u16) Label,
+
     pub fn validate(self: Labels) !void {
         if (self.key_count == 0 or self.layer_count == 0 or self.layer_count > 16) return error.InvalidDimensions;
     }
+
     pub fn get(self: Labels, layer: usize, key: usize, mods: u8, active: u16) Label {
         return self.lookup(self.context, layer, key, mods, active);
     }
 };
+
 pub const Hint = struct { layer: usize, key: usize, modifiers: u8 };
-pub const KeyMetadata = struct { hand: enum { left, right, neutral } = .neutral, thumb: bool = false, home_row: bool = false };
+
+pub const KeyMetadata = struct {
+    hand: enum { left, right, neutral } = .neutral,
+    thumb: bool = false,
+    home_row: bool = false,
+};
+
 /// Every output slot is in the caller's board processing-index order.
 pub const Guidance = struct {
     tap: []bool,
     hold: []bool,
+
     fn reset(self: Guidance, count: usize) !void {
         if (self.tap.len != count or self.hold.len != count) return error.InvalidDimensions;
         @memset(self.tap, false);
         @memset(self.hold, false);
     }
 };
+
 pub fn layerMask(layer: usize) u16 {
     return 1 | (@as(u16, 1) << @intCast(layer));
 }
+
 pub fn matches(entry: Label, cp: u21) bool {
     if (entry.dead or entry.shortcut or entry.unproven) return false;
     if (entry.hid_code) |code| {
@@ -377,6 +461,7 @@ pub fn matches(entry: Label, cp: u21) bool {
     const n = std.unicode.utf8Encode(cp, &buffer) catch return false;
     return std.mem.eql(u8, text, buffer[0..n]);
 }
+
 pub fn hint(labels: Labels, layer: usize, modifiers: u8, cp: u21, active: u16) !?Hint {
     try labels.validate();
     if (layer >= labels.layer_count) return error.InvalidLayer;
@@ -386,18 +471,34 @@ pub fn hint(labels: Labels, layer: usize, modifiers: u8, cp: u21, active: u16) !
         for (variants) |mods| {
             if (mods & 0x99 != 0) continue;
             for (0..labels.key_count) |key| {
-                if (matches(labels.get(candidate, key, mods, if (candidate == layer) active else layerMask(candidate)), cp)) return .{ .layer = candidate, .key = key, .modifiers = mods };
+                if (matches(labels.get(candidate, key, mods, if (candidate == layer) active else layerMask(candidate)), cp)) {
+                    return .{
+                        .layer = candidate,
+                        .key = key,
+                        .modifiers = mods,
+                    };
+                }
             }
         }
     }
     return null;
 }
-pub fn guidance(labels: Labels, metadata: ?[]const KeyMetadata, layer: usize, modifiers: u8, next: ?Hint, output: Guidance) !void {
+
+pub fn guidance(
+    labels: Labels,
+    metadata: ?[]const KeyMetadata,
+    layer: usize,
+    modifiers: u8,
+    next: ?Hint,
+    output: Guidance,
+) !void {
     try labels.validate();
     if (layer >= labels.layer_count) return error.InvalidLayer;
-    if (metadata) |keys| if (keys.len != labels.key_count) {
-        return error.InvalidDimensions;
-    };
+    if (metadata) |keys| {
+        if (keys.len != labels.key_count) {
+            return error.InvalidDimensions;
+        }
+    }
     try output.reset(labels.key_count);
     const needed = next orelse return;
     if (needed.layer >= labels.layer_count or needed.key >= labels.key_count) return error.InvalidHint;
@@ -406,10 +507,12 @@ pub fn guidance(labels: Labels, metadata: ?[]const KeyMetadata, layer: usize, mo
         for (0..labels.key_count) |key| {
             const entry = labels.get(layer, key, modifiers, layerMask(layer));
             if (entry.provider_unknown) continue;
-            if (entry.hold_layer) |held| if (held == needed.layer and key != needed.key) {
-                output.hold[key] = true;
-                break;
-            };
+            if (entry.hold_layer) |held| {
+                if (held == needed.layer and key != needed.key) {
+                    output.hold[key] = true;
+                    break;
+                }
+            }
         }
     }
     var missing = needed.modifiers & ~modifiers;
@@ -456,10 +559,16 @@ const GuidanceFixture = struct {
         };
     }
 };
+
 test "guidance follows board dimensions beyond 128 keys and injected hand metadata" {
     const t = std.testing;
     var context: u8 = 0;
-    const labels: Labels = .{ .context = &context, .key_count = 130, .layer_count = 2, .lookup = GuidanceFixture.lookup };
+    const labels: Labels = .{
+        .context = &context,
+        .key_count = 130,
+        .layer_count = 2,
+        .lookup = GuidanceFixture.lookup,
+    };
     var taps: [130]bool = undefined;
     var holds: [130]bool = undefined;
     const output: Guidance = .{ .tap = &taps, .hold = &holds };
@@ -480,8 +589,14 @@ test "guidance follows board dimensions beyond 128 keys and injected hand metada
     try t.expect(taps[129] and holds[1]);
     try t.expect((try hint(labels, 0, 0, '´', 1)) == null);
     try t.expect((try hint(labels, 0, 0, ' ', 1)) == null);
-    try t.expectError(error.InvalidDimensions, guidance(labels, null, 0, 0, punctuation, .{ .tap = taps[0..128], .hold = &holds }));
-    try t.expectError(error.InvalidHint, guidance(labels, null, 0, 0, .{ .layer = 1, .key = 130, .modifiers = 0 }, output));
+    try t.expectError(
+        error.InvalidDimensions,
+        guidance(labels, null, 0, 0, punctuation, .{ .tap = taps[0..128], .hold = &holds }),
+    );
+    try t.expectError(
+        error.InvalidHint,
+        guidance(labels, null, 0, 0, .{ .layer = 1, .key = 130, .modifiers = 0 }, output),
+    );
 }
 
 test "lesson corpus remains original text and bounded exercise scoring uses injected times" {
@@ -526,8 +641,18 @@ test "opposite home row outranks dedicated Shift without assuming letter placeme
         }
     };
     var context: u8 = 0;
-    const labels: Labels = .{ .context = &context, .key_count = 4, .layer_count = 1, .lookup = Fixture.lookup };
-    var metadata = [_]KeyMetadata{ .{ .hand = .right }, .{ .hand = .left }, .{ .hand = .left, .home_row = true }, .{ .hand = .right, .home_row = true } };
+    const labels: Labels = .{
+        .context = &context,
+        .key_count = 4,
+        .layer_count = 1,
+        .lookup = Fixture.lookup,
+    };
+    var metadata = [_]KeyMetadata{
+        .{ .hand = .right },
+        .{ .hand = .left },
+        .{ .hand = .left, .home_row = true },
+        .{ .hand = .right, .home_row = true },
+    };
     var taps: [4]bool = undefined;
     var holds: [4]bool = undefined;
     const next = (try hint(labels, 0, 0, 'Q', 1)).?;
@@ -561,4 +686,20 @@ test "wrong reentry and split CRLF keep occurrence evidence while outside text s
     const attempts = session.attempts;
     try session.insert("ignored after completion", 60, false);
     try std.testing.expectEqual(attempts, session.attempts);
+}
+
+/// Counts the code points `insert` will type, treating CR LF as one.
+fn countScalars(view: std.unicode.Utf8View, previous_cr: bool) usize {
+    var it = view.iterator();
+    var scalars: usize = 0;
+    var after_cr = previous_cr;
+    while (it.nextCodepoint()) |cp| {
+        if (cp == '\n' and after_cr) {
+            after_cr = false;
+            continue;
+        }
+        after_cr = cp == '\r';
+        scalars += 1;
+    }
+    return scalars;
 }

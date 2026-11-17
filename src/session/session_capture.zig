@@ -14,11 +14,17 @@ test "full bounded capture survives file read and replay" {
     var temp = std.testing.tmpDir(.{});
     defer temp.cleanup();
     try temp.dir.writeFile(std.testing.io, .{ .sub_path = "full.bin", .data = recorder.encoded() });
-    const bytes = try temp.dir.readFileAlloc(std.testing.io, "full.bin", std.testing.allocator, .limited(max_bytes + 1));
+    const bytes = try temp.dir.readFileAlloc(
+        std.testing.io,
+        "full.bin",
+        std.testing.allocator,
+        .limited(max_bytes + 1),
+    );
     defer std.testing.allocator.free(bytes);
     const session = try replay(bytes, fixture);
     try std.testing.expectEqual(companion.Phase.disconnected, session.phase);
 }
+
 pub const magic = "ZMKCAP02";
 pub const record_size = 48;
 pub const max_records = 4096;
@@ -27,16 +33,20 @@ pub const max_bytes = magic.len + record_size * max_records;
 /// command; send carries the native 33-byte write; bootloader marks the
 /// explicit request.
 pub const Kind = enum(u8) { connect = 1, tick = 2, receive = 3, disconnect = 4, send = 5, bootloader = 7 };
+
 pub const Recorder = struct {
     records: []u8,
     used: usize = 0,
     full: bool = false,
+
     pub fn init(allocator: std.mem.Allocator) !Recorder {
         return .{ .records = try allocator.alloc(u8, max_bytes) };
     }
+
     pub fn deinit(self: *Recorder, allocator: std.mem.Allocator) void {
         allocator.free(self.records);
     }
+
     pub fn add(self: *Recorder, kind: Kind, now: u64, bytes: []const u8) void {
         if (self.used == 0) {
             @memcpy(self.records[0..magic.len], magic);
@@ -54,21 +64,27 @@ pub const Recorder = struct {
         @memcpy(record[10..][0..bytes.len], bytes);
         self.used += record_size;
     }
+
     pub fn token(self: *Recorder, kind: Kind, now: u64, value: u32) void {
         var bytes: [4]u8 = undefined;
         std.mem.writeInt(u32, &bytes, value, .little);
         self.add(kind, now, &bytes);
     }
+
     pub fn encoded(self: *const Recorder) []const u8 {
         return if (self.used == 0) magic else self.records[0..self.used];
     }
 };
+
 /// Replays elapsed times, connect tokens, received reports, explicit requests
 /// and disconnects, and verifies every recorded host command against the same
 /// pure Session. A disconnect command may be missing from the capture when
 /// the transport had already failed.
 pub fn replay(bytes: []const u8, expected: protocol.Identity) !companion.Session {
-    if (bytes.len < magic.len or !std.mem.eql(u8, bytes[0..magic.len], magic) or bytes.len > max_bytes or (bytes.len - magic.len) % record_size != 0) return error.InvalidCapture;
+    if (bytes.len < magic.len or
+        !std.mem.eql(u8, bytes[0..magic.len], magic) or
+        bytes.len > max_bytes or
+        (bytes.len - magic.len) % record_size != 0) return error.InvalidCapture;
     var session = try companion.Session.init(expected);
     var previous: u64 = 0;
     var pending: ?protocol.Command = null;
@@ -115,7 +131,12 @@ pub fn replay(bytes: []const u8, expected: protocol.Identity) !companion.Session
     return session;
 }
 
-const fixture = protocol.Identity{ .board_id = .{ 'l', 'k', '7', 0, 0, 0, 0, 0 }, .profile_id = .{ 't', 0, 0, 0, 0, 0, 0, 0 }, .digest = @splat(1), .dimensions = .{ .key_count = 1, .layer_count = 1 } };
+const fixture = protocol.Identity{
+    .board_id = .{ 'l', 'k', '7', 0, 0, 0, 0, 0 },
+    .profile_id = .{ 't', 0, 0, 0, 0, 0, 0, 0 },
+    .digest = @splat(1),
+    .dimensions = .{ .key_count = 1, .layer_count = 1 },
+};
 
 fn recordSend(recorder: *Recorder, now: u64, command: ?protocol.Command) void {
     if (command) |value| recorder.add(.send, now, &([_]u8{0} ++ protocol.encodeCommand(value)));
@@ -132,7 +153,10 @@ test "timed capture verifies retries, a received hello and state, and disconnect
         recorder.add(.tick, time, &.{});
         recordSend(&recorder, time, command);
     }
-    for ([_]protocol.Message{ .{ .hello = .{ .dimensions = fixture.dimensions, .keymap_id = fixture.digest } }, .{ .state = .{ .sequence = 5, .pressed = .{1} ++ @as([15]u8, @splat(0)) } } }) |message| {
+    for ([_]protocol.Message{
+        .{ .hello = .{ .dimensions = fixture.dimensions, .keymap_id = fixture.digest } },
+        .{ .state = .{ .sequence = 5, .pressed = .{1} ++ @as([15]u8, @splat(0)) } },
+    }) |message| {
         const report = try protocol.encode(message, fixture.dimensions);
         recorder.add(.receive, 1001, &report);
         recordSend(&recorder, 1001, session.receive(&report, 1001).send);
@@ -149,6 +173,7 @@ test "timed capture verifies retries, a received hello and state, and disconnect
     recorder.records[magic.len + 3 * record_size + 11] ^= 1;
     try std.testing.expectError(error.ControlMismatch, replay(recorder.encoded(), fixture));
 }
+
 test "capture rejects missing controls and malformed records" {
     var recorder = try Recorder.init(std.testing.allocator);
     defer recorder.deinit(std.testing.allocator);
@@ -161,6 +186,7 @@ test "capture rejects missing controls and malformed records" {
     unsent.add(.tick, 0, &.{});
     try std.testing.expectError(error.ControlMismatch, replay(unsent.encoded(), fixture));
 }
+
 test "capture memory and file limits are explicit" {
     var recorder = try Recorder.init(std.testing.allocator);
     defer recorder.deinit(std.testing.allocator);

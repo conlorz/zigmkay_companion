@@ -2,9 +2,20 @@ const std = @import("std");
 const flash = @import("picotool_job.zig");
 const options = @import("options");
 const t = std.testing;
+
 fn spec(wrapper: []const u8, file: []const u8, hash: [32]u8, serial: []const u8) flash.Spec {
-    return .{ .wrapper = wrapper, .picotool = "/unused fake tool", .firmware = file, .expected_sha256 = hash, .snapshot_id = @splat(7), .selection = .{ .serial = serial }, .discovery_ms = 100, .command_ms = 100 };
+    return .{
+        .wrapper = wrapper,
+        .picotool = "/unused fake tool",
+        .firmware = file,
+        .expected_sha256 = hash,
+        .snapshot_id = @splat(7),
+        .selection = .{ .serial = serial },
+        .discovery_ms = 100,
+        .command_ms = 100,
+    };
 }
+
 fn wait(job: *flash.Job) !flash.Result {
     for (0..1000) |_| {
         if (job.poll()) |value| return value;
@@ -12,6 +23,7 @@ fn wait(job: *flash.Job) !flash.Result {
     }
     return error.FixtureTimeout;
 }
+
 test "invalid paths selection and budgets fail without process execution" {
     var input = spec("/unused wrapper", "relative", @splat(0), "ok");
     try t.expectError(error.AbsolutePathRequired, flash.Job.init(t.allocator, t.io, input));
@@ -28,6 +40,7 @@ test "invalid paths selection and budgets fail without process execution" {
     input.command_ms = 0;
     try t.expectError(error.InvalidBudget, flash.Job.init(t.allocator, t.io, input));
 }
+
 test "frozen digest literal arguments bounded output freshness and controlled cancellation" {
     const fixture = try std.Io.Dir.cwd().realPathFileAlloc(t.io, options.fixture, t.allocator);
     defer t.allocator.free(fixture);
@@ -49,7 +62,11 @@ test "frozen digest literal arguments bounded output freshness and controlled ca
     try t.expect(result.successful());
     try t.expect(result.fresh(@splat(7)));
     try t.expect(!result.fresh(@splat(8)));
-    const expected = try std.fmt.allocPrint(t.allocator, "/unused fake tool\n{s}\n--sha256\n{s}\n--discovery-ms\n100\n--command-ms\n100\n--cancel-stdin\n--serial\nliteral ; $(nothing)\n", .{ path, std.fmt.bytesToHex(hash, .lower) });
+    const expected = try std.fmt.allocPrint(
+        t.allocator,
+        "/unused fake tool\n{s}\n--sha256\n{s}\n--discovery-ms\n100\n--command-ms\n100\n--cancel-stdin\n--serial\nliteral ; $(nothing)\n",
+        .{ path, std.fmt.bytesToHex(hash, .lower) },
+    );
     defer t.allocator.free(expected);
     try t.expectEqualStrings(expected, result.process.stdout);
     var selected = spec(fixture, path, hash, "unused");
@@ -90,7 +107,9 @@ test "frozen digest literal arguments bounded output freshness and controlled ca
 }
 
 test "wrapper controlled cancellation reaps its direct fake picotool child" {
-    if (!@hasDecl(options, "wrapper") or !@hasDecl(options, "picotool_fixture") or @import("builtin").os.tag == .windows) return error.SkipZigTest;
+    if (!@hasDecl(options, "wrapper") or
+        !@hasDecl(options, "picotool_fixture") or
+        @import("builtin").os.tag == .windows) return error.SkipZigTest;
     const wrapper = try std.Io.Dir.cwd().realPathFileAlloc(t.io, options.wrapper, t.allocator);
     defer t.allocator.free(wrapper);
     const picotool = try std.Io.Dir.cwd().realPathFileAlloc(t.io, options.picotool_fixture, t.allocator);
@@ -120,9 +139,18 @@ test "wrapper controlled cancellation reaps its direct fake picotool child" {
         try job.start();
         var result = try wait(&job);
         defer result.deinit(t.allocator);
-        if (std.mem.eql(u8, mode, "ok") and !result.successful()) std.debug.print("wrapper success fixture failed: term={any} cancelled={any} timeout={any} stderr={s}\n", .{ result.process.term, result.cancelled, result.timed_out, result.process.stderr });
+        if (std.mem.eql(u8, mode, "ok") and !result.successful()) {
+            std.debug.print(
+                "wrapper success fixture failed: term={any} cancelled={any} timeout={any} stderr={s}\n",
+                .{ result.process.term, result.cancelled, result.timed_out, result.process.stderr },
+            );
+        }
         try t.expectEqual(std.mem.eql(u8, mode, "ok"), result.successful());
-        if (result.successful()) try t.expect(std.mem.indexOf(u8, result.process.stderr, "reboot-complete") != null);
+        if (result.successful()) {
+            try t.expect(
+                std.mem.indexOf(u8, result.process.stderr, "reboot-complete") != null,
+            );
+        }
     }
     for ([_][]const u8{ "hang", "hang-load" }) |mode| {
         const serial = try std.fmt.allocPrint(t.allocator, "{s}|{s}", .{ mode, pidfile });
@@ -136,7 +164,12 @@ test "wrapper controlled cancellation reaps its direct fake picotool child" {
         try job.start();
         var pid: ?std.posix.pid_t = null;
         for (0..300) |_| {
-            const bytes = std.Io.Dir.cwd().readFileAlloc(t.io, pidfile, t.allocator, .limited(32)) catch |err| {
+            const bytes = std.Io.Dir.cwd().readFileAlloc(
+                t.io,
+                pidfile,
+                t.allocator,
+                .limited(32),
+            ) catch |err| {
                 if (err != error.FileNotFound) return err;
                 try std.Io.sleep(t.io, .fromMilliseconds(10), .awake);
                 continue;
@@ -175,13 +208,45 @@ test "managed dispatch revalidates owned tools and frozen bytes before starting"
     defer t.allocator.free(artifact);
     try tmp.dir.writeFile(t.io, .{ .sub_path = "tool", .data = "offline tool bytes" });
     const lock = target.fixture();
-    var tools = try inputs.Tools.capture(t.allocator, t.io, lock.firmware_revision, lock.firmware_source_digest, lock.source_kind, fixture, picotool);
+    var tools = try inputs.Tools.capture(
+        t.allocator,
+        t.io,
+        lock.firmware_revision,
+        lock.firmware_source_digest,
+        lock.source_kind,
+        fixture,
+        picotool,
+    );
     defer tools.deinit();
-    const current: firmware.Inputs = .{ .project_digest = @splat(1), .source_digest = @splat(2), .build_inputs_digest = @splat(3), .profile_id = @splat(4), .identity_digest = @splat(5), .lock = lock };
+    const current: firmware.Inputs = .{
+        .project_digest = @splat(1),
+        .source_digest = @splat(2),
+        .build_inputs_digest = @splat(3),
+        .profile_id = @splat(4),
+        .identity_digest = @splat(5),
+        .lock = lock,
+    };
     var block: [512]u8 = @splat(0);
-    for ([_]struct { usize, u32 }{ .{ 0, 0x0a324655 }, .{ 4, 0x9e5d5157 }, .{ 8, 0x2000 }, .{ 12, 0x10000000 }, .{ 16, 256 }, .{ 24, 1 }, .{ 28, 0xe48bff56 }, .{ 508, 0x0ab16f30 } }) |word| std.mem.writeInt(u32, block[word[0]..][0..4], word[1], .little);
+    for ([_]struct { usize, u32 }{
+        .{ 0, 0x0a324655 },
+        .{ 4, 0x9e5d5157 },
+        .{ 8, 0x2000 },
+        .{ 12, 0x10000000 },
+        .{ 16, 256 },
+        .{ 24, 1 },
+        .{ 28, 0xe48bff56 },
+        .{ 508, 0x0ab16f30 },
+    }) |word| std.mem.writeInt(u32, block[word[0]..][0..4], word[1], .little);
     try tmp.dir.writeFile(t.io, .{ .sub_path = "build.uf2", .data = &block });
-    var manifest = try firmware.Manifest.complete(t.allocator, .succeeded, firmware.key(current), current, current, artifact, &block);
+    var manifest = try firmware.Manifest.complete(
+        t.allocator,
+        .succeeded,
+        firmware.key(current),
+        current,
+        current,
+        artifact,
+        &block,
+    );
     defer manifest.deinit();
     const request: inputs.Request = .{ .captured = @splat(1), .current = @splat(1) };
     var frozen = try inputs.freeze(t.allocator, t.io, tmp.dir, base, manifest, current, tools, request);
@@ -196,7 +261,10 @@ test "managed dispatch revalidates owned tools and frozen bytes before starting"
     try t.expectError(error.ArtifactChanged, job.start(current, request));
     try t.expect(!job.process.started);
     try std.Io.Dir.cwd().writeFile(t.io, .{ .sub_path = frozen.path, .data = &block });
-    try t.expectError(error.StaleFlashRequest, job.start(current, .{ .captured = @splat(1), .current = @splat(2) }));
+    try t.expectError(
+        error.StaleFlashRequest,
+        job.start(current, .{ .captured = @splat(1), .current = @splat(2) }),
+    );
     try t.expect(!job.process.started);
     try job.start(current, request);
     var result = try wait(&job.process);

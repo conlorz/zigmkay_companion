@@ -1,5 +1,4 @@
 const builtin = @import("builtin");
-const std = @import("std");
 const root = @import("root.zig");
 const KeyCodeFire = root.KeyCodeFire;
 const isLayoutDependent = root.isLayoutDependent;
@@ -55,6 +54,7 @@ pub const KeyMap = struct {
         }
         return textResultFromLabel(input);
     }
+
     pub fn available(km: *const KeyMap) bool {
         return km.os != null;
     }

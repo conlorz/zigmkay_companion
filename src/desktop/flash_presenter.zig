@@ -2,20 +2,39 @@
 const std = @import("std");
 pub const controller = @import("flash-controller");
 pub const Action = enum { prepare, build, freeze, select, confirm, cancel, reset };
+
 pub fn blocksAutoBuild(phase: ?controller.Phase) bool {
     return if (phase) |value| switch (value) {
         .idle, .ready, .failed, .cancelled, .reconnect_timeout, .stale => false,
         else => true,
     } else false;
 }
+
 test "completed and invalidated Flash sessions allow the next automatic build" {
     const t = std.testing;
-    for ([_]controller.Phase{ .ready, .failed, .cancelled, .reconnect_timeout, .stale }) |phase| try t.expect(!blocksAutoBuild(phase));
-    for ([_]controller.Phase{ .preparing, .building, .frozen, .awaiting_confirmation, .verifying, .rebooting, .reconnecting, .cancelling }) |phase| try t.expect(blocksAutoBuild(phase));
+    for ([_]controller.Phase{
+        .ready,
+        .failed,
+        .cancelled,
+        .reconnect_timeout,
+        .stale,
+    }) |phase| try t.expect(!blocksAutoBuild(phase));
+    for ([_]controller.Phase{
+        .preparing,
+        .building,
+        .frozen,
+        .awaiting_confirmation,
+        .verifying,
+        .rebooting,
+        .reconnecting,
+        .cancelling,
+    }) |phase| try t.expect(blocksAutoBuild(phase));
 }
+
 pub fn showErrorWindow(phase: ?controller.Phase, failure: ?anyerror) bool {
     return failure != null or phase == .failed or phase == .reconnect_timeout;
 }
+
 test "normal flash progress and success never open a window" {
     const t = std.testing;
     for (std.enums.values(controller.Phase)) |phase| {
@@ -24,6 +43,7 @@ test "normal flash progress and success never open a window" {
     try t.expect(!showErrorWindow(null, null));
     try t.expect(showErrorWindow(null, error.BuildFailed));
 }
+
 /// Borrowed from an owned runtime completion; keep that completion alive while
 /// drawing. No parsing of diagnostic text is used to change transfer phases.
 pub const Diagnostics = struct {
@@ -32,10 +52,18 @@ pub const Diagnostics = struct {
     cancelled: bool,
     timed_out: bool,
     truncated: bool,
+
     pub fn fromResult(result: anytype) Diagnostics {
-        return .{ .stdout = result.process.stdout, .stderr = result.process.stderr, .cancelled = result.cancelled, .timed_out = result.timed_out, .truncated = result.diagnostics_truncated };
+        return .{
+            .stdout = result.process.stdout,
+            .stderr = result.process.stderr,
+            .cancelled = result.cancelled,
+            .timed_out = result.timed_out,
+            .truncated = result.diagnostics_truncated,
+        };
     }
 };
+
 pub const View = struct {
     phase: controller.Phase,
     operation_id: u64,
@@ -51,6 +79,7 @@ pub const View = struct {
     can_reset: bool,
     status: []const u8,
     detail: []const u8,
+
     pub fn enabled(self: View, action: Action) bool {
         return switch (action) {
             .prepare => self.can_prepare,
@@ -62,6 +91,7 @@ pub const View = struct {
             .reset => self.can_reset,
         };
     }
+
     /// Confirm binds the exact rendered artifact and operation. The controller
     /// independently rejects stale views after edits or a new operation.
     pub fn intent(self: View, action: Action, selection: ?controller.Selection) !controller.Intent {
@@ -71,12 +101,18 @@ pub const View = struct {
             .build => .build,
             .freeze => .freeze,
             .select => .{ .select = selection orelse return error.SelectionRequired },
-            .confirm => .{ .confirm = .{ .operation_id = self.operation_id, .uf2_hash = self.uf2_hash orelse return error.ArtifactRequired, .selection_revision = self.selection_revision, .previous_session_token = self.previous_session_token } },
+            .confirm => .{ .confirm = .{
+                .operation_id = self.operation_id,
+                .uf2_hash = self.uf2_hash orelse return error.ArtifactRequired,
+                .selection_revision = self.selection_revision,
+                .previous_session_token = self.previous_session_token,
+            } },
             .cancel => .cancel,
             .reset => .reset,
         };
     }
 };
+
 pub fn view(owner: *const controller.Controller, session_token: ?u32) View {
     const phase = owner.phase;
     const busy = switch (phase) {
@@ -139,6 +175,7 @@ pub fn view(owner: *const controller.Controller, session_token: ?u32) View {
         },
     };
 }
+
 test "flash progress keeps job verification distinct from live identity" {
     const t = std.testing;
     var owner = controller.Controller.init(t.allocator, .{ .snapshot = @splat(1), .build_key = @splat(2) });
@@ -155,6 +192,7 @@ test "flash progress keeps job verification distinct from live identity" {
     try t.expect(!view(&owner, null).can_confirm);
     try t.expect(std.mem.indexOf(u8, view(&owner, null).detail, "already have changed") != null);
 }
+
 test "one-device BOOTSEL selection requires a separate confirmation and states its uncertainty" {
     const t = std.testing;
     var owner = controller.Controller.init(t.allocator, .{ .snapshot = @splat(1), .build_key = @splat(2) });
@@ -162,9 +200,17 @@ test "one-device BOOTSEL selection requires a separate confirmation and states i
     _ = try owner.dispatch(.prepare);
     _ = try owner.receive(.{ .prepared = owner.operation_id }, 0);
     _ = try owner.dispatch(.build);
-    _ = try owner.receive(.{ .built = .{ .operation_id = owner.operation_id, .build_key = owner.current.build_key } }, 0);
+    _ = try owner.receive(.{ .built = .{
+        .operation_id = owner.operation_id,
+        .build_key = owner.current.build_key,
+    } }, 0);
     _ = try owner.dispatch(.freeze);
-    _ = try owner.receive(.{ .frozen = .{ .operation_id = owner.operation_id, .artifact = .{ .context = owner.current, .path = "/cache/frozen.uf2", .uf2_hash = @splat(3), .expected_identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(4) } } } }, 0);
+    _ = try owner.receive(.{ .frozen = .{ .operation_id = owner.operation_id, .artifact = .{
+        .context = owner.current,
+        .path = "/cache/frozen.uf2",
+        .uf2_hash = @splat(3),
+        .expected_identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(4) },
+    } } }, 0);
     const before = view(&owner, null);
     try t.expect(before.can_select);
     try t.expect(!before.can_confirm);
@@ -176,6 +222,7 @@ test "one-device BOOTSEL selection requires a separate confirmation and states i
     try t.expectEqual(controller.Selection.unique_bootsel, owner.selected.?);
     try t.expectEqual(controller.Phase.awaiting_confirmation, owner.phase);
 }
+
 test "rendered flash confirmation is stale after a new operation and never inferred from a build" {
     const t = std.testing;
     var owner = controller.Controller.init(t.allocator, .{ .snapshot = @splat(1), .build_key = @splat(2) });
@@ -185,10 +232,18 @@ test "rendered flash confirmation is stale after a new operation and never infer
     try t.expect(!view(&owner, null).can_prepare);
     _ = try owner.receive(.{ .prepared = owner.operation_id }, 0);
     _ = try owner.dispatch(try view(&owner, null).intent(.build, null));
-    _ = try owner.receive(.{ .built = .{ .operation_id = owner.operation_id, .build_key = owner.current.build_key } }, 0);
+    _ = try owner.receive(.{ .built = .{
+        .operation_id = owner.operation_id,
+        .build_key = owner.current.build_key,
+    } }, 0);
     try t.expect(!view(&owner, null).can_confirm);
     _ = try owner.dispatch(try view(&owner, null).intent(.freeze, null));
-    _ = try owner.receive(.{ .frozen = .{ .operation_id = owner.operation_id, .artifact = .{ .context = owner.current, .path = "/cache/fixture.uf2", .uf2_hash = @splat(3), .expected_identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(4) } } } }, 0);
+    _ = try owner.receive(.{ .frozen = .{ .operation_id = owner.operation_id, .artifact = .{
+        .context = owner.current,
+        .path = "/cache/fixture.uf2",
+        .uf2_hash = @splat(3),
+        .expected_identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(4) },
+    } } }, 0);
     try t.expectError(error.SelectionRequired, view(&owner, null).intent(.select, null));
     _ = try owner.dispatch(try view(&owner, null).intent(.select, .{ .serial = "chosen" }));
     const rendered = view(&owner, 10);
@@ -197,9 +252,17 @@ test "rendered flash confirmation is stale after a new operation and never infer
     _ = try owner.dispatch(.prepare);
     _ = try owner.receive(.{ .prepared = owner.operation_id }, 0);
     _ = try owner.dispatch(.build);
-    _ = try owner.receive(.{ .built = .{ .operation_id = owner.operation_id, .build_key = owner.current.build_key } }, 0);
+    _ = try owner.receive(.{ .built = .{
+        .operation_id = owner.operation_id,
+        .build_key = owner.current.build_key,
+    } }, 0);
     _ = try owner.dispatch(.freeze);
-    _ = try owner.receive(.{ .frozen = .{ .operation_id = owner.operation_id, .artifact = .{ .context = owner.current, .path = "/cache/new.uf2", .uf2_hash = @splat(3), .expected_identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(4) } } } }, 0);
+    _ = try owner.receive(.{ .frozen = .{ .operation_id = owner.operation_id, .artifact = .{
+        .context = owner.current,
+        .path = "/cache/new.uf2",
+        .uf2_hash = @splat(3),
+        .expected_identity = .{ .board_id = "board_v1".*, .profile_id = "profile1".*, .digest = @splat(4) },
+    } } }, 0);
     _ = try owner.dispatch(.{ .select = .{ .serial = "chosen" } });
     try t.expectError(error.StaleConfirmation, owner.dispatch(confirm));
 }

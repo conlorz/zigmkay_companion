@@ -5,14 +5,24 @@ const ztray = @import("ztray");
 const lifecycle = @import("tray-lifecycle");
 const Action = lifecycle.Action;
 const MenuState = lifecycle.MenuState;
+
 pub const Native = struct {
     allocator: std.mem.Allocator,
+
     pub fn install(self: Native) !void {
-        try ztray.installTrayIcon(self.allocator, .{ .tooltip = "Zigmkay is running", .icon_png = &@import("tray_icon.zig").png });
+        try ztray.installTrayIcon(self.allocator, .{
+            .tooltip = "Zigmkay is running",
+            .icon_png = &@import("tray_icon.zig").png,
+        });
     }
+
     pub fn menu(self: Native, state: MenuState) !void {
         const items = [_]ztray.Item{
-            .{ .action = .{ .title = if (state.live_mode) "Companion: live monitoring" else "Companion: offline", .action_id = 10, .enabled = false } },
+            .{ .action = .{
+                .title = if (state.live_mode) "Companion: live monitoring" else "Companion: offline",
+                .action_id = 10,
+                .enabled = false,
+            } },
             .{ .action = .{ .title = switch (state.status) {
                 .offline => "Device: offline",
                 .connecting => "Device: connecting",
@@ -22,8 +32,15 @@ pub const Native = struct {
                 .incompatible => "Device: incompatible",
             }, .action_id = 11, .enabled = false } },
             .{ .action = .{ .title = "Open Editor", .action_id = @backingInt(Action.open_editor) } },
-            .{ .action = .{ .title = if (state.companion_visible) "Hide Companion" else "Show Companion", .action_id = @backingInt(Action.toggle_companion) } },
-            .{ .action = .{ .title = "Use Saved Editor Project for Live Companion", .action_id = @backingInt(Action.bind_saved_project), .enabled = state.live_mode } },
+            .{ .action = .{
+                .title = if (state.companion_visible) "Hide Companion" else "Show Companion",
+                .action_id = @backingInt(Action.toggle_companion),
+            } },
+            .{ .action = .{
+                .title = "Use Saved Editor Project for Live Companion",
+                .action_id = @backingInt(Action.bind_saved_project),
+                .enabled = state.live_mode,
+            } },
             .separator,
             .{ .action = .{ .title = "Zoom Out Editor", .action_id = @backingInt(Action.zoom_out) } },
             .{ .action = .{ .title = "Zoom In Editor", .action_id = @backingInt(Action.zoom_in) } },
@@ -33,13 +50,16 @@ pub const Native = struct {
         };
         try ztray.setTrayMenu(self.allocator, .{ .title = "Zigmkay", .items = &items });
     }
+
     pub fn poll(_: Native) ?Action {
         // SDL already pumps AppKit/Win32. A second pump can consume SDL events.
         if (builtin.os.tag == .linux) ztray.pumpEvents();
         return ztray.pollTrayAction(Action);
     }
+
     pub fn shutdown(_: Native) void {
         ztray.shutdownTray();
     }
 };
+
 pub const NativeTray = lifecycle.Tray(Native);

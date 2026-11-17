@@ -6,6 +6,7 @@ const Model = @import("model.zig").Model;
 pub const Mode = enum { tap, hold, tap_hold, repeat };
 pub const ModifierTarget = enum { tap, hold, one_shot };
 pub const MixedBool = enum { off, on, mixed };
+
 pub const Operation = union(enum) {
     tap_key: ?types.KeyCodeFire,
     tap_usage: u8,
@@ -31,6 +32,7 @@ pub const Operation = union(enum) {
     initial_delay: u16,
     repeat_interval: u16,
 };
+
 pub fn tapPart(action: ?p.Action) p.Tap {
     return if (action) |a| switch (a) {
         .tap_only => |t| t,
@@ -39,6 +41,7 @@ pub fn tapPart(action: ?p.Action) p.Tap {
         else => .{},
     } else .{};
 }
+
 pub fn holdPart(action: ?p.Action) p.Hold {
     return if (action) |a| switch (a) {
         .hold_only => |h| h,
@@ -46,23 +49,153 @@ pub fn holdPart(action: ?p.Action) p.Hold {
         else => .{},
     } else .{};
 }
+
 pub fn tapEmpty(t: p.Tap) bool {
-    return t.key_press == null and t.one_shot == null and t.custom == null and t.media_key == null and t.mouse_action == null;
+    return t.key_press == null and
+        t.one_shot == null and
+        t.custom == null and
+        t.media_key == null and
+        t.mouse_action == null;
 }
+
 pub fn holdEmpty(h: p.Hold) bool {
     return h.hold_modifiers.toByte() == 0 and h.layer_id == null and h.custom == null;
 }
+
 fn equal(a: ?p.Action, b: ?p.Action) bool {
     return std.meta.eql(a, b);
 }
+
+const TapHold = @FieldType(p.Action, "tap_hold");
+const Autofire = @FieldType(p.Action, "tap_with_autofire");
+const TimeSpan = @FieldType(TapHold, "tapping_term");
+const default_tapping_term: TimeSpan = .{ .ms = 180 };
+const default_initial_delay: TimeSpan = .{ .ms = 180 };
+const default_repeat_interval: TimeSpan = .{ .ms = 50 };
+
+fn asTapHold(action: ?p.Action) ?TapHold {
+    const value = action orelse return null;
+    return if (value == .tap_hold) value.tap_hold else null;
+}
+
+fn asAutofire(action: ?p.Action) ?Autofire {
+    const value = action orelse return null;
+    return if (value == .tap_with_autofire) value.tap_with_autofire else null;
+}
+
+/// Builds the action for the edited parts, keeping the timing of `original`.
 fn compose(original: ?p.Action, tap: p.Tap, hold: p.Hold) p.Action {
     if (tapEmpty(tap)) return if (holdEmpty(hold)) .none else .{ .hold_only = hold };
     if (holdEmpty(hold)) {
-        if (original) |a| if (a == .tap_with_autofire) return .{ .tap_with_autofire = .{ .tap = tap, .initial_delay = a.tap_with_autofire.initial_delay, .repeat_interval = a.tap_with_autofire.repeat_interval } };
+        if (asAutofire(original)) |autofire| {
+            return .{ .tap_with_autofire = .{
+                .tap = tap,
+                .initial_delay = autofire.initial_delay,
+                .repeat_interval = autofire.repeat_interval,
+            } };
+        }
         return .{ .tap_only = tap };
     }
-    return .{ .tap_hold = .{ .tap = tap, .hold = hold, .tapping_term = if (original != null and original.? == .tap_hold) original.?.tap_hold.tapping_term else .{ .ms = 180 }, .retro_tapping = if (original != null and original.? == .tap_hold) original.?.tap_hold.retro_tapping else false } };
+    return .{ .tap_hold = tapHold(original, tap, hold) };
 }
+
+fn tapHold(original: ?p.Action, tap: p.Tap, hold: p.Hold) TapHold {
+    const previous = asTapHold(original);
+    return .{
+        .tap = tap,
+        .hold = hold,
+        .tapping_term = if (previous) |value| value.tapping_term else default_tapping_term,
+        .retro_tapping = if (previous) |value| value.retro_tapping else false,
+    };
+}
+
+/// Converts `old` to the requested mode, keeping its parts and timing.
+fn withMode(old: ?p.Action, mode: Mode) p.Action {
+    const tap = tapPart(old);
+    const previous = asAutofire(old);
+    return switch (mode) {
+        .tap => .{ .tap_only = tap },
+        .hold => .{ .hold_only = holdPart(old) },
+        .tap_hold => .{ .tap_hold = tapHold(old, tap, holdPart(old)) },
+        .repeat => .{ .tap_with_autofire = .{
+            .tap = tap,
+            .initial_delay = if (previous) |value| value.initial_delay else default_initial_delay,
+            .repeat_interval = if (previous) |value| value.repeat_interval else default_repeat_interval,
+        } },
+    };
+}
+
+/// Applies a timing operation; actions without that timing stay unchanged.
+fn withTiming(action: p.Action, op: Operation) p.Action {
+    var result = action;
+    switch (op) {
+        .tapping_term => |v| if (result == .tap_hold) {
+            result.tap_hold.tapping_term = .{ .ms = v };
+        },
+        .retro_tapping => |v| if (result == .tap_hold) {
+            result.tap_hold.retro_tapping = v;
+        },
+        .initial_delay => |v| if (result == .tap_with_autofire) {
+            result.tap_with_autofire.initial_delay = .{ .ms = v };
+        },
+        .repeat_interval => |v| if (result == .tap_with_autofire) {
+            result.tap_with_autofire.repeat_interval = .{ .ms = v };
+        },
+        else => unreachable,
+    }
+    return result;
+}
+
+/// Applies an operation that edits the tap or hold part of an action.
+fn editParts(t: *p.Tap, h: *p.Hold, op: Operation) void {
+    switch (op) {
+        .tap_key => |v| t.key_press = v,
+        .tap_usage => |v| {
+            var key = t.key_press orelse types.KeyCodeFire{};
+            key.tap_keycode = v;
+            t.key_press = key;
+        },
+        .tap_dead => |v| {
+            var key = t.key_press orelse types.KeyCodeFire{};
+            key.dead = v;
+            t.key_press = key;
+        },
+        .tap_one_shot => |v| t.one_shot = v,
+        .one_shot_layer => |v| {
+            var one = t.one_shot orelse p.Hold{};
+            one.layer_id = v;
+            t.one_shot = if (holdEmpty(one)) null else one;
+        },
+        .one_shot_custom => |v| {
+            var one = t.one_shot orelse p.Hold{};
+            one.custom = v;
+            t.one_shot = if (holdEmpty(one)) null else one;
+        },
+        .tap_custom => |v| t.custom = v,
+        .tap_media => |v| t.media_key = v,
+        .tap_mouse => |v| t.mouse_action = v,
+        .hold_layer => |v| h.layer_id = v,
+        .hold_custom => |v| h.custom = v,
+        .hold_modifiers => |v| h.hold_modifiers = v,
+        .tap_modifiers => |v| {
+            var key = t.key_press orelse types.KeyCodeFire{};
+            key.tap_modifiers = v;
+            t.key_press = if (key.tap_keycode == 0 and v.toByte() == 0) null else key;
+        },
+        .clear_tap => t.* = .{},
+        .clear_hold => h.* = .{},
+        .unassign,
+        .inherit,
+        .replace,
+        .mode,
+        .tapping_term,
+        .retro_tapping,
+        .initial_delay,
+        .repeat_interval,
+        => unreachable,
+    }
+}
+
 pub const Session = struct {
     arena: std.heap.ArenaAllocator,
     starting_id: [32]u8,
@@ -79,10 +212,14 @@ pub const Session = struct {
     key_lengths: []usize,
     // Key IDs are copied into bounded storage so document replacement cannot dangle them.
     key_storage: [][]u8,
+
     pub fn init(model: *const Model) !Session {
         var result: Session = undefined;
         const count = model.document().key_ids.len;
-        if (count == 0 or count > p.Limits.keys or model.primary >= count or model.layer >= model.document().layers.len) return error.InvalidDimensions;
+        if (count == 0 or
+            count > p.Limits.keys or
+            model.primary >= count or
+            model.layer >= model.document().layers.len) return error.InvalidDimensions;
         result.arena = std.heap.ArenaAllocator.init(model.gpa);
         errdefer result.arena.deinit();
         const a = result.arena.allocator();
@@ -114,7 +251,8 @@ pub const Session = struct {
             while (result.lower_resolved[index] == null and lower > 0) {
                 lower -= 1;
                 result.lower_resolved[index] = model.document().layers[lower].actions[index];
-                if (result.lower_resolved[index] != null) result.lower_sources[index] = model.document().layers[lower].id;
+                if (result.lower_resolved[index] != null)
+                    result.lower_sources[index] = model.document().layers[lower].id;
             }
             if (original == null) {
                 result.resolved[index] = result.lower_resolved[index];
@@ -123,17 +261,21 @@ pub const Session = struct {
         }
         return result;
     }
+
     pub fn deinit(self: *Session) void {
         self.arena.deinit();
         self.* = undefined;
     }
+
     pub fn first(self: *const Session) ?p.Action {
         return self.drafts[self.primary];
     }
+
     pub fn dirty(self: *const Session) bool {
         for (self.selected, self.originals, self.drafts) |selected, a, b| if (selected and !equal(a, b)) return true;
         return false;
     }
+
     pub fn cancel(self: *Session) void {
         @memcpy(self.drafts, self.originals);
         for (self.originals, 0..) |original, i| {
@@ -141,19 +283,28 @@ pub const Session = struct {
             self.source_layers[i] = if (original != null) self.layer_id else self.lower_sources[i];
         }
     }
+
     pub fn stale(self: *const Session, model: *const Model) !bool {
         const id = try model.id();
         if (!std.mem.eql(u8, &id, &self.starting_id)) return true;
-        if (model.primary != self.primary or model.layer != self.layer_index or !std.mem.eql(bool, model.selected, self.selected) or model.document().key_ids.len != self.key_storage.len) return true;
-        for (model.document().key_ids, 0..) |key, i| if (!std.mem.eql(u8, key, self.key_storage[i][0..self.key_lengths[i]])) return true;
+        if (model.primary != self.primary or
+            model.layer != self.layer_index or
+            !std.mem.eql(bool, model.selected, self.selected) or
+            model.document().key_ids.len != self.key_storage.len) return true;
+        for (model.document().key_ids, 0..) |key, i| {
+            if (!std.mem.eql(u8, key, self.key_storage[i][0..self.key_lengths[i]])) return true;
+        }
         return false;
     }
+
     pub fn apply(self: *Session, model: *Model) !bool {
         if (try self.stale(model)) return error.StaleSession;
         if (!self.dirty()) return false;
-        if (self.layer_index == 0) for (self.selected, self.drafts, self.originals) |selected, draft, original| {
-            if (selected and draft == null and original != null) return error.BaseCannotInherit;
-        };
+        if (self.layer_index == 0) {
+            for (self.selected, self.drafts, self.originals) |selected, draft, original| {
+                if (selected and draft == null and original != null) return error.BaseCannotInherit;
+            }
+        }
         var layers: [p.Limits.layers]p.Layer = undefined;
         const count = model.document().layers.len;
         @memcpy(layers[0..count], model.document().layers);
@@ -173,6 +324,7 @@ pub const Session = struct {
         self.cancel();
         return true;
     }
+
     pub fn validate(self: *const Session, model: *const Model) !void {
         if (try self.stale(model)) return error.StaleSession;
         var layers: [p.Limits.layers]p.Layer = undefined;
@@ -183,97 +335,36 @@ pub const Session = struct {
         snapshot.document.layers = layers[0..count];
         try p.snapshot.validate(snapshot, model.board);
     }
+
     pub fn mutate(self: *Session, op: Operation) void {
         for (self.selected, 0..) |selected, i| {
-            if (!selected) continue;
-            const old = self.drafts[i] orelse self.resolved[i];
-            var t = tapPart(old);
-            var h = holdPart(old);
-            switch (op) {
-                .unassign => {
-                    self.drafts[i] = .none;
-                    continue;
-                },
-                .inherit => {
-                    if (self.layer_index != 0) {
-                        self.drafts[i] = null;
-                        self.resolved[i] = self.lower_resolved[i];
-                        self.source_layers[i] = self.lower_sources[i];
-                    }
-                    continue;
-                },
-                .replace => |a| {
-                    self.drafts[i] = a;
-                    continue;
-                },
-                .tap_key => |v| t.key_press = v,
-                .tap_usage => |v| {
-                    var key = t.key_press orelse types.KeyCodeFire{};
-                    key.tap_keycode = v;
-                    t.key_press = key;
-                },
-                .tap_dead => |v| {
-                    var key = t.key_press orelse types.KeyCodeFire{};
-                    key.dead = v;
-                    t.key_press = key;
-                },
-                .tap_one_shot => |v| t.one_shot = v,
-                .one_shot_layer => |v| {
-                    var one = t.one_shot orelse p.Hold{};
-                    one.layer_id = v;
-                    t.one_shot = if (holdEmpty(one)) null else one;
-                },
-                .one_shot_custom => |v| {
-                    var one = t.one_shot orelse p.Hold{};
-                    one.custom = v;
-                    t.one_shot = if (holdEmpty(one)) null else one;
-                },
-                .tap_custom => |v| t.custom = v,
-                .tap_media => |v| t.media_key = v,
-                .tap_mouse => |v| t.mouse_action = v,
-                .hold_layer => |v| h.layer_id = v,
-                .hold_custom => |v| h.custom = v,
-                .hold_modifiers => |v| h.hold_modifiers = v,
-                .tap_modifiers => |v| {
-                    var key = t.key_press orelse types.KeyCodeFire{};
-                    key.tap_modifiers = v;
-                    t.key_press = if (key.tap_keycode == 0 and v.toByte() == 0) null else key;
-                },
-                .clear_tap => t = .{},
-                .clear_hold => h = .{},
-                .mode => |mode| {
-                    self.drafts[i] = switch (mode) {
-                        .tap => .{ .tap_only = t },
-                        .hold => .{ .hold_only = h },
-                        .tap_hold => .{ .tap_hold = .{ .tap = t, .hold = h, .tapping_term = if (old != null and old.? == .tap_hold) old.?.tap_hold.tapping_term else .{ .ms = 180 }, .retro_tapping = old != null and old.? == .tap_hold and old.?.tap_hold.retro_tapping } },
-                        .repeat => .{ .tap_with_autofire = .{ .tap = t, .initial_delay = if (old != null and old.? == .tap_with_autofire) old.?.tap_with_autofire.initial_delay else .{ .ms = 180 }, .repeat_interval = if (old != null and old.? == .tap_with_autofire) old.?.tap_with_autofire.repeat_interval else .{ .ms = 50 } } },
-                    };
-                    continue;
-                },
-                .tapping_term, .retro_tapping, .initial_delay, .repeat_interval => {
-                    var action = old orelse continue;
-                    switch (op) {
-                        .tapping_term => |v| if (action == .tap_hold) {
-                            action.tap_hold.tapping_term = .{ .ms = v };
-                        },
-                        .retro_tapping => |v| if (action == .tap_hold) {
-                            action.tap_hold.retro_tapping = v;
-                        },
-                        .initial_delay => |v| if (action == .tap_with_autofire) {
-                            action.tap_with_autofire.initial_delay = .{ .ms = v };
-                        },
-                        .repeat_interval => |v| if (action == .tap_with_autofire) {
-                            action.tap_with_autofire.repeat_interval = .{ .ms = v };
-                        },
-                        else => unreachable,
-                    }
-                    self.drafts[i] = action;
-                    continue;
-                },
-            }
-            self.drafts[i] = compose(old, t, h);
+            if (selected) self.mutateKey(i, op);
         }
     }
+
+    fn mutateKey(self: *Session, i: usize, op: Operation) void {
+        const old = self.drafts[i] orelse self.resolved[i];
+        switch (op) {
+            .unassign => self.drafts[i] = .none,
+            .inherit => if (self.layer_index != 0) {
+                self.drafts[i] = null;
+                self.resolved[i] = self.lower_resolved[i];
+                self.source_layers[i] = self.lower_sources[i];
+            },
+            .replace => |action| self.drafts[i] = action,
+            .mode => |mode| self.drafts[i] = withMode(old, mode),
+            .tapping_term, .retro_tapping, .initial_delay, .repeat_interval => {
+                if (old) |action| self.drafts[i] = withTiming(action, op);
+            },
+            else => {
+                var tap = tapPart(old);
+                var hold = holdPart(old);
+                editParts(&tap, &hold, op);
+                self.drafts[i] = compose(old, tap, hold);
+            },
+        }
+    }
+
     fn modifierBits(action: ?p.Action, target: ModifierTarget) u8 {
         return switch (target) {
             .tap => if (tapPart(action).key_press) |key| key.tap_modifiers.toByte() else 0,
@@ -281,6 +372,7 @@ pub const Session = struct {
             .one_shot => if (tapPart(action).one_shot) |h| h.hold_modifiers.toByte() else 0,
         };
     }
+
     pub fn modifierState(self: *const Session, target: ModifierTarget, bit: u3) MixedBool {
         var yes = false;
         var no = false;
@@ -289,6 +381,7 @@ pub const Session = struct {
         };
         return if (yes and no) .mixed else if (yes) .on else .off;
     }
+
     pub fn toggleModifier(self: *Session, target: ModifierTarget, bit: u3) void {
         const set = self.modifierState(target, bit) != .on;
         for (self.selected, 0..) |selected, i| {
@@ -324,6 +417,7 @@ fn fixtureModel() !Model {
     model.select(10, false);
     return model;
 }
+
 test "inspector applies reserved companion hold signal while preserving tap" {
     var model = try fixtureModel();
     defer model.deinit();
@@ -341,13 +435,27 @@ test "session preserves compound components and clears each side explicitly" {
     var model = try fixtureModel();
     defer model.deinit();
     try @import("inspector_fixture.zig").setup(&model);
-    const compound: p.Action = .{ .tap_hold = .{ .tap = .{ .key_press = .{ .tap_keycode = 4, .dead = true }, .custom = 1, .media_key = .VolumeUp, .mouse_action = .LeftButton, .one_shot = .{ .layer_id = 2, .custom = 1, .hold_modifiers = .{ .right_alt = true } } }, .hold = .{ .hold_modifiers = .{ .left_shift = true }, .layer_id = 2, .custom = 1 }, .tapping_term = .{ .ms = 231 }, .retro_tapping = true } };
+    const compound: p.Action = .{ .tap_hold = .{
+        .tap = .{
+            .key_press = .{ .tap_keycode = 4, .dead = true },
+            .custom = 1,
+            .media_key = .VolumeUp,
+            .mouse_action = .LeftButton,
+            .one_shot = .{ .layer_id = 2, .custom = 1, .hold_modifiers = .{ .right_alt = true } },
+        },
+        .hold = .{ .hold_modifiers = .{ .left_shift = true }, .layer_id = 2, .custom = 1 },
+        .tapping_term = .{ .ms = 231 },
+        .retro_tapping = true,
+    } };
     try model.apply(compound);
     var session = try Session.init(&model);
     defer session.deinit();
     session.mutate(.{ .tap_media = null });
     try std.testing.expectEqualDeep(compound.tap_hold.hold, session.first().?.tap_hold.hold);
-    try std.testing.expectEqualDeep(compound.tap_hold.tap.key_press, session.first().?.tap_hold.tap.key_press);
+    try std.testing.expectEqualDeep(
+        compound.tap_hold.tap.key_press,
+        session.first().?.tap_hold.tap.key_press,
+    );
     try std.testing.expectEqual(@as(u16, 231), session.first().?.tap_hold.tapping_term.ms);
     try std.testing.expectEqualDeep(compound.tap_hold.tap.one_shot, session.first().?.tap_hold.tap.one_shot);
     try std.testing.expectEqual(compound.tap_hold.tap.custom, session.first().?.tap_hold.tap.custom);
@@ -367,7 +475,11 @@ test "bulk mixed modifiers preserve independent taps and commit one undo entry" 
     defer model.deinit();
     try model.apply(.{ .tap_only = .{ .key_press = .{ .tap_keycode = 4 } } });
     model.select(11, false);
-    try model.apply(.{ .tap_hold = .{ .tap = .{ .key_press = .{ .tap_keycode = 22 } }, .hold = .{ .hold_modifiers = .{ .left_gui = true, .right_shift = true } }, .tapping_term = .{ .ms = 240 } } });
+    try model.apply(.{ .tap_hold = .{
+        .tap = .{ .key_press = .{ .tap_keycode = 22 } },
+        .hold = .{ .hold_modifiers = .{ .left_gui = true, .right_shift = true } },
+        .tapping_term = .{ .ms = 240 },
+    } });
     model.select(10, true);
     const original = try model.id();
     const undo_count = model.undo_stack.items.len;
@@ -425,11 +537,18 @@ test "repeat conversions preserve tap fields and save reopen export identity" {
     try @import("inspector_fixture.zig").setup(&model);
     const callback_bytes = try std.testing.allocator.dupe(u8, model.current.snapshot.sources[0].bytes);
     defer std.testing.allocator.free(callback_bytes);
-    try model.apply(.{ .tap_hold = .{ .tap = .{ .key_press = .{ .tap_keycode = 252 }, .media_key = .VolumeUp }, .hold = .{ .layer_id = 2 }, .tapping_term = .{ .ms = 231 } } });
+    try model.apply(.{ .tap_hold = .{
+        .tap = .{ .key_press = .{ .tap_keycode = 252 }, .media_key = .VolumeUp },
+        .hold = .{ .layer_id = 2 },
+        .tapping_term = .{ .ms = 231 },
+    } });
     var session = try Session.init(&model);
     defer session.deinit();
     session.mutate(.{ .mode = .repeat });
-    try std.testing.expectEqual(@as(u8, 252), session.first().?.tap_with_autofire.tap.key_press.?.tap_keycode);
+    try std.testing.expectEqual(
+        @as(u8, 252),
+        session.first().?.tap_with_autofire.tap.key_press.?.tap_keycode,
+    );
     session.mutate(.{ .repeat_interval = 75 });
     try std.testing.expect(try session.apply(&model));
     var temporary = std.testing.tmpDir(.{});
@@ -443,7 +562,13 @@ test "repeat conversions preserve tap fields and save reopen export identity" {
     try std.testing.expectEqual(@as(u8, 1), model.document().callbacks[0].ids[0]);
     var exported = try temporary.dir.createDirPathOpen(std.testing.io, "export", .{});
     defer exported.close(std.testing.io);
-    const manifest = try p.exporter.write(std.testing.allocator, std.testing.io, exported, model.current.snapshot, p.profiles.board);
+    const manifest = try p.exporter.write(
+        std.testing.allocator,
+        std.testing.io,
+        exported,
+        model.current.snapshot,
+        p.profiles.board,
+    );
     defer p.owned_zon.free(std.testing.allocator, manifest);
     try std.testing.expectEqual(identity, manifest.snapshot_id);
 }
@@ -452,9 +577,15 @@ test "bulk key and one-shot field edits retain each key's chord and callback" {
     var model = try fixtureModel();
     defer model.deinit();
     try @import("inspector_fixture.zig").setup(&model);
-    try model.apply(.{ .tap_only = .{ .key_press = .{ .tap_keycode = 4, .dead = true, .tap_modifiers = .{ .left_alt = true } }, .one_shot = .{ .custom = 1, .hold_modifiers = .{ .left_gui = true } } } });
+    try model.apply(.{ .tap_only = .{
+        .key_press = .{ .tap_keycode = 4, .dead = true, .tap_modifiers = .{ .left_alt = true } },
+        .one_shot = .{ .custom = 1, .hold_modifiers = .{ .left_gui = true } },
+    } });
     model.select(11, false);
-    try model.apply(.{ .tap_only = .{ .key_press = .{ .tap_keycode = 22, .tap_modifiers = .{ .right_shift = true } }, .one_shot = .{ .layer_id = 2, .hold_modifiers = .{ .right_alt = true } } } });
+    try model.apply(.{ .tap_only = .{
+        .key_press = .{ .tap_keycode = 22, .tap_modifiers = .{ .right_shift = true } },
+        .one_shot = .{ .layer_id = 2, .hold_modifiers = .{ .right_alt = true } },
+    } });
     model.select(10, true);
     var session = try Session.init(&model);
     defer session.deinit();
@@ -475,12 +606,18 @@ test "bulk key and one-shot field edits retain each key's chord and callback" {
     try std.testing.expectEqual(@as(?p.LayerId, 3), first.one_shot.?.layer_id);
     try std.testing.expectEqual(@as(?p.LayerId, 3), second.one_shot.?.layer_id);
 }
+
 test "inspector owns variable board keys and preserves independent chords" {
     const t = std.testing;
     var loaded = try p.profiles.create(t.allocator, .eurkey);
     defer loaded.deinit();
     var doc = loaded.snapshot.document;
-    const board = p.Board{ .id = "fixture\x00".*, .physical_layout = "explicit-fixture", .key_ids = &.{ "left", "right", "thumb" }, .sides = &.{ .X, .X, .X } };
+    const board = p.Board{
+        .id = "fixture\x00".*,
+        .physical_layout = "explicit-fixture",
+        .key_ids = &.{ "left", "right", "thumb" },
+        .sides = &.{ .X, .X, .X },
+    };
     doc.board_id = board.id;
     doc.physical_layout = board.physical_layout;
     doc.key_ids = board.key_ids;

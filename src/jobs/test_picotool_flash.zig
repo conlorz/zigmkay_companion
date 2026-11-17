@@ -11,10 +11,25 @@ test "CLI validates bounded waits, digests and complete selection options" {
     try t.expectError(error.InvalidArguments, flash.parse(&.{ "tool", "file", "--bus", "1" }));
     try t.expectError(error.InvalidArguments, flash.parse(&.{ "tool", "file", "--command-ms", "0" }));
     try t.expectError(error.InvalidArguments, flash.parse(&.{ "tool", "file", "--discovery-ms", "3600001" }));
-    try t.expectError(error.InvalidArguments, flash.parse(&.{ "tool", "file", "--serial", "a", "--serial", "b" }));
+    try t.expectError(
+        error.InvalidArguments,
+        flash.parse(&.{ "tool", "file", "--serial", "a", "--serial", "b" }),
+    );
     try t.expectError(error.InvalidArguments, flash.parse(&.{ "tool", "file", "--sha256", "abc" }));
-    try t.expectError(error.InvalidArguments, flash.parse(&.{ "tool", "file", "--address", "128", "--bus", "1" }));
-    try t.expectError(error.InvalidArguments, flash.parse(&.{ "tool", "file", "--bus", "1", "--address", "7", "--serial", "s" }));
+    try t.expectError(
+        error.InvalidArguments,
+        flash.parse(&.{ "tool", "file", "--address", "128", "--bus", "1" }),
+    );
+    try t.expectError(error.InvalidArguments, flash.parse(&.{
+        "tool",
+        "file",
+        "--bus",
+        "1",
+        "--address",
+        "7",
+        "--serial",
+        "s",
+    }));
     const config = try flash.parse(&.{ "tool", "file", "--bus", "0", "--address", "127", "--cancel-stdin" });
     try t.expect(config.cancel_stdin);
 }
@@ -46,9 +61,22 @@ test "UF2 blocks require magic, complete inventory and RP2040 flash payload" {
 }
 
 test "literal selection argv for every phase" {
-    const config: flash.Config = .{ .picotool = options.picotool_fixture, .firmware = "a file.uf2", .bus = "1", .address = "7" };
-    const commands = [_][]const []const u8{ &.{"info"}, &.{ "load", "--verify", config.firmware }, &.{ "reboot", "--application" } };
-    const expected = [_][]const u8{ "info\n--bus\n1\n--address\n7\n", "load\n--verify\na file.uf2\n--bus\n1\n--address\n7\n", "reboot\n--application\n--bus\n1\n--address\n7\n" };
+    const config: flash.Config = .{
+        .picotool = options.picotool_fixture,
+        .firmware = "a file.uf2",
+        .bus = "1",
+        .address = "7",
+    };
+    const commands = [_][]const []const u8{
+        &.{"info"},
+        &.{ "load", "--verify", config.firmware },
+        &.{ "reboot", "--application" },
+    };
+    const expected = [_][]const u8{
+        "info\n--bus\n1\n--address\n7\n",
+        "load\n--verify\na file.uf2\n--bus\n1\n--address\n7\n",
+        "reboot\n--application\n--bus\n1\n--address\n7\n",
+    };
     for (commands, expected) |command, bytes| {
         const result = try flash.tool(t.allocator, io, config, command, 2000);
         defer t.allocator.free(result.stdout);
@@ -65,7 +93,12 @@ test "offline flash success, hash rejection, ambiguity, discovery and phase fail
     defer t.allocator.free(file);
     const block = uf2();
     try tmp.dir.writeFile(io, .{ .sub_path = "firmware.uf2", .data = &block });
-    var config: flash.Config = .{ .picotool = options.picotool_fixture, .firmware = file, .discovery_ms = 100, .command_ms = 2000 };
+    var config: flash.Config = .{
+        .picotool = options.picotool_fixture,
+        .firmware = file,
+        .discovery_ms = 100,
+        .command_ms = 2000,
+    };
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(&block, &hash, .{});
     config.expected_sha256 = hash;
@@ -117,7 +150,11 @@ test "timeout kills and reaps a child which closed output pipes" {
     defer t.allocator.free(pidfile);
     const serial = try std.fmt.allocPrint(t.allocator, "hang|{s}", .{pidfile});
     defer t.allocator.free(serial);
-    const config: flash.Config = .{ .picotool = options.picotool_fixture, .firmware = "unused", .serial = serial };
+    const config: flash.Config = .{
+        .picotool = options.picotool_fixture,
+        .firmware = "unused",
+        .serial = serial,
+    };
     try t.expectError(error.CommandTimeout, flash.tool(t.allocator, io, config, &.{"info"}, 500));
     try expectReaped(try waitPid(pidfile));
 }
@@ -135,7 +172,19 @@ test "stdin cancellation during discovery and load reaps picotool before wrapper
         try tmp.dir.writeFile(io, .{ .sub_path = "firmware.uf2", .data = &block });
         const serial = try std.fmt.allocPrint(t.allocator, "{s}|{s}", .{ mode, pidfile });
         defer t.allocator.free(serial);
-        var wrapper = try std.process.spawn(io, .{ .argv = &.{ options.wrapper, options.picotool_fixture, firmware, "--serial", serial, "--cancel-stdin" }, .stdin = .pipe, .stdout = .ignore, .stderr = .ignore });
+        var wrapper = try std.process.spawn(io, .{
+            .argv = &.{
+                options.wrapper,
+                options.picotool_fixture,
+                firmware,
+                "--serial",
+                serial,
+                "--cancel-stdin",
+            },
+            .stdin = .pipe,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
         defer wrapper.kill(io);
         const pid = try waitPid(pidfile);
         if (i == 2) {

@@ -20,12 +20,14 @@ const keymap_id: [16]u8 = @splat(0xAB);
 const left_shift: u8 = 0x02;
 /// Hello answering connect.
 const hello = literal(&(.{ 0x20, 1, 36, 4 } ++ keymap_id));
+
 /// State after connect with key 9 held, layers 1 and 2 active and left shift.
 const first_state = blk: {
     var report = literal(&.{ 0x21, 0, 2, left_shift, 0b0111, 0 });
     report[6 + 1] = 0b10;
     break :blk report;
 };
+
 /// Key 5 pressed then released on layer 1.
 const press = literal(&.{ 0x22, 1, 1, 5, 1, 0 });
 const release = literal(&.{ 0x22, 2, 0, 5, 1, 0 });
@@ -37,23 +39,47 @@ const overlay_release = literal(&.{ 0x23, 2, 2, 0 });
 /// Layer change to layer 3.
 const layer_state = literal(&.{ 0x21, 3, 3, 0, 0b1001, 0 });
 
-const expected = protocol.Identity{ .board_id = .{ 'l', 'k', '7', 0, 0, 0, 0, 0 }, .profile_id = .{ 'd', 'a', 'n', 'i', 's', 'h', 0, 0 }, .digest = keymap_id, .dimensions = dimensions };
+const expected = protocol.Identity{
+    .board_id = .{ 'l', 'k', '7', 0, 0, 0, 0, 0 },
+    .profile_id = .{ 'd', 'a', 'n', 'i', 's', 'h', 0, 0 },
+    .digest = keymap_id,
+    .dimensions = dimensions,
+};
 
 test "firmware byte layouts decode and reencode exactly" {
     const t = std.testing;
-    try t.expectEqualDeep(protocol.Message{ .hello = .{ .dimensions = dimensions, .keymap_id = keymap_id } }, (try protocol.decode(&hello, dimensions)).?);
+    try t.expectEqualDeep(
+        protocol.Message{ .hello = .{ .dimensions = dimensions, .keymap_id = keymap_id } },
+        (try protocol.decode(&hello, dimensions)).?,
+    );
     const state = (try protocol.decode(&first_state, dimensions)).?.state;
     try t.expectEqual(@as(u8, 0), state.sequence);
     try t.expectEqual(@as(model.LayerIndex, 2), state.highest_layer);
     try t.expectEqual(@as(u16, 0b0111), state.active_layers);
     try t.expectEqual(model.Modifiers{ .left_shift = true }, state.modifiers);
     try t.expect(state.isPressed(9));
-    try t.expectEqualDeep(protocol.Message{ .key = .{ .sequence = 1, .event = .{ .pressed = true, .key_index = 5, .layer = 1, .modifiers = .{} } } }, (try protocol.decode(&press, dimensions)).?);
-    try t.expectEqualDeep(protocol.Message{ .key = .{ .sequence = 2, .event = .{ .pressed = false, .key_index = 5, .layer = 1, .modifiers = .{} } } }, (try protocol.decode(&release, dimensions)).?);
+    try t.expectEqualDeep(protocol.Message{ .key = .{ .sequence = 1, .event = .{
+        .pressed = true,
+        .key_index = 5,
+        .layer = 1,
+        .modifiers = .{},
+    } } }, (try protocol.decode(&press, dimensions)).?);
+    try t.expectEqualDeep(protocol.Message{ .key = .{ .sequence = 2, .event = .{
+        .pressed = false,
+        .key_index = 5,
+        .layer = 1,
+        .modifiers = .{},
+    } } }, (try protocol.decode(&release, dimensions)).?);
     try t.expect((try protocol.decode(&dropped_state, dimensions)).?.state.isPressed(7));
-    try t.expectEqual(@as(model.LayerIndex, 3), (try protocol.decode(&layer_state, dimensions)).?.state.highest_layer);
+    try t.expectEqual(
+        @as(model.LayerIndex, 3),
+        (try protocol.decode(&layer_state, dimensions)).?.state.highest_layer,
+    );
     for ([_]protocol.Report{ hello, first_state, press, release, dropped_state, layer_state }) |report| {
-        try t.expectEqual(report, try protocol.encode((try protocol.decode(&report, dimensions)).?, dimensions));
+        try t.expectEqual(
+            report,
+            try protocol.encode((try protocol.decode(&report, dimensions)).?, dimensions),
+        );
     }
     // Host commands as the firmware tests build them.
     try t.expectEqual(literal(&.{0x10}), protocol.encodeCommand(.connect));
@@ -107,7 +133,10 @@ test "companion key signals pass through in sequence with keys" {
     _ = feed(&session, first_state, 2);
     const held = feed(&session, overlay_hold, 3);
     try t.expectEqualDeep(protocol.SignalEvent{ .kind = .overlay_toggle, .pressed = true }, held.signal.?);
-    try t.expectEqualDeep(protocol.SignalEvent{ .kind = .overlay_toggle, .pressed = false }, feed(&session, overlay_release, 4).signal.?);
+    try t.expectEqualDeep(
+        protocol.SignalEvent{ .kind = .overlay_toggle, .pressed = false },
+        feed(&session, overlay_release, 4).signal.?,
+    );
     // A signal out of sequence resynchronises like a key.
     try t.expectEqual(@as(?protocol.Command, .connect), feed(&session, overlay_hold, 5).send);
 }
@@ -201,7 +230,10 @@ test "malformed reports resynchronise a coherent session only" {
     try t.expectEqual(companion.Phase.negotiating, session.phase);
     _ = feed(&session, hello, 2);
     _ = feed(&session, first_state, 3);
-    try t.expectEqual(@as(?protocol.Command, .connect), feed(&session, literal(&.{ 0x22, 1, 1, 36, 0, 0 }), 4).send);
+    try t.expectEqual(
+        @as(?protocol.Command, .connect),
+        feed(&session, literal(&.{ 0x22, 1, 1, 36, 0, 0 }), 4).send,
+    );
     try t.expectEqual(@as(?protocol.ProtocolError, error.InvalidKeyIndex), session.last_error);
     try t.expectEqual(companion.Phase.negotiating, session.phase);
     try t.expectEqual(@as(?protocol.Command, null), session.receive(press[0..31], 5).send);

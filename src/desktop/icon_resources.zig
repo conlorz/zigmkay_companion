@@ -4,6 +4,7 @@ const icons = @import("icons");
 const desktop = @import("desktop-core");
 pub const gui_icon = icons.tvg.lucide.command;
 const Entry = struct { name: []const u8, bytes: []const u8 };
+
 pub const entries = [_]Entry{
     .{ .name = "companion", .bytes = icons.tvg.lucide.@"circuit-board" },
     .{ .name = "shutdown", .bytes = icons.tvg.lucide.power },
@@ -32,18 +33,23 @@ pub const entries = [_]Entry{
     .{ .name = "home", .bytes = icons.tvg.lucide.@"arrow-left-to-line" },
     .{ .name = "end", .bytes = icons.tvg.lucide.@"arrow-right-to-line" },
 };
+
 pub fn lookup(name: []const u8) ?[]const u8 {
     for (entries) |entry| if (std.mem.eql(u8, name, entry.name)) return entry.bytes;
     return null;
 }
+
 const context: u8 = 0;
+
 pub fn resolver() desktop.label_cache.IconResolver {
     return .{ .context = &context, .resolve = resolve };
 }
+
 fn resolve(_: *const anyopaque, gpa: std.mem.Allocator, name: []const u8) !?[]u8 {
     const bytes = lookup(name) orelse return null;
     return try gpa.dupe(u8, bytes);
 }
+
 test "every retained cache icon parses and resolver returns owned immutable bytes" {
     const t = std.testing;
     for (entries) |entry| {

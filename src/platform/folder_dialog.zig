@@ -8,6 +8,7 @@ var result: [4096]u8 = @splat(0);
 var failed = false;
 var token: u64 = 0;
 pub const Completion = struct { token: u64, path: anyerror![4096]u8 };
+
 fn selected(_: ?*anyopaque, paths: [*c]const [*c]const u8, _: c_int) callconv(.c) void {
     result = @splat(0);
     failed = paths == null;
@@ -17,9 +18,11 @@ fn selected(_: ?*anyopaque, paths: [*c]const [*c]const u8, _: c_int) callconv(.c
     }
     done.store(true, .release);
 }
+
 pub fn start(window: *sdl.SDL_Window) !void {
     return startCorrelated(window, 0);
 }
+
 /// UI-thread entry point; the singleton remains busy until its callback is drained.
 pub fn startCorrelated(window: *sdl.SDL_Window, request_token: u64) !void {
     if (busy.swap(true, .acq_rel)) return error.DialogAlreadyOpen;
@@ -27,6 +30,7 @@ pub fn startCorrelated(window: *sdl.SDL_Window, request_token: u64) !void {
     done.store(false, .release);
     sdl.SDL_ShowOpenFolderDialog(selected, null, window, null, false);
 }
+
 pub fn poll() ?anyerror![1024]u8 {
     const completion = pollCorrelated() orelse return null;
     const path = try completion.path;
@@ -36,6 +40,7 @@ pub fn poll() ?anyerror![1024]u8 {
     @memcpy(legacy[0..len], path[0..len]);
     return legacy;
 }
+
 /// Poll on the UI thread. Empty paths mean user cancellation; failures are errors.
 pub fn pollCorrelated() ?Completion {
     if (!busy.load(.acquire) or !done.load(.acquire)) return null;
@@ -43,6 +48,7 @@ pub fn pollCorrelated() ?Completion {
     busy.store(false, .release);
     return completion;
 }
+
 pub fn active() bool {
     return busy.load(.acquire);
 }

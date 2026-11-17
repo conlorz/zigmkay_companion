@@ -1,6 +1,13 @@
 const std = @import("std");
 const p = @import("root.zig");
-const board = p.Board{ .id = .{ 'l', 'k', '7', 0, 0, 0, 0, 0 }, .physical_layout = "fixture", .key_ids = &.{ "left_0", "right_0" }, .sides = &.{ .L, .R } };
+
+const board = p.Board{
+    .id = .{ 'l', 'k', '7', 0, 0, 0, 0, 0 },
+    .physical_layout = "fixture",
+    .key_ids = &.{ "left_0", "right_0" },
+    .sides = &.{ .L, .R },
+};
+
 const fixture = p.Document{
     .schema_version = 1,
     .board_id = board.id,
@@ -9,11 +16,32 @@ const fixture = p.Document{
     .name = "Test",
     .key_ids = board.key_ids,
     .layers = &.{
-        .{ .id = 10, .name = "Base", .actions = &.{ .{ .tap_hold = .{ .tap = .{ .key_press = .{ .tap_keycode = 4, .tap_modifiers = .{ .left_gui = true }, .dead = true }, .one_shot = .{ .layer_id = 20 }, .custom = 253, .media_key = .VolumeUp, .mouse_action = .WheelDown }, .hold = .{ .layer_id = 20, .hold_modifiers = .{ .right_alt = true } }, .tapping_term = .{ .ms = 180 }, .retro_tapping = true } }, null } },
-        .{ .id = 20, .name = "Navigation", .actions = &.{ .none, .{ .tap_with_autofire = .{ .tap = .{ .key_press = .{ .tap_keycode = 80 } }, .initial_delay = .{ .ms = 200 }, .repeat_interval = .{ .ms = 50 } } } } },
+        .{ .id = 10, .name = "Base", .actions = &.{ .{ .tap_hold = .{
+            .tap = .{
+                .key_press = .{ .tap_keycode = 4, .tap_modifiers = .{ .left_gui = true }, .dead = true },
+                .one_shot = .{ .layer_id = 20 },
+                .custom = 253,
+                .media_key = .VolumeUp,
+                .mouse_action = .WheelDown,
+            },
+            .hold = .{ .layer_id = 20, .hold_modifiers = .{ .right_alt = true } },
+            .tapping_term = .{ .ms = 180 },
+            .retro_tapping = true,
+        } }, null } },
+        .{ .id = 20, .name = "Navigation", .actions = &.{ .none, .{ .tap_with_autofire = .{
+            .tap = .{ .key_press = .{ .tap_keycode = 80 } },
+            .initial_delay = .{ .ms = 200 },
+            .repeat_interval = .{ .ms = 50 },
+        } } } },
     },
-    .combos = &.{.{ .key_ids = .{ "left_0", "right_0" }, .layer_id = 10, .timeout = .{ .ms = 40 }, .action = .{ .tap_only = .{ .key_press = .{ .tap_keycode = 252 } } } }},
+    .combos = &.{.{
+        .key_ids = .{ "left_0", "right_0" },
+        .layer_id = 10,
+        .timeout = .{ .ms = 40 },
+        .action = .{ .tap_only = .{ .key_press = .{ .tap_keycode = 252 } } },
+    }},
 };
+
 test "typed ZON round trip preserves simultaneous tap fields transparency and explicit none" {
     const gpa = std.testing.allocator;
     try p.validate(fixture, board);
@@ -37,6 +65,7 @@ test "typed ZON round trip preserves simultaneous tap fields transparency and ex
     try std.testing.expectEqual(.VolumeUp, lowered.tap_hold.tap.media_key.?);
     try std.testing.expectEqual(.WheelDown, lowered.tap_hold.tap.mouse_action.?);
 }
+
 test "parser rejects executable syntax unknown fields and unsupported versions" {
     const gpa = std.testing.allocator;
     try std.testing.expectError(error.ParseZon, p.parse(gpa, "@import(\"malicious.zig\")", null));
@@ -54,6 +83,7 @@ test "parser rejects executable syntax unknown fields and unsupported versions" 
     defer gpa.free(huge);
     try std.testing.expectError(error.DocumentTooLarge, p.parse(gpa, huge, null));
 }
+
 test "validation rejects wrong geometry duplicate layers and reversed duplicate combos" {
     var doc = fixture;
     doc.physical_layout = "wrong";
@@ -69,17 +99,35 @@ test "validation rejects wrong geometry duplicate layers and reversed duplicate 
     doc.combos = &combos;
     try std.testing.expectError(error.DuplicateCombo, p.validate(doc, board));
 }
+
 test "stable layer references and opaque callback index constraints prevent unsafe deletion" {
     try std.testing.expectError(error.LayerReferenced, p.canDeleteLayer(fixture, 20));
     var doc = fixture;
-    doc.layers = &.{ fixture.layers[1], .{ .id = 30, .name = "Unused", .actions = &.{ null, null } }, .{ .id = 40, .name = "Last", .actions = &.{ null, null } } };
+    doc.layers = &.{
+        fixture.layers[1],
+        .{ .id = 30, .name = "Unused", .actions = &.{ null, null } },
+        .{ .id = 40, .name = "Last", .actions = &.{ null, null } },
+    };
     try p.canDeleteLayer(doc, 30);
-    doc.callbacks = &.{.{ .kind = .attached, .binding = "callback.zig", .ids = &.{1}, .sources = &.{.{ .path = "callback.zig", .digest = @splat(0) }} }};
+    doc.callbacks = &.{.{
+        .kind = .attached,
+        .binding = "callback.zig",
+        .ids = &.{1},
+        .sources = &.{.{ .path = "callback.zig", .digest = @splat(0) }},
+    }};
     try std.testing.expectError(error.CallbackIndexLocked, p.canDeleteLayer(doc, 30));
     try p.canDeleteLayer(doc, 40);
 }
+
 test "paths custom IDs and timing fail without discarding action fields" {
-    for ([_][]const u8{ "../escape.zig", "/absolute.zig", "a//b.zig", "a/./b.zig", "a\\b.zig", "bad:drive.zig" }) |path| try std.testing.expect(!p.pathValid(path));
+    for ([_][]const u8{
+        "../escape.zig",
+        "/absolute.zig",
+        "a//b.zig",
+        "a/./b.zig",
+        "a\\b.zig",
+        "bad:drive.zig",
+    }) |path| try std.testing.expect(!p.pathValid(path));
     try std.testing.expect(p.pathValid("helpers/util.zig"));
     try std.testing.expectError(error.InvalidCallback, p.lowerTap(fixture, .{ .custom = 1 }));
     try std.testing.expectError(error.InvalidCallback, p.lowerHold(fixture, .{ .custom = 1 }));
@@ -87,21 +135,33 @@ test "paths custom IDs and timing fail without discarding action fields" {
         const lowered = try p.lowerHold(fixture, .{ .custom = @intCast(id) });
         try std.testing.expectEqual(@as(?u8, @intCast(id)), lowered.custom);
     }
-    try std.testing.expectError(error.InvalidTiming, p.lowerAction(fixture, .{ .tap_with_autofire = .{ .tap = .{}, .initial_delay = .{}, .repeat_interval = .{} } }));
+    try std.testing.expectError(error.InvalidTiming, p.lowerAction(fixture, .{ .tap_with_autofire = .{
+        .tap = .{},
+        .initial_delay = .{},
+        .repeat_interval = .{},
+    } }));
     try std.testing.expectError(error.InvalidLayer, p.lowerHold(fixture, .{ .layer_id = 999 }));
 }
 
 fn withCallback() p.Document {
     var doc = fixture;
-    doc.callbacks = &.{.{ .kind = .attached, .binding = "callback.zig", .ids = &.{1}, .required_layers = &.{20}, .sources = &.{.{ .path = "callback.zig", .digest = comptime sourceDigest("// opaque callback\n") }} }};
+    doc.callbacks = &.{.{
+        .kind = .attached,
+        .binding = "callback.zig",
+        .ids = &.{1},
+        .required_layers = &.{20},
+        .sources = &.{.{ .path = "callback.zig", .digest = comptime sourceDigest("// opaque callback\n") }},
+    }};
     return doc;
 }
+
 fn sourceDigest(bytes: []const u8) [32]u8 {
     @setEvalBranchQuota(10000);
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
     return digest;
 }
+
 test "legacy registered binding and opaque bytes survive save without template upgrade" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -110,20 +170,32 @@ test "legacy registered binding and opaque bytes survive save without template u
     callbacks[0].kind = .registered;
     callbacks[0].binding = "rollercole_v1";
     document.callbacks = &callbacks;
-    const snapshot = p.snapshot.Snapshot{ .document = document, .sources = &.{.{ .callback_index = 0, .path = "callback.zig", .bytes = "// opaque callback\n" }} };
+    const snapshot = p.snapshot.Snapshot{ .document = document, .sources = &.{.{
+        .callback_index = 0,
+        .path = "callback.zig",
+        .bytes = "// opaque callback\n",
+    }} };
     try p.snapshot.save(std.testing.allocator, std.testing.io, tmp.dir, snapshot, board);
     var loaded = try p.snapshot.load(std.testing.allocator, std.testing.io, tmp.dir, board);
     defer loaded.deinit();
     try std.testing.expectEqualStrings("rollercole_v1", loaded.snapshot.document.callbacks[0].binding);
     try std.testing.expectEqualStrings(snapshot.sources[0].bytes, loaded.snapshot.sources[0].bytes);
-    try std.testing.expectError(error.UnknownRegisteredCallback, p.profiles.callbackEntry(loaded.snapshot, 0));
+    try std.testing.expectError(
+        error.UnknownRegisteredCallback,
+        p.profiles.callbackEntry(loaded.snapshot, 0),
+    );
 }
+
 test "atomic save reopen retains opaque callback bytes and prior snapshot on rejected save" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const snapshot = p.snapshot.Snapshot{ .document = withCallback(), .sources = &.{.{ .callback_index = 0, .path = "callback.zig", .bytes = "// opaque callback\n" }} };
+    const snapshot = p.snapshot.Snapshot{ .document = withCallback(), .sources = &.{.{
+        .callback_index = 0,
+        .path = "callback.zig",
+        .bytes = "// opaque callback\n",
+    }} };
     try p.snapshot.save(gpa, io, tmp.dir, snapshot, board);
     var loaded = try p.snapshot.load(gpa, io, tmp.dir, board);
     defer loaded.deinit();
@@ -131,7 +203,11 @@ test "atomic save reopen retains opaque callback bytes and prior snapshot on rej
     const original = try tmp.dir.readFileAlloc(io, "project.zon", gpa, .limited(p.Limits.document_bytes));
     defer gpa.free(original);
     var rejected = snapshot;
-    rejected.sources = &.{.{ .callback_index = 0, .path = "callback.zig", .bytes = "// changed externally\n" }};
+    rejected.sources = &.{.{
+        .callback_index = 0,
+        .path = "callback.zig",
+        .bytes = "// changed externally\n",
+    }};
     try std.testing.expectError(error.SourceMismatch, p.snapshot.save(gpa, io, tmp.dir, rejected, board));
     const unchanged = try tmp.dir.readFileAlloc(io, "project.zon", gpa, .limited(p.Limits.document_bytes));
     defer gpa.free(unchanged);
@@ -143,9 +219,14 @@ test "atomic save reopen retains opaque callback bytes and prior snapshot on rej
     try std.testing.expectError(error.SourceMismatch, p.snapshot.save(gpa, io, tmp.dir, snapshot, board));
     try std.testing.expectError(error.SourceMismatch, p.snapshot.load(gpa, io, tmp.dir, board));
 }
+
 test "callback source identity invalidates prepared results while layer rename is metadata only" {
     const gpa = std.testing.allocator;
-    const original = p.snapshot.Snapshot{ .document = withCallback(), .sources = &.{.{ .callback_index = 0, .path = "callback.zig", .bytes = "// opaque callback\n" }} };
+    const original = p.snapshot.Snapshot{ .document = withCallback(), .sources = &.{.{
+        .callback_index = 0,
+        .path = "callback.zig",
+        .bytes = "// opaque callback\n",
+    }} };
     const identity = try p.snapshot.identity(gpa, original, board);
     const digest = try p.snapshot.projectDigest(gpa, original, board);
     var renamed = original;
@@ -160,13 +241,20 @@ test "callback source identity invalidates prepared results while layer rename i
     callbacks[0].sources = &sources;
     edited.document.callbacks = &callbacks;
     edited.sources = &.{.{ .callback_index = 0, .path = "callback.zig", .bytes = "// changed callback\n" }};
-    try std.testing.expect(!std.mem.eql(u8, &identity.digest, &(try p.snapshot.identity(gpa, edited, board)).digest));
+    try std.testing.expect(
+        !std.mem.eql(u8, &identity.digest, &(try p.snapshot.identity(gpa, edited, board)).digest),
+    );
 }
+
 test "source inventory refuses missing extra duplicate and excessive callback bytes" {
     const gpa = std.testing.allocator;
     var snapshot = p.snapshot.Snapshot{ .document = withCallback(), .sources = &.{} };
     try std.testing.expectError(error.MissingSource, p.snapshot.validate(snapshot, board));
-    const source = p.snapshot.SourceBytes{ .callback_index = 0, .path = "callback.zig", .bytes = "// opaque callback\n" };
+    const source = p.snapshot.SourceBytes{
+        .callback_index = 0,
+        .path = "callback.zig",
+        .bytes = "// opaque callback\n",
+    };
     snapshot.sources = &.{ source, source };
     try std.testing.expectError(error.UnexpectedSource, p.snapshot.validate(snapshot, board));
     const huge = try gpa.alloc(u8, p.Limits.source_bytes + 1);
@@ -182,7 +270,11 @@ test "source filesystem failure leaves the previous saved project readable" {
     defer tmp.cleanup();
     try p.snapshot.save(gpa, io, tmp.dir, .{ .document = fixture, .sources = &.{} }, board);
     try tmp.dir.writeFile(io, .{ .sub_path = ".sources", .data = "not a directory" });
-    const replacement = p.snapshot.Snapshot{ .document = withCallback(), .sources = &.{.{ .callback_index = 0, .path = "callback.zig", .bytes = "// opaque callback\n" }} };
+    const replacement = p.snapshot.Snapshot{ .document = withCallback(), .sources = &.{.{
+        .callback_index = 0,
+        .path = "callback.zig",
+        .bytes = "// opaque callback\n",
+    }} };
     if (p.snapshot.save(gpa, io, tmp.dir, replacement, board)) |_| {
         return error.ExpectedSaveFailure;
     } else |_| {}
@@ -197,7 +289,11 @@ test "atomic document replacement commits new metadata and reuses unchanged sour
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    var snapshot = p.snapshot.Snapshot{ .document = withCallback(), .sources = &.{.{ .callback_index = 0, .path = "callback.zig", .bytes = "// opaque callback\n" }} };
+    var snapshot = p.snapshot.Snapshot{ .document = withCallback(), .sources = &.{.{
+        .callback_index = 0,
+        .path = "callback.zig",
+        .bytes = "// opaque callback\n",
+    }} };
     try p.snapshot.save(gpa, io, tmp.dir, snapshot, board);
     snapshot.document.name = "Saved again";
     try p.snapshot.save(gpa, io, tmp.dir, snapshot, board);
@@ -237,9 +333,17 @@ test "typed adapters round trip every action and all simultaneous fields" {
             try std.testing.expect(std.meta.eql(model_action, try p.lowerAction(fixture, lifted)));
         }
     };
-    const hold: @import("layout-model").KeyDef = .{ .hold_only = .{ .hold_modifiers = .fromByte(255), .hold_layer = 1 } };
-    try std.testing.expect(std.meta.eql(hold, try p.lowerAction(fixture, try p.adapter.liftAction(fixture.layers, hold))));
-    try std.testing.expectError(error.InvalidLayer, p.adapter.liftHold(fixture.layers, .{ .hold_layer = 14 }));
+    const hold: @import("layout-model").KeyDef = .{ .hold_only = .{
+        .hold_modifiers = .fromByte(255),
+        .hold_layer = 1,
+    } };
+    try std.testing.expect(
+        std.meta.eql(hold, try p.lowerAction(fixture, try p.adapter.liftAction(fixture.layers, hold))),
+    );
+    try std.testing.expectError(
+        error.InvalidLayer,
+        p.adapter.liftHold(fixture.layers, .{ .hold_layer = 14 }),
+    );
 }
 
 test "caller diagnostics retain their source after parse returns" {
@@ -270,13 +374,26 @@ test "explicit owned export preserves callback bytes and refuses conflicting des
     var same_inventory = try p.export_inventory.read(p.owned_zon, gpa, io, export_path);
     defer same_inventory.deinit();
     try std.testing.expectEqual(inventory.source_digest, same_inventory.source_digest);
-    const bytes = try tmp.dir.readFileAlloc(io, "callback_0/rollercole.zig", gpa, .limited(p.Limits.source_bytes));
+    const bytes = try tmp.dir.readFileAlloc(
+        io,
+        "callback_0/rollercole.zig",
+        gpa,
+        .limited(p.Limits.source_bytes),
+    );
     defer gpa.free(bytes);
     try std.testing.expectEqualStrings(p.profiles.registered_source, bytes);
     try tmp.dir.writeFile(io, .{ .sub_path = "keymap.zig", .data = "// user-owned file\n" });
-    try std.testing.expectError(error.ExportSourceMismatch, p.export_inventory.read(p.owned_zon, gpa, io, export_path));
-    try std.testing.expect(!std.mem.eql(u8, inventory.files[inventory.files.len - 1].bytes, "// user-owned file\n"));
-    try std.testing.expectError(error.ExportOwnershipConflict, p.exporter.write(gpa, io, tmp.dir, project.snapshot, p.profiles.board));
+    try std.testing.expectError(
+        error.ExportSourceMismatch,
+        p.export_inventory.read(p.owned_zon, gpa, io, export_path),
+    );
+    try std.testing.expect(
+        !std.mem.eql(u8, inventory.files[inventory.files.len - 1].bytes, "// user-owned file\n"),
+    );
+    try std.testing.expectError(
+        error.ExportOwnershipConflict,
+        p.exporter.write(gpa, io, tmp.dir, project.snapshot, p.profiles.board),
+    );
     const retained = try tmp.dir.readFileAlloc(io, "keymap.zig", gpa, .limited(128));
     defer gpa.free(retained);
     try std.testing.expectEqualStrings("// user-owned file\n", retained);
@@ -290,17 +407,31 @@ test "document key layer combo and name capacity limits are exercised at their b
     for (ids, 0..) |*id, index| id.* = try std.fmt.allocPrint(a, "key_{d}", .{index});
     const sides = try a.alloc(@import("layout-model").Side, 127);
     @memset(sides, .X);
-    const synthetic = p.Board{ .id = board.id, .physical_layout = "capacity", .key_ids = ids, .sides = sides };
+    const synthetic = p.Board{
+        .id = board.id,
+        .physical_layout = "capacity",
+        .key_ids = ids,
+        .sides = sides,
+    };
     const layers = try a.alloc(p.Layer, 15);
     for (layers, 0..) |*layer, index| {
         const actions = try a.alloc(?p.Action, 127);
         @memset(actions, null);
-        layer.* = .{ .id = @intCast(index + 1), .name = try std.fmt.allocPrint(a, "Layer {d}", .{index}), .actions = actions };
+        layer.* = .{
+            .id = @intCast(index + 1),
+            .name = try std.fmt.allocPrint(a, "Layer {d}", .{index}),
+            .actions = actions,
+        };
     }
     const combos = try a.alloc(p.Combo, 1024);
     var count: usize = 0;
     outer: for (0..127) |first| for (first + 1..127) |second| {
-        combos[count] = .{ .key_ids = .{ ids[first], ids[second] }, .layer_id = 1, .timeout = .{ .ms = 65535 }, .action = .none };
+        combos[count] = .{
+            .key_ids = .{ ids[first], ids[second] },
+            .layer_id = 1,
+            .timeout = .{ .ms = 65535 },
+            .action = .none,
+        };
         count += 1;
         if (count == combos.len) break :outer;
     };

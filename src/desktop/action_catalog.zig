@@ -5,6 +5,7 @@ const labels = @import("labels.zig");
 
 pub const Target = enum { tap, hold };
 pub const Category = enum { all, key, modifier, layer, media, mouse, callback, one_shot, signal };
+
 pub const Entry = union(enum) {
     key: u8,
     modifier: u8,
@@ -15,18 +16,24 @@ pub const Entry = union(enum) {
     one_shot,
     signal: u8,
 };
+
 pub fn available(target: Target, category: Category) bool {
     return target == .tap or switch (category) {
         .all, .modifier, .layer, .callback, .signal => true,
         else => false,
     };
 }
+
 pub fn label(entry: Entry, doc: p.Document, buffer: []u8) []const u8 {
     return switch (entry) {
         .key => |code| labels.hostUsage(labels.running_host, code, buffer),
         .modifier => |bit| labels.hostModifierNames(labels.running_host, @as(u8, 1) << @intCast(bit), buffer),
         .layer => |id| blk: {
-            for (doc.layers) |layer| if (layer.id == id) break :blk std.fmt.bufPrint(buffer, "Layer {d}: {s}", .{ id, layer.name }) catch "Layer";
+            for (doc.layers) |layer| if (layer.id == id) break :blk std.fmt.bufPrint(
+                buffer,
+                "Layer {d}: {s}",
+                .{ id, layer.name },
+            ) catch "Layer";
             break :blk std.fmt.bufPrint(buffer, "Layer {d}", .{id}) catch "Layer";
         },
         .media => |value| @tagName(value),
@@ -36,7 +43,16 @@ pub fn label(entry: Entry, doc: p.Document, buffer: []u8) []const u8 {
         .signal => |id| labels.signal(id, buffer),
     };
 }
-fn append(doc: p.Document, target: Target, category: Category, query: []const u8, entry: Entry, out: []Entry, count: *usize) void {
+
+fn append(
+    doc: p.Document,
+    target: Target,
+    category: Category,
+    query: []const u8,
+    entry: Entry,
+    out: []Entry,
+    count: *usize,
+) void {
     const kind: Category = switch (entry) {
         .key => .key,
         .modifier => .modifier,
@@ -59,6 +75,7 @@ fn append(doc: p.Document, target: Target, category: Category, query: []const u8
         count.* += 1;
     }
 }
+
 /// Caller-owned storage bounds results; no allocation or hidden picker state.
 pub fn search(doc: p.Document, target: Target, category: Category, query: []const u8, out: []Entry) usize {
     var count: usize = 0;
@@ -67,9 +84,35 @@ pub fn search(doc: p.Document, target: Target, category: Category, query: []cons
     }
     append(doc, target, category, query, .{ .key = 252 }, out, &count);
     for (0..8) |bit| append(doc, target, category, query, .{ .modifier = @intCast(bit) }, out, &count);
-    if (target == .hold) for (doc.layers) |layer| append(doc, target, category, query, .{ .layer = layer.id }, out, &count);
-    inline for (@typeInfo(model.MediaCode).@"enum".field_values) |value| append(doc, target, category, query, .{ .media = @fromBackingInt(@intCast(value)) }, out, &count);
-    inline for (@typeInfo(model.MouseAction).@"enum".field_values) |value| append(doc, target, category, query, .{ .mouse = @fromBackingInt(@intCast(value)) }, out, &count);
+    if (target == .hold) {
+        for (doc.layers) |layer| append(
+            doc,
+            target,
+            category,
+            query,
+            .{ .layer = layer.id },
+            out,
+            &count,
+        );
+    }
+    inline for (@typeInfo(model.MediaCode).@"enum".field_values) |value| append(
+        doc,
+        target,
+        category,
+        query,
+        .{ .media = @fromBackingInt(@intCast(value)) },
+        out,
+        &count,
+    );
+    inline for (@typeInfo(model.MouseAction).@"enum".field_values) |value| append(
+        doc,
+        target,
+        category,
+        query,
+        .{ .mouse = @fromBackingInt(@intCast(value)) },
+        out,
+        &count,
+    );
     var callbacks: [256]bool = @splat(false);
     for (doc.callbacks) |callback| for (callback.ids) |id| {
         callbacks[id] = true;
@@ -84,7 +127,24 @@ pub fn search(doc: p.Document, target: Target, category: Category, query: []cons
 
 test "picker uses stable document layer and deduplicated callback IDs with bounded results" {
     const t = std.testing;
-    const doc: p.Document = .{ .schema_version = 1, .board_id = @splat(0), .profile_id = @splat(0), .physical_layout = "synthetic", .name = "Picker", .key_ids = &.{}, .layers = &.{ .{ .id = 912, .name = "Navigation", .actions = &.{} }, .{ .id = 42, .name = "Symbols", .actions = &.{} } }, .callbacks = &.{.{ .kind = .registered, .binding = "preserved", .ids = &.{ 7, 3, 7 }, .sources = &.{} }} };
+    const doc: p.Document = .{
+        .schema_version = 1,
+        .board_id = @splat(0),
+        .profile_id = @splat(0),
+        .physical_layout = "synthetic",
+        .name = "Picker",
+        .key_ids = &.{},
+        .layers = &.{
+            .{ .id = 912, .name = "Navigation", .actions = &.{} },
+            .{ .id = 42, .name = "Symbols", .actions = &.{} },
+        },
+        .callbacks = &.{.{
+            .kind = .registered,
+            .binding = "preserved",
+            .ids = &.{ 7, 3, 7 },
+            .sources = &.{},
+        }},
+    };
     var out: [16]Entry = undefined;
     const layers = search(doc, .hold, .layer, "", &out);
     try t.expectEqual(@as(usize, 2), layers);

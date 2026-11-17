@@ -24,12 +24,17 @@ const ScanCode = zkeycodes.layouts.keycodes.kc.basic;
 /// zkeycodes.Modifiers uses left/right split for ctrl/shift/alt/gui.
 /// This function collapses them: if either left OR right modifier is set,
 /// the corresponding platform bit is set.
-pub const Modifiers = @FieldType(@typeInfo(@TypeOf(zkeycodes.core.L_CTL)).@"fn".return_type.?, "tap_modifiers");
+pub const Modifiers = @FieldType(
+    @typeInfo(@TypeOf(zkeycodes.core.L_CTL)).@"fn".return_type.?,
+    "tap_modifiers",
+);
+
 pub fn toPlatformMods(m: Modifiers) u8 {
     var result: u8 = 0;
     if (m.left_shift or m.right_shift) result |= 1 << 0;
     if (m.left_ctrl or m.right_ctrl) result |= 1 << 1;
-    if (m.left_alt or m.right_alt) result |= 1 << 2; // TODO: windows handles right alt as ctrl+alt? Do we need to change the translation?
+    if (m.left_alt or m.right_alt)
+        result |= 1 << 2; // TODO: windows handles right alt as ctrl+alt? Do we need to change the translation?
     if (m.left_gui or m.right_gui) result |= 1 << 3;
     return result;
 }

@@ -3,6 +3,7 @@ const std = @import("std");
 pub const Preset = enum { words, mixed_case, punctuation };
 pub const version: u16 = 1;
 pub const character_bounds = [_]usize{ 512, 1280, 2560 };
+
 pub const Descriptor = struct {
     seed: u64,
     preset: Preset = .words,
@@ -10,11 +11,15 @@ pub const Descriptor = struct {
     generator_version: u16 = version,
     corpus_version: u16 = version,
     coverage_version: u16 = 1,
+
     pub fn validate(self: Descriptor) !void {
         if (self.length > 2) return error.InvalidExerciseLevel;
-        if (self.generator_version != version or self.corpus_version != version or self.coverage_version != 1) return error.UnsupportedChallenge;
+        if (self.generator_version != version or
+            self.corpus_version != version or
+            self.coverage_version != 1) return error.UnsupportedChallenge;
     }
 };
+
 pub const vocabulary = blk: {
     @setEvalBranchQuota(100_000);
     const data = @embedFile("practice_vocabulary.txt");
@@ -26,164 +31,270 @@ pub const vocabulary = blk: {
     for (&words) |*word| word.* = it.next().?;
     break :blk words;
 };
-const Random = struct {
+
+/// SplitMix64. Its fixed sequence is part of the generation version.
+pub const Random = struct {
     state: u64,
-    fn next(self: *Random) u64 {
+
+    pub fn next(self: *Random) u64 {
         self.state +%= 0x9e3779b97f4a7c15;
         var x = self.state;
         x = (x ^ (x >> 30)) *% 0xbf58476d1ce4e5b9;
         x = (x ^ (x >> 27)) *% 0x94d049bb133111eb;
         return x ^ (x >> 31);
     }
-    fn index(self: *Random, size: usize) usize {
+
+    pub fn index(self: *Random, size: usize) usize {
         return @intCast(self.next() % size);
     }
 };
+
 /// Focusing selects candidates from the same corpus; plain challenge inputs
 /// never include history. Unsupported targets are explicitly rejected.
-pub const HandCoverage = struct { left: [26]bool = @splat(false), right: [26]bool = @splat(false) };
+pub const HandCoverage = struct {
+    left: [26]bool = @splat(false),
+    right: [26]bool = @splat(false),
+};
+
 pub fn generate(buffer: []u8, descriptor: Descriptor, targets: []const u21) ![]const u8 {
     return generateWithCoverage(buffer, descriptor, targets, null);
 }
-pub fn generateWithCoverage(buffer: []u8, descriptor: Descriptor, targets: []const u21, coverage: ?HandCoverage) ![]const u8 {
+
+pub fn generateWithCoverage(
+    buffer: []u8,
+    descriptor: Descriptor,
+    targets: []const u21,
+    coverage: ?HandCoverage,
+) ![]const u8 {
     try descriptor.validate();
     if (targets.len > 5) return error.TooManyDrillTargets;
     for (targets) |cp| {
         if (descriptor.preset == .words and (cp < 'a' or cp > 'z')) return error.HarderPresetRequired;
         if (cp > 127) return error.CorpusCoverageUnavailable;
     }
-    var random: Random = .{ .state = descriptor.seed };
+    var state: Generator = .{ .random = .{ .state = descriptor.seed } };
     var writer: std.Io.Writer = .fixed(buffer);
-    var used: [20]usize = undefined;
-    var used_len: usize = 0;
-    var used_templates: [12]bool = @splat(false);
     const units = ([_]usize{ 2, 5, 10 })[descriptor.length];
     for (0..units) |unit| {
-        var chosen: [2][]const u8 = undefined;
-        for (&chosen, 0..) |*word, slot| {
-            var candidate = random.index(vocabulary.len);
-            if (targets.len > 0) {
-                const cp = targets[(unit * 2 + slot) % targets.len];
-                const lower = std.ascii.toLower(@intCast(cp));
-                if (std.ascii.isAlphabetic(lower)) {
-                    var found = false;
-                    for (0..vocabulary.len) |offset| {
-                        const index = (candidate + offset) % vocabulary.len;
-                        if ((if (std.ascii.isUpper(@as(u8, @intCast(cp)))) vocabulary[index][0] == lower else std.mem.indexOfScalar(u8, vocabulary[index], lower) != null) and std.mem.indexOfScalar(usize, used[0..used_len], index) == null) {
-                            candidate = index;
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) return error.CorpusCoverageUnavailable;
-                }
-            }
-            if (coverage) |hands| if (descriptor.preset == .mixed_case and targets.len == 0 and unit < (if (descriptor.length == 0) @as(usize, 1) else 2)) {
-                const eligible = if (slot == 0) hands.left else hands.right;
-                var found = false;
-                for (0..vocabulary.len) |offset| {
-                    const index = (candidate + offset) % vocabulary.len;
-                    const initial = vocabulary[index][0];
-                    if (eligible[initial - 'a'] and std.mem.indexOfScalar(usize, used[0..used_len], index) == null) {
-                        candidate = index;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) return error.HandCoverageUnavailable;
-            };
-            for (0..vocabulary.len) |_| {
-                if (std.mem.indexOfScalar(usize, used[0..used_len], candidate) == null) break;
-                candidate = (candidate + 1) % vocabulary.len;
-            }
-            used[used_len] = candidate;
-            used_len += 1;
-            word.* = vocabulary[candidate];
+        var pair: [2][]const u8 = undefined;
+        for (&pair, 0..) |*word, slot| {
+            word.* = try state.pickWord(descriptor, targets, coverage, unit, slot);
         }
         if (unit > 0) try writer.writeByte(' ');
-        const a = chosen[0];
-        const b = chosen[1];
         switch (descriptor.preset) {
-            .words => switch (blk: {
-                var template = random.index(12);
-                while (used_templates[template]) template = (template + 1) % 12;
-                used_templates[template] = true;
-                break :blk template;
-            }) {
-                0 => try writer.print("we wrote the words {s} and {s} in our notebook.", .{ a, b }),
-                1 => try writer.print("please add {s} and {s} to the list before lunch.", .{ a, b }),
-                2 => try writer.print("the next page pairs the word {s} with the word {s}.", .{ a, b }),
-                3 => try writer.print("our next lesson uses {s} alongside {s} in a sentence.", .{ a, b }),
-                4 => try writer.print("i found {s} and {s} in the index at the back.", .{ a, b }),
-                5 => try writer.print("a friend asked me to spell {s} and then {s}.", .{ a, b }),
-                6 => try writer.print("we took turns reading {s} and {s} aloud.", .{ a, b }),
-                7 => try writer.print("the teacher circled {s} before pointing to {s}.", .{ a, b }),
-                8 => try writer.print("today we will write {s} and {s} on separate lines.", .{ a, b }),
-                9 => try writer.print("their latest puzzle includes both {s} and {s}.", .{ a, b }),
-                10 => try writer.print("my notebook has a page for {s} and another for {s}.", .{ a, b }),
-                else => try writer.print("after the walk we looked up the words {s} and {s}.", .{ a, b }),
-            },
-            .mixed_case => {
-                const acronyms = [_][]const u8{ "HTTP", "USB", "API", "HTML", "DNS", "CPU" };
-                const terms = [_][]const u8{ "IPv6", "mDNS", "eBPF", "GitHub", "OpenGL", "WebKit" };
-                const names = [_][]const u8{ "Maya", "Robin", "Alex", "Sam", "Zoe", "Noah", "Iris", "Ben" };
-                var a_title: [64]u8 = undefined;
-                var b_title: [64]u8 = undefined;
-                @memcpy(a_title[0..a.len], a);
-                @memcpy(b_title[0..b.len], b);
-                a_title[0] = std.ascii.toUpper(a_title[0]);
-                b_title[0] = std.ascii.toUpper(b_title[0]);
-                const title_a = a_title[0..a.len];
-                const title_b = b_title[0..b.len];
-                const name = names[random.index(names.len)];
-                const acronym = acronyms[random.index(acronyms.len)];
-                const term = terms[random.index(terms.len)];
-                var template = random.index(12);
-                while (used_templates[template]) template = (template + 1) % 12;
-                used_templates[template] = true;
-                switch (template) {
-                    0 => try writer.print("{s} indexed the {s} notes under {s} and {s}; see the {s} guide.", .{ name, acronym, title_a, title_b, term }),
-                    1 => try writer.print("Our {s} workshop has two chapters, {s} and {s}. {s} will demonstrate {s}.", .{ acronym, title_a, title_b, name, term }),
-                    2 => try writer.print("The {s} folder contains {s} and {s}; {s} shared it through {s}.", .{ acronym, title_a, title_b, name, term }),
-                    3 => try writer.print("{s} named the {s} examples {s} and {s}, then updated {s}.", .{ name, acronym, title_a, title_b, term }),
-                    4 => try writer.print("Read {s} before {s} in the {s} manual; ask {s} about {s}.", .{ title_a, title_b, acronym, name, term }),
-                    5 => try writer.print("Please send {s} and {s} to {s}; the {s} team uses {s}.", .{ title_a, title_b, name, acronym, term }),
-                    6 => try writer.print("{s} reviewed our {s} documentation, including {s}, {s} and {s}.", .{ name, acronym, title_a, title_b, term }),
-                    7 => try writer.print("A {s} tutorial links {s} with {s}; {s} tested it with {s}.", .{ acronym, title_a, title_b, name, term }),
-                    8 => try writer.print("In {s}, {s} labeled the {s} samples {s} and {s}.", .{ term, name, acronym, title_a, title_b }),
-                    9 => try writer.print("{s} explained why {s} and {s} appear in our {s} overview of {s}.", .{ name, title_a, title_b, acronym, term }),
-                    10 => try writer.print("Compare the {s} and {s} exercises; {s} prepared the {s} checklist for {s}.", .{ title_a, title_b, name, acronym, term }),
-                    else => try writer.print("The {s} team asked {s} to archive {s} and {s} beside the {s} notes.", .{ acronym, name, title_a, title_b, term }),
-                }
-            },
-            .punctuation => switch (unit % 4) {
-                0 => {
-                    var template = random.index(8);
-                    while (used_templates[template]) template = (template + 1) % 8;
-                    used_templates[template] = true;
-                    switch (template) {
-                        0 => try writer.print("Let's discuss {s}; she said, \"try {s} next!\"", .{ a, b }),
-                        1 => try writer.print("Don't forget {s}; he wrote, \"save {s} for later.\"", .{ a, b }),
-                        2 => try writer.print("We can't skip {s}; the note says, \"review {s} today.\"", .{ a, b }),
-                        3 => try writer.print("It's time for {s}; our plan reads, \"start with {s}.\"", .{ a, b }),
-                        4 => try writer.print("Today's list includes {s}; I added, \"please check {s}.\"", .{ a, b }),
-                        5 => try writer.print("You've already seen {s}; she asked, \"what about {s}?\"", .{ a, b }),
-                        6 => try writer.print("I'll read {s}; you can reply, \"let's try {s}.\"", .{ a, b }),
-                        else => try writer.print("That isn't {s}; the label says, \"{s} goes here!\"", .{ a, b }),
-                    }
-                },
-                1 => try writer.print("Today's topics: {s} and {s} (pages 12-14).", .{ a, b }),
-                2 => try writer.print("Is {s} on your list, or would you prefer {s}?", .{ a, b }),
-                else => try writer.print("We wrote \"{s}\" twice; don't forget {s} at 9:30.", .{ a, b }),
-            },
+            .words => try writeWordsSentence(&writer, &state, pair[0], pair[1]),
+            .mixed_case => try writeMixedCaseSentence(&writer, &state, pair[0], pair[1]),
+            .punctuation => try writePunctuationSentence(&writer, &state, unit, pair[0], pair[1]),
         }
     }
     const text = writer.buffered();
     if (text.len > character_bounds[descriptor.length]) return error.ExerciseTooLong;
     // Every accepted drill target must actually appear, including punctuation.
-    for (targets) |cp| if (std.mem.indexOfScalar(u8, text, @intCast(cp)) == null) return error.CorpusCoverageUnavailable;
+    for (targets) |cp| {
+        if (std.mem.indexOfScalar(u8, text, @intCast(cp)) == null) return error.CorpusCoverageUnavailable;
+    }
     return text;
 }
+
+/// Generation state: the random stream plus the words and sentence templates
+/// already used, so that one exercise never repeats either.
+const Generator = struct {
+    random: Random,
+    used_words: [20]usize = undefined,
+    used_word_count: usize = 0,
+    used_templates: [12]bool = @splat(false),
+
+    fn isUsed(self: *const Generator, index: usize) bool {
+        return std.mem.indexOfScalar(usize, self.used_words[0..self.used_word_count], index) != null;
+    }
+
+    /// Returns the first unused vocabulary index at or after `start`, wrapping
+    /// around, whose word satisfies `filter.accepts`.
+    fn findUnused(self: *const Generator, start: usize, filter: anytype) ?usize {
+        for (0..vocabulary.len) |offset| {
+            const index = (start + offset) % vocabulary.len;
+            if (filter.accepts(vocabulary[index]) and !self.isUsed(index)) return index;
+        }
+        return null;
+    }
+
+    fn pickWord(
+        self: *Generator,
+        descriptor: Descriptor,
+        targets: []const u21,
+        coverage: ?HandCoverage,
+        unit: usize,
+        slot: usize,
+    ) ![]const u8 {
+        var candidate = self.random.index(vocabulary.len);
+        if (targets.len > 0) {
+            const cp: u8 = @intCast(targets[(unit * 2 + slot) % targets.len]);
+            const filter: ContainsTarget = .{ .cp = cp, .lower = std.ascii.toLower(cp) };
+            if (std.ascii.isAlphabetic(filter.lower)) {
+                candidate = self.findUnused(candidate, filter) orelse return error.CorpusCoverageUnavailable;
+            }
+        }
+        // Normal mixed-case exercises open with a left-hand then a right-hand
+        // initial so that both Shift keys are practiced.
+        const opening_units: usize = if (descriptor.length == 0) 1 else 2;
+        if (coverage) |hands| {
+            if (descriptor.preset == .mixed_case and targets.len == 0 and unit < opening_units) {
+                const filter: StartsWithHand = .{ .eligible = if (slot == 0) hands.left else hands.right };
+                candidate = self.findUnused(candidate, filter) orelse return error.HandCoverageUnavailable;
+            }
+        }
+        candidate = self.findUnused(candidate, AnyWord{}) orelse candidate;
+        self.used_words[self.used_word_count] = candidate;
+        self.used_word_count += 1;
+        return vocabulary[candidate];
+    }
+
+    /// Picks a sentence template among the first `count` not used yet.
+    fn template(self: *Generator, count: usize) usize {
+        var chosen = self.random.index(count);
+        while (self.used_templates[chosen]) chosen = (chosen + 1) % count;
+        self.used_templates[chosen] = true;
+        return chosen;
+    }
+};
+
+const AnyWord = struct {
+    fn accepts(_: AnyWord, _: []const u8) bool {
+        return true;
+    }
+};
+
+/// An uppercase target needs a word starting with it; others need it anywhere.
+const ContainsTarget = struct {
+    cp: u8,
+    lower: u8,
+
+    fn accepts(self: ContainsTarget, word: []const u8) bool {
+        if (std.ascii.isUpper(self.cp)) return word[0] == self.lower;
+        return std.mem.indexOfScalar(u8, word, self.lower) != null;
+    }
+};
+
+const StartsWithHand = struct {
+    eligible: [26]bool,
+
+    fn accepts(self: StartsWithHand, word: []const u8) bool {
+        return self.eligible[word[0] - 'a'];
+    }
+};
+
+fn writeWordsSentence(writer: *std.Io.Writer, state: *Generator, a: []const u8, b: []const u8) !void {
+    const args = .{ a, b };
+    switch (state.template(12)) {
+        0 => try writer.print("we wrote the words {s} and {s} in our notebook.", args),
+        1 => try writer.print("please add {s} and {s} to the list before lunch.", args),
+        2 => try writer.print("the next page pairs the word {s} with the word {s}.", args),
+        3 => try writer.print("our next lesson uses {s} alongside {s} in a sentence.", args),
+        4 => try writer.print("i found {s} and {s} in the index at the back.", args),
+        5 => try writer.print("a friend asked me to spell {s} and then {s}.", args),
+        6 => try writer.print("we took turns reading {s} and {s} aloud.", args),
+        7 => try writer.print("the teacher circled {s} before pointing to {s}.", args),
+        8 => try writer.print("today we will write {s} and {s} on separate lines.", args),
+        9 => try writer.print("their latest puzzle includes both {s} and {s}.", args),
+        10 => try writer.print("my notebook has a page for {s} and another for {s}.", args),
+        else => try writer.print("after the walk we looked up the words {s} and {s}.", args),
+    }
+}
+
+fn titleCase(buffer: *[64]u8, word: []const u8) []const u8 {
+    @memcpy(buffer[0..word.len], word);
+    buffer[0] = std.ascii.toUpper(buffer[0]);
+    return buffer[0..word.len];
+}
+
+fn writeMixedCaseSentence(writer: *std.Io.Writer, state: *Generator, a: []const u8, b: []const u8) !void {
+    const acronyms = [_][]const u8{ "HTTP", "USB", "API", "HTML", "DNS", "CPU" };
+    const terms = [_][]const u8{ "IPv6", "mDNS", "eBPF", "GitHub", "OpenGL", "WebKit" };
+    const names = [_][]const u8{ "Maya", "Robin", "Alex", "Sam", "Zoe", "Noah", "Iris", "Ben" };
+    var a_buffer: [64]u8 = undefined;
+    var b_buffer: [64]u8 = undefined;
+    const title_a = titleCase(&a_buffer, a);
+    const title_b = titleCase(&b_buffer, b);
+    const name = names[state.random.index(names.len)];
+    const acronym = acronyms[state.random.index(acronyms.len)];
+    const term = terms[state.random.index(terms.len)];
+    switch (state.template(12)) {
+        0 => try writer.print(
+            "{s} indexed the {s} notes under {s} and {s}; see the {s} guide.",
+            .{ name, acronym, title_a, title_b, term },
+        ),
+        1 => try writer.print(
+            "Our {s} workshop has two chapters, {s} and {s}. {s} will demonstrate {s}.",
+            .{ acronym, title_a, title_b, name, term },
+        ),
+        2 => try writer.print(
+            "The {s} folder contains {s} and {s}; {s} shared it through {s}.",
+            .{ acronym, title_a, title_b, name, term },
+        ),
+        3 => try writer.print(
+            "{s} named the {s} examples {s} and {s}, then updated {s}.",
+            .{ name, acronym, title_a, title_b, term },
+        ),
+        4 => try writer.print(
+            "Read {s} before {s} in the {s} manual; ask {s} about {s}.",
+            .{ title_a, title_b, acronym, name, term },
+        ),
+        5 => try writer.print(
+            "Please send {s} and {s} to {s}; the {s} team uses {s}.",
+            .{ title_a, title_b, name, acronym, term },
+        ),
+        6 => try writer.print(
+            "{s} reviewed our {s} documentation, including {s}, {s} and {s}.",
+            .{ name, acronym, title_a, title_b, term },
+        ),
+        7 => try writer.print(
+            "A {s} tutorial links {s} with {s}; {s} tested it with {s}.",
+            .{ acronym, title_a, title_b, name, term },
+        ),
+        8 => try writer.print(
+            "In {s}, {s} labeled the {s} samples {s} and {s}.",
+            .{ term, name, acronym, title_a, title_b },
+        ),
+        9 => try writer.print(
+            "{s} explained why {s} and {s} appear in our {s} overview of {s}.",
+            .{ name, title_a, title_b, acronym, term },
+        ),
+        10 => try writer.print(
+            "Compare the {s} and {s} exercises; {s} prepared the {s} checklist for {s}.",
+            .{ title_a, title_b, name, acronym, term },
+        ),
+        else => try writer.print(
+            "The {s} team asked {s} to archive {s} and {s} beside the {s} notes.",
+            .{ acronym, name, title_a, title_b, term },
+        ),
+    }
+}
+
+fn writePunctuationSentence(
+    writer: *std.Io.Writer,
+    state: *Generator,
+    unit: usize,
+    a: []const u8,
+    b: []const u8,
+) !void {
+    const args = .{ a, b };
+    switch (unit % 4) {
+        0 => switch (state.template(8)) {
+            0 => try writer.print("Let's discuss {s}; she said, \"try {s} next!\"", args),
+            1 => try writer.print("Don't forget {s}; he wrote, \"save {s} for later.\"", args),
+            2 => try writer.print("We can't skip {s}; the note says, \"review {s} today.\"", args),
+            3 => try writer.print("It's time for {s}; our plan reads, \"start with {s}.\"", args),
+            4 => try writer.print("Today's list includes {s}; I added, \"please check {s}.\"", args),
+            5 => try writer.print("You've already seen {s}; she asked, \"what about {s}?\"", args),
+            6 => try writer.print("I'll read {s}; you can reply, \"let's try {s}.\"", args),
+            else => try writer.print("That isn't {s}; the label says, \"{s} goes here!\"", args),
+        },
+        1 => try writer.print("Today's topics: {s} and {s} (pages 12-14).", args),
+        2 => try writer.print("Is {s} on your list, or would you prefer {s}?", args),
+        else => try writer.print("We wrote \"{s}\" twice; don't forget {s} at 9:30.", args),
+    }
+}
+
 test "curated base vocabulary is unique and all nine configurations have stable bounded coverage" {
     const t = std.testing;
     try t.expect(vocabulary.len >= 500);
@@ -201,9 +312,11 @@ test "curated base vocabulary is unique and all nine configurations have stable 
         const text = try generate(&buffer, descriptor, &.{});
         try t.expectEqualStrings(text, try generate(&again, descriptor, &.{}));
         try t.expect(text.len > 70 and text.len < 2000);
-        if (preset == .words) for (text) |byte| {
-            try t.expect(std.ascii.isLower(byte) or byte == ' ' or byte == '.');
-        };
+        if (preset == .words) {
+            for (text) |byte| {
+                try t.expect(std.ascii.isLower(byte) or byte == ' ' or byte == '.');
+            }
+        }
         if (preset == .mixed_case) {
             var consecutive = false;
             for (text[1..], text[0 .. text.len - 1]) |a, b| if (std.ascii.isUpper(a) and std.ascii.isUpper(b)) {
@@ -216,12 +329,19 @@ test "curated base vocabulary is unique and all nine configurations have stable 
             try t.expect(std.mem.indexOfScalar(u8, text, '\'') != null);
             try t.expect(std.mem.count(u8, text, "\"") % 2 == 0);
             try t.expectEqual(std.mem.count(u8, text, "("), std.mem.count(u8, text, ")"));
-            if (length > 0) try t.expect(std.mem.indexOfScalar(u8, text, ':') != null and std.mem.indexOfScalar(u8, text, '(') != null);
+            if (length > 0) {
+                try t.expect(
+                    std.mem.indexOfScalar(u8, text, ':') != null and std.mem.indexOfScalar(u8, text, '(') != null,
+                );
+            }
         }
     };
     var buffer: [8192]u8 = undefined;
     try t.expectError(error.InvalidExerciseLevel, generate(&buffer, .{ .seed = 1, .length = 3 }, &.{}));
-    try t.expectError(error.UnsupportedChallenge, generate(&buffer, .{ .seed = 1, .generator_version = 2 }, &.{}));
+    try t.expectError(
+        error.UnsupportedChallenge,
+        generate(&buffer, .{ .seed = 1, .generator_version = 2 }, &.{}),
+    );
     try t.expectError(error.HarderPresetRequired, generate(&buffer, .{ .seed = 1 }, &.{'A'}));
     try t.expectError(error.WriteFailed, generate(buffer[0..4], .{ .seed = 1 }, &.{}));
 }
@@ -236,9 +356,19 @@ test "drill candidates increase rare target exposure and capitalization remains 
         const descriptor: Descriptor = .{ .seed = seed, .length = 0 };
         ordinary_q += std.mem.count(u8, try generate(&normal, descriptor, &.{}), "q");
         drill_q += std.mem.count(u8, try generate(&focused, descriptor, &.{'q'}), "q");
-        const capitals = try generate(&focused, .{ .seed = seed, .preset = .mixed_case, .length = 0 }, &.{ 'A', 'B' });
-        try t.expect(std.mem.indexOfScalar(u8, capitals, 'A') != null and std.mem.indexOfScalar(u8, capitals, 'B') != null);
-        const symbols = try generate(&focused, .{ .seed = seed, .preset = .punctuation, .length = 0 }, &.{ ';', '"', '\'' });
+        const capitals = try generate(&focused, .{
+            .seed = seed,
+            .preset = .mixed_case,
+            .length = 0,
+        }, &.{ 'A', 'B' });
+        try t.expect(
+            std.mem.indexOfScalar(u8, capitals, 'A') != null and std.mem.indexOfScalar(u8, capitals, 'B') != null,
+        );
+        const symbols = try generate(
+            &focused,
+            .{ .seed = seed, .preset = .punctuation, .length = 0 },
+            &.{ ';', '"', '\'' },
+        );
         try t.expect(std.mem.count(u8, symbols, "\"") % 2 == 0);
     }
     try t.expect(drill_q > ordinary_q * 3);
@@ -246,9 +376,17 @@ test "drill candidates increase rare target exposure and capitalization remains 
     coverage.left[0] = true;
     coverage.right[25] = true;
     var buffer: [8192]u8 = undefined;
-    const balanced = try generateWithCoverage(&buffer, .{ .seed = 12, .preset = .mixed_case }, &.{}, coverage);
+    const balanced = try generateWithCoverage(
+        &buffer,
+        .{ .seed = 12, .preset = .mixed_case },
+        &.{},
+        coverage,
+    );
     try t.expect(std.mem.count(u8, balanced, "A") >= 2 and std.mem.count(u8, balanced, "Z") >= 2);
-    try t.expectError(error.HandCoverageUnavailable, generateWithCoverage(&buffer, .{ .seed = 12, .preset = .mixed_case }, &.{}, .{}));
+    try t.expectError(
+        error.HandCoverageUnavailable,
+        generateWithCoverage(&buffer, .{ .seed = 12, .preset = .mixed_case }, &.{}, .{}),
+    );
 }
 
 test "generation v1 literal hashes freeze challenges across platforms" {
@@ -266,7 +404,11 @@ test "generation v1 literal hashes freeze challenges across platforms" {
     var index: usize = 0;
     for ([_]Preset{ .words, .mixed_case, .punctuation }) |preset| for (0..3) |length| {
         var buffer: [8192]u8 = undefined;
-        const text = try generate(&buffer, .{ .seed = 42, .preset = preset, .length = @intCast(length) }, &.{});
+        const text = try generate(&buffer, .{
+            .seed = 42,
+            .preset = preset,
+            .length = @intCast(length),
+        }, &.{});
         var hash: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(text, &hash, .{});
         try std.testing.expectEqualStrings(expected[index], &std.fmt.bytesToHex(hash, .lower));

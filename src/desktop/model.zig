@@ -2,6 +2,7 @@
 //! one validated immutable snapshot; refused edits leave history and dirty state intact.
 const std = @import("std");
 const p = @import("project");
+
 pub const Model = struct {
     gpa: std.mem.Allocator,
     board_arena: std.heap.ArenaAllocator,
@@ -16,6 +17,7 @@ pub const Model = struct {
     clipboard: ?p.Action = null,
     clipboard_set: bool = false,
     next_layer_id: p.LayerId = 100,
+
     pub fn init(gpa: std.mem.Allocator, board: p.Board, initial: p.snapshot.Snapshot) !Model {
         try p.snapshot.validate(initial, board);
         var arena = std.heap.ArenaAllocator.init(gpa);
@@ -31,10 +33,18 @@ pub const Model = struct {
         @memset(selected, false);
         var loaded = try p.snapshot.clone(gpa, initial);
         errdefer loaded.deinit();
-        var self = Model{ .gpa = gpa, .board_arena = arena, .board = owned_board, .selected = selected, .current = loaded, .saved_id = try p.snapshot.projectDigest(gpa, loaded.snapshot, owned_board) };
+        var self = Model{
+            .gpa = gpa,
+            .board_arena = arena,
+            .board = owned_board,
+            .selected = selected,
+            .current = loaded,
+            .saved_id = try p.snapshot.projectDigest(gpa, loaded.snapshot, owned_board),
+        };
         self.selected[self.primary] = true;
         return self;
     }
+
     pub fn deinit(self: *Model) void {
         self.current.deinit();
         self.clear(&self.undo_stack);
@@ -43,29 +53,36 @@ pub const Model = struct {
         self.redo_stack.deinit(self.gpa);
         self.board_arena.deinit();
     }
+
     fn clear(_: *Model, stack: *std.ArrayList(p.snapshot.Loaded)) void {
         for (stack.items) |*loaded| loaded.deinit();
         stack.clearRetainingCapacity();
     }
+
     pub fn id(self: *const Model) ![32]u8 {
         return p.snapshot.projectDigest(self.gpa, self.current.snapshot, self.board);
     }
+
     pub fn dirty(self: *const Model) bool {
         const actual = self.id() catch return true;
         return !std.mem.eql(u8, &actual, &self.saved_id);
     }
+
     pub fn document(self: *const Model) p.Document {
         return self.current.snapshot.document;
     }
+
     pub fn action(self: *const Model) ?p.Action {
         return self.document().layers[self.layer].actions[self.primary];
     }
+
     pub fn select(self: *Model, index: usize, extend: bool) void {
         if (index >= self.selected.len) return;
         if (!extend) @memset(self.selected, false);
         self.selected[index] = if (extend) !self.selected[index] else true;
         self.primary = index;
     }
+
     pub fn commit(self: *Model, snapshot: p.snapshot.Snapshot) !void {
         try p.snapshot.validate(snapshot, self.board);
         // Editing preserves opaque historical callbacks; export/build performs
@@ -87,18 +104,21 @@ pub const Model = struct {
         self.clear(&self.redo_stack);
         self.layer = @min(self.layer, self.document().layers.len - 1);
     }
+
     pub fn undo(self: *Model) !void {
         if (self.undo_stack.items.len == 0) return;
         try self.redo_stack.append(self.gpa, self.current);
         self.current = self.undo_stack.pop().?;
         self.layer = @min(self.layer, self.document().layers.len - 1);
     }
+
     pub fn redo(self: *Model) !void {
         if (self.redo_stack.items.len == 0) return;
         try self.undo_stack.append(self.gpa, self.current);
         self.current = self.redo_stack.pop().?;
         self.layer = @min(self.layer, self.document().layers.len - 1);
     }
+
     pub fn apply(self: *Model, value: ?p.Action) !void {
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         defer arena.deinit();
@@ -112,8 +132,15 @@ pub const Model = struct {
         snapshot.document.layers = layers;
         try self.commit(snapshot);
     }
+
     /// Commit independently patched assignments as one validated history entry.
-    pub fn applyBatch(self: *Model, starting_id: [32]u8, layer_id: p.LayerId, selected: []const bool, values: []const ?p.Action) !void {
+    pub fn applyBatch(
+        self: *Model,
+        starting_id: [32]u8,
+        layer_id: p.LayerId,
+        selected: []const bool,
+        values: []const ?p.Action,
+    ) !void {
         const actual = try self.id();
         if (!std.mem.eql(u8, &actual, &starting_id)) return error.StaleSession;
         const doc = self.document();
@@ -136,14 +163,23 @@ pub const Model = struct {
         snapshot.document.layers = layers;
         try self.commit(snapshot);
     }
+
     pub fn copy(self: *Model) void {
         self.clipboard = self.action();
         self.clipboard_set = true;
     }
-    pub fn assignChord(self: *Model, chord: @import("assignment.zig").Chord, held: bool, target: ?usize) !void {
-        if (target) |key| if (key >= self.selected.len) {
-            return error.InvalidKey;
-        };
+
+    pub fn assignChord(
+        self: *Model,
+        chord: @import("assignment.zig").Chord,
+        held: bool,
+        target: ?usize,
+    ) !void {
+        if (target) |key| {
+            if (key >= self.selected.len) {
+                return error.InvalidKey;
+            }
+        }
         var arena: std.heap.ArenaAllocator = .init(self.gpa);
         defer arena.deinit();
         var snapshot = self.current.snapshot;
@@ -164,9 +200,11 @@ pub const Model = struct {
         try self.commit(snapshot);
         if (target) |key| self.select(key, false);
     }
+
     pub fn paste(self: *Model) !void {
         if (self.clipboard_set) try self.apply(self.clipboard);
     }
+
     pub fn rename(self: *Model, name: []const u8) !void {
         var layers: [p.Limits.layers]p.Layer = undefined;
         const count = self.document().layers.len;
@@ -176,6 +214,7 @@ pub const Model = struct {
         snapshot.document.layers = layers[0..count];
         try self.commit(snapshot);
     }
+
     pub fn addLayer(self: *Model, duplicate: bool) !void {
         const doc = self.document();
         if (doc.layers.len == p.Limits.layers) return error.InvalidDimensions;
@@ -185,7 +224,11 @@ pub const Model = struct {
         defer self.gpa.free(empty);
         @memset(empty, null);
         var name_buffer: [128]u8 = undefined;
-        const name = if (duplicate) try std.fmt.bufPrint(&name_buffer, "{s} copy", .{doc.layers[self.layer].name}) else "New layer";
+        const name = if (duplicate) try std.fmt.bufPrint(
+            &name_buffer,
+            "{s} copy",
+            .{doc.layers[self.layer].name},
+        ) else "New layer";
         while (true) {
             var used = false;
             for (doc.layers) |existing| if (existing.id == self.next_layer_id) {
@@ -193,15 +236,24 @@ pub const Model = struct {
                 break;
             };
             if (!used) break;
-            self.next_layer_id = std.math.add(p.LayerId, self.next_layer_id, 1) catch return error.LayerIdExhausted;
+            self.next_layer_id = std.math.add(
+                p.LayerId,
+                self.next_layer_id,
+                1,
+            ) catch return error.LayerIdExhausted;
         }
-        layers[doc.layers.len] = .{ .id = self.next_layer_id, .name = name, .actions = if (duplicate) doc.layers[self.layer].actions else empty };
+        layers[doc.layers.len] = .{
+            .id = self.next_layer_id,
+            .name = name,
+            .actions = if (duplicate) doc.layers[self.layer].actions else empty,
+        };
         var snapshot = self.current.snapshot;
         snapshot.document.layers = layers[0 .. doc.layers.len + 1];
         try self.commit(snapshot);
         self.next_layer_id +%= 1;
         self.layer = doc.layers.len;
     }
+
     pub fn deleteLayer(self: *Model, index: usize) !void {
         const doc = self.document();
         if (index >= doc.layers.len) return error.InvalidLayer;
@@ -213,20 +265,24 @@ pub const Model = struct {
         snapshot.document.layers = layers[0 .. doc.layers.len - 1];
         try self.commit(snapshot);
     }
+
     pub fn setCombos(self: *Model, combos: []const p.Combo) !void {
         var snapshot = self.current.snapshot;
         snapshot.document.combos = combos;
         try self.commit(snapshot);
     }
+
     pub fn setEncoders(self: *Model, encoders: []const p.Tap) !void {
         var snapshot = self.current.snapshot;
         snapshot.document.encoders = encoders;
         try self.commit(snapshot);
     }
+
     pub fn save(self: *Model, io: std.Io, dir: std.Io.Dir) !void {
         try p.snapshot.saveChecked(self.gpa, io, dir, self.current.snapshot, self.board, self.saved_id);
         self.saved_id = try self.id();
     }
+
     pub fn open(self: *Model, io: std.Io, dir: std.Io.Dir) !void {
         var loaded = try p.snapshot.load(self.gpa, io, dir, self.board);
         defer loaded.deinit();
@@ -243,9 +299,17 @@ test "bulk edits, metadata, constrained deletion and history survive save/reopen
     model.select(10, false);
     const original = try model.id();
     model.select(11, true);
-    try model.apply(.{ .tap_hold = .{ .tap = .{ .key_press = .{ .tap_keycode = 4, .dead = true } }, .hold = .{ .layer_id = 2 }, .tapping_term = .{ .ms = 180 }, .retro_tapping = true } });
+    try model.apply(.{ .tap_hold = .{
+        .tap = .{ .key_press = .{ .tap_keycode = 4, .dead = true } },
+        .hold = .{ .layer_id = 2 },
+        .tapping_term = .{ .ms = 180 },
+        .retro_tapping = true,
+    } });
     try std.testing.expect(model.dirty());
-    try std.testing.expectEqual(model.document().layers[0].actions[10], model.document().layers[0].actions[11]);
+    try std.testing.expectEqual(
+        model.document().layers[0].actions[10],
+        model.document().layers[0].actions[11],
+    );
     try model.undo();
     try std.testing.expectEqual(original, try model.id());
     try model.redo();
@@ -264,10 +328,22 @@ test "bulk edits, metadata, constrained deletion and history survive save/reopen
     try std.testing.expect(!model.dirty());
     var exported = try temporary.dir.createDirPathOpen(std.testing.io, "export", .{});
     defer exported.close(std.testing.io);
-    const manifest = try p.exporter.write(std.testing.allocator, std.testing.io, exported, model.current.snapshot, p.profiles.board);
+    const manifest = try p.exporter.write(
+        std.testing.allocator,
+        std.testing.io,
+        exported,
+        model.current.snapshot,
+        p.profiles.board,
+    );
     defer p.exporter.freeManifest(std.testing.allocator, manifest);
     try std.testing.expectEqual(saved, manifest.snapshot_id);
-    const repeated = try p.exporter.write(std.testing.allocator, std.testing.io, exported, model.current.snapshot, p.profiles.board);
+    const repeated = try p.exporter.write(
+        std.testing.allocator,
+        std.testing.io,
+        exported,
+        model.current.snapshot,
+        p.profiles.board,
+    );
     defer p.exporter.freeManifest(std.testing.allocator, repeated);
     try std.testing.expectEqualDeep(manifest, repeated);
 }
@@ -292,8 +368,24 @@ fn smallModel() !Model {
     const a = arena.allocator();
     const keys = try a.alloc([]const u8, 3);
     for (keys, [_][]const u8{ "first", "middle", "last" }) |*key, text| key.* = try a.dupe(u8, text);
-    const board: p.Board = .{ .id = .{ 't', 'i', 'n', 'y', 0, 0, 0, 0 }, .physical_layout = try a.dupe(u8, "three-key"), .key_ids = keys, .sides = &.{ .L, .X, .R } };
-    const doc: p.Document = .{ .schema_version = 1, .board_id = board.id, .profile_id = .{ 'f', 'i', 'x', 't', 'u', 'r', 'e', 0 }, .physical_layout = board.physical_layout, .name = "Synthetic board", .key_ids = keys, .layers = &.{ .{ .id = 1, .name = "Base", .actions = &.{ null, null, null } }, .{ .id = 100, .name = "Second", .actions = &.{ null, null, null } } } };
+    const board: p.Board = .{
+        .id = .{ 't', 'i', 'n', 'y', 0, 0, 0, 0 },
+        .physical_layout = try a.dupe(u8, "three-key"),
+        .key_ids = keys,
+        .sides = &.{ .L, .X, .R },
+    };
+    const doc: p.Document = .{
+        .schema_version = 1,
+        .board_id = board.id,
+        .profile_id = .{ 'f', 'i', 'x', 't', 'u', 'r', 'e', 0 },
+        .physical_layout = board.physical_layout,
+        .name = "Synthetic board",
+        .key_ids = keys,
+        .layers = &.{
+            .{ .id = 1, .name = "Base", .actions = &.{ null, null, null } },
+            .{ .id = 100, .name = "Second", .actions = &.{ null, null, null } },
+        },
+    };
     return Model.init(std.testing.allocator, board, .{ .document = doc, .sources = &.{} });
 }
 
@@ -317,7 +409,10 @@ test "model owns arbitrary board lifetimes and validates bulk edits history and 
     try t.expectError(error.InvalidLayer, model.apply(.{ .hold_only = .{ .layer_id = 999 } }));
     try t.expectEqual(edited, try model.id());
     try t.expectEqual(@as(usize, 1), model.undo_stack.items.len);
-    try t.expectError(error.StaleSession, model.applyBatch(original, 1, &.{ true, false, false }, &.{ null, null, null }));
+    try t.expectError(
+        error.StaleSession,
+        model.applyBatch(original, 1, &.{ true, false, false }, &.{ null, null, null }),
+    );
     try t.expectError(error.InvalidDimensions, model.applyBatch(edited, 1, &.{true}, &.{null}));
     try t.expectError(error.InvalidKey, model.assignChord(.{ .tap_keycode = 4 }, false, 3));
     try model.undo();
@@ -361,14 +456,21 @@ test "unknown historical callbacks remain editable and saved byte-exact but cann
     callback.sources = &.{.{ .path = "rollercole.zig", .digest = hash }};
     var doc = initial.snapshot.document;
     doc.callbacks = &.{callback};
-    var model = try Model.init(t.allocator, p.profiles.board, .{ .document = doc, .sources = &.{.{ .callback_index = 0, .path = "rollercole.zig", .bytes = bytes }} });
+    var model = try Model.init(t.allocator, p.profiles.board, .{ .document = doc, .sources = &.{.{
+        .callback_index = 0,
+        .path = "rollercole.zig",
+        .bytes = bytes,
+    }} });
     defer model.deinit();
     try model.rename("Historical metadata edit");
     try model.undo();
     try model.redo();
     try t.expectEqualStrings(bytes, try p.snapshot.find(model.current.snapshot, 0, "rollercole.zig"));
     try t.expectError(error.LayerReferenced, model.deleteLayer(1));
-    try t.expectError(error.UnknownRegisteredCallback, p.exporter.generate(t.allocator, model.current.snapshot, model.board));
+    try t.expectError(
+        error.UnknownRegisteredCallback,
+        p.exporter.generate(t.allocator, model.current.snapshot, model.board),
+    );
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
     try model.save(t.io, tmp.dir);

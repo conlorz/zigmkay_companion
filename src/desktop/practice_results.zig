@@ -6,8 +6,8 @@ const curriculum = @import("practice_curriculum.zig");
 const help = @import("practice_help.zig");
 pub const Assistance = enum { guided, layout_only, hidden };
 pub const RunMode = enum { normal, challenge, drill };
-pub const Scope = enum { this_run, last_ten, all_history };
 pub const Route = struct { layer: u8 = 0, key: u16 = 0, modifiers: u8 = 0 };
+
 pub const Stat = struct {
     cp: u21 = 0,
     opportunities: u64 = 0,
@@ -20,17 +20,25 @@ pub const Stat = struct {
     routes: [4]Route = @splat(.{}),
     route_count: u8 = 0,
     routes_truncated: bool = false,
+
     pub fn rate(self: Stat) f64 {
-        return if (self.opportunities == 0) 0 else 100 * @as(f64, @floatFromInt(self.misses)) / @as(f64, @floatFromInt(self.opportunities));
+        return if (self.opportunities == 0) 0 else 100 * @as(f64, @floatFromInt(self.misses)) / @as(
+            f64,
+            @floatFromInt(self.opportunities),
+        );
     }
+
     pub fn supportedWeakness(self: Stat) bool {
         return self.opportunities >= 5 and self.misses >= 2;
     }
+
     pub fn rank(self: Stat) f64 {
         return @as(f64, @floatFromInt(self.misses + 1)) / @as(f64, @floatFromInt(self.opportunities + 4));
     }
 };
+
 pub const Substitution = struct { expected: u21 = 0, typed: u21 = 0, count: u64 = 0 };
+
 pub const Cohort = struct {
     behavior: [32]u8 = @splat(0),
     mapping: [32]u8 = @splat(0),
@@ -47,6 +55,7 @@ pub const Cohort = struct {
     curriculum: curriculum.Context = .{},
     hints: help.Config = .{},
 };
+
 pub const Record = struct {
     version: u16 = 1,
     id: [16]u8 = @splat(0),
@@ -76,67 +85,149 @@ pub const Record = struct {
     targets: [5]u21 = @splat(0),
     target_count: u8 = 0,
     drill_policy: u16 = 1,
+
+    /// Returns the statistic for `cp`, adding it after the known ones.
+    fn statFor(self: *Record, cp: u21) !*Stat {
+        for (self.stats[0..self.stat_count]) |*stat| {
+            if (stat.cp == cp) return stat;
+        }
+        if (self.stat_count == 256) return error.TooManyResultCharacters;
+        const stat = &self.stats[self.stat_count];
+        stat.cp = cp;
+        self.stat_count += 1;
+        return stat;
+    }
+
     pub fn validate(self: *const Record) !void {
         self.cohort.hints.validate() catch |err| return if (err == error.UnsupportedHintPolicy) error.UnsupportedPracticeHistory else error.InvalidPracticeHistory;
         if (self.cue_evidence and !self.timing_available) return error.InvalidPracticeHistory;
         self.cohort.curriculum.validate() catch |err| return if (err == error.UnsupportedCurriculum) error.UnsupportedPracticeHistory else error.InvalidPracticeHistory;
-        if (self.cohort.curriculum.version != 0 and (self.cohort.mode == .challenge or (self.cohort.family == .zig and self.cohort.curriculum.stage != .real_text) or (self.cohort.curriculum.stage != .real_text and self.cohort.preset != .words))) return error.InvalidPracticeHistory;
-        if ((self.status == .stopped and self.scored) or (self.timing_truncated and !self.timing_available)) return error.InvalidPracticeHistory;
-        if (self.version != 1 or self.cohort.metric_version != 1 or self.cohort.generation_version != 1 or self.drill_policy != 1) return error.UnsupportedPracticeHistory;
-        if (self.stat_count > 256 or self.substitution_count > 256 or self.target_count > 5 or self.correct_attempts > self.attempts) return error.InvalidPracticeHistory;
-        for (self.targets[0..self.target_count]) |cp| if (cp > 0x10ffff or (cp >= 0xd800 and cp <= 0xdfff)) return error.InvalidPracticeHistory;
-        for (self.substitutions[0..self.substitution_count], 0..) |sub, index| {
-            if (sub.expected > 0x10ffff or sub.typed > 0x10ffff or (sub.expected >= 0xd800 and sub.expected <= 0xdfff) or (sub.typed >= 0xd800 and sub.typed <= 0xdfff)) return error.InvalidPracticeHistory;
-            for (self.substitutions[0..index]) |old| if (old.expected == sub.expected and old.typed == sub.typed) return error.InvalidPracticeHistory;
+        if (self.cohort.curriculum.version != 0 and
+            (self.cohort.mode == .challenge or (self.cohort.family == .zig and self.cohort.curriculum.stage != .real_text) or (self.cohort.curriculum.stage != .real_text and self.cohort.preset != .words)))
+            return error.InvalidPracticeHistory;
+        if ((self.status == .stopped and self.scored) or
+            (self.timing_truncated and !self.timing_available)) return error.InvalidPracticeHistory;
+        if (self.version != 1 or
+            self.cohort.metric_version != 1 or
+            self.cohort.generation_version != 1 or
+            self.drill_policy != 1) return error.UnsupportedPracticeHistory;
+        if (self.stat_count > 256 or
+            self.substitution_count > 256 or
+            self.target_count > 5 or
+            self.correct_attempts > self.attempts) return error.InvalidPracticeHistory;
+        for (self.targets[0..self.target_count]) |cp| {
+            if (cp > 0x10ffff or (cp >= 0xd800 and cp <= 0xdfff)) return error.InvalidPracticeHistory;
         }
-        if (!std.unicode.utf8ValidateSlice(std.mem.sliceTo(&self.profile, 0)) or !std.unicode.utf8ValidateSlice(std.mem.sliceTo(&self.input_source, 0))) return error.InvalidPracticeHistory;
+        for (self.substitutions[0..self.substitution_count], 0..) |sub, index| {
+            if (sub.expected > 0x10ffff or
+                sub.typed > 0x10ffff or
+                (sub.expected >= 0xd800 and sub.expected <= 0xdfff) or
+                (sub.typed >= 0xd800 and sub.typed <= 0xdfff)) return error.InvalidPracticeHistory;
+            for (self.substitutions[0..index]) |old| {
+                if (old.expected == sub.expected and old.typed == sub.typed) return error.InvalidPracticeHistory;
+            }
+        }
+        if (!std.unicode.utf8ValidateSlice(std.mem.sliceTo(&self.profile, 0)) or
+            !std.unicode.utf8ValidateSlice(
+                std.mem.sliceTo(&self.input_source, 0),
+            )) return error.InvalidPracticeHistory;
         var opportunities: u64 = 0;
         for (self.stats[0..self.stat_count], 0..) |stat, index| {
-            if (stat.cued > stat.opportunities or stat.uncued > stat.opportunities or stat.uncued_misses > stat.uncued or stat.uncued_clean > stat.uncued or (self.cue_evidence and stat.cued + stat.uncued != stat.opportunities) or (!self.cue_evidence and (stat.cued != 0 or stat.uncued != 0 or stat.uncued_misses != 0 or stat.uncued_clean != 0))) return error.InvalidPracticeHistory;
-            if (stat.cp > 0x10ffff or (stat.cp >= 0xd800 and stat.cp <= 0xdfff) or stat.misses > stat.opportunities or stat.route_count > 4) return error.InvalidPracticeHistory;
+            if (stat.cued > stat.opportunities or
+                stat.uncued > stat.opportunities or
+                stat.uncued_misses > stat.uncued or
+                stat.uncued_clean > stat.uncued or
+                (self.cue_evidence and stat.cued + stat.uncued != stat.opportunities) or
+                (!self.cue_evidence and (stat.cued != 0 or stat.uncued != 0 or stat.uncued_misses != 0 or stat.uncued_clean != 0)))
+                return error.InvalidPracticeHistory;
+            if (stat.cp > 0x10ffff or
+                (stat.cp >= 0xd800 and stat.cp <= 0xdfff) or
+                stat.misses > stat.opportunities or
+                stat.route_count > 4) return error.InvalidPracticeHistory;
             for (self.stats[0..index]) |previous| if (previous.cp == stat.cp) return error.InvalidPracticeHistory;
-            for (stat.routes[0..stat.route_count]) |route| if (route.layer >= self.layer_count or route.key >= self.key_count or std.mem.indexOfScalar(u8, &practice.route_modifiers, route.modifiers) == null) return error.InvalidPracticeHistory;
-            opportunities = std.math.add(u64, opportunities, stat.opportunities) catch return error.InvalidPracticeHistory;
+            for (stat.routes[0..stat.route_count]) |route| {
+                if (route.layer >= self.layer_count or
+                    route.key >= self.key_count or
+                    std.mem.indexOfScalar(u8, &practice.route_modifiers, route.modifiers) == null)
+                    return error.InvalidPracticeHistory;
+            }
+            opportunities = std.math.add(
+                u64,
+                opportunities,
+                stat.opportunities,
+            ) catch return error.InvalidPracticeHistory;
         }
-        if (opportunities != self.matched or self.matched > 8192 or self.cohort.length > 2 or self.cohort.lesson >= 3 or self.layer_count == 0 or self.layer_count > 15) return error.InvalidPracticeHistory;
+        if (opportunities != self.matched or
+            self.matched > 8192 or
+            self.cohort.length > 2 or
+            self.cohort.lesson >= 3 or
+            self.layer_count == 0 or
+            self.layer_count > 15) return error.InvalidPracticeHistory;
     }
+
     pub fn wpm(self: *const Record) f64 {
-        return if (self.active_us == 0) 0 else @as(f64, @floatFromInt(self.matched)) * 12_000_000 / @as(f64, @floatFromInt(self.active_us));
+        return practice.wordsPerMinute(self.matched, self.active_us);
     }
+
     pub fn accuracy(self: *const Record) f64 {
-        return if (self.attempts == 0) 100 else 100 * @as(f64, @floatFromInt(self.correct_attempts)) / @as(f64, @floatFromInt(self.attempts));
+        return practice.accuracyPercent(self.correct_attempts, self.attempts);
     }
 };
+
 pub fn capture(session: *const practice.Session, cohort: Cohort, labels: ?practice.Labels) !Record {
     if (session.state != .complete) return error.IncompletePractice;
     return captureMode(session, cohort, labels, false, session.active_us);
 }
-pub fn captureStopped(session: *const practice.Session, cohort: Cohort, labels: ?practice.Labels, now: u64) !Record {
+
+pub fn captureStopped(
+    session: *const practice.Session,
+    cohort: Cohort,
+    labels: ?practice.Labels,
+    now: u64,
+) !Record {
     return captureMode(session, cohort, labels, true, session.duration(now));
 }
-fn captureMode(session: *const practice.Session, cohort: Cohort, labels: ?practice.Labels, stopped: bool, active_us: u64) !Record {
+
+fn captureMode(
+    session: *const practice.Session,
+    cohort: Cohort,
+    labels: ?practice.Labels,
+    stopped: bool,
+    active_us: u64,
+) !Record {
     const count = if (stopped) session.observed else session.reference_len;
-    var result: Record = .{ .cohort = cohort, .scored = !stopped and session.scored, .status = if (stopped) .stopped else .completed, .timing_available = session.recorder != null, .timing_truncated = if (session.recorder) |recorder| recorder.dropped != 0 else false, .active_us = active_us, .matched = count, .attempts = session.attempts, .correct_attempts = session.correct_attempts, .corrections = session.corrected, .outside_errors = session.outside_errors };
+    var result: Record = .{
+        .cohort = cohort,
+        .scored = !stopped and session.scored,
+        .status = if (stopped) .stopped else .completed,
+        .timing_available = session.recorder != null,
+        .timing_truncated = if (session.recorder) |recorder| recorder.dropped != 0 else false,
+        .active_us = active_us,
+        .matched = count,
+        .attempts = session.attempts,
+        .correct_attempts = session.correct_attempts,
+        .corrections = session.corrected,
+        .outside_errors = session.outside_errors,
+    };
     result.substitution_count = session.substitution_count;
     result.cue_evidence = if (session.recorder) |recorder| recorder.cue_tracking else false;
     result.substitutions_truncated = session.substitutions_truncated;
-    for (session.substitutions[0..session.substitution_count], 0..) |substitution, index| result.substitutions[index] = .{ .expected = substitution.expected, .typed = substitution.typed, .count = substitution.count };
+    for (session.substitutions[0..session.substitution_count], 0..) |substitution, index| result.substitutions[index] = .{
+        .expected = substitution.expected,
+        .typed = substitution.typed,
+        .count = substitution.count,
+    };
     for (session.reference[0..count], 0..) |cp, position| {
-        var index: usize = 0;
-        while (index < result.stat_count and result.stats[index].cp != cp) : (index += 1) {}
-        if (index == result.stat_count) {
-            if (result.stat_count == 256) return error.TooManyResultCharacters;
-            result.stats[index].cp = cp;
-            result.stat_count += 1;
-        }
-        result.stats[index].opportunities += 1;
-        result.stats[index].misses += @intFromBool(session.missed[position]);
-        result.stats[index].retries += session.position_errors[position];
+        const stat = try result.statFor(cp);
+        stat.opportunities += 1;
+        stat.misses += @intFromBool(session.missed[position]);
+        stat.retries += session.position_errors[position];
         if (result.cue_evidence) {
-            if (session.recorder.?.cue_positions[position]) result.stats[index].cued += 1 else {
-                result.stats[index].uncued += 1;
-                result.stats[index].uncued_misses += @intFromBool(session.missed[position]);
-                result.stats[index].uncued_clean += @intFromBool(session.recorder.?.clean_positions[position]);
+            const recorder = session.recorder.?;
+            if (recorder.cue_positions[position]) stat.cued += 1 else {
+                stat.uncued += 1;
+                stat.uncued_misses += @intFromBool(session.missed[position]);
+                stat.uncued_clean += @intFromBool(recorder.clean_positions[position]);
             }
         }
     }
@@ -144,32 +235,44 @@ fn captureMode(session: *const practice.Session, cohort: Cohort, labels: ?practi
         try routes.validate();
         result.layer_count = @intCast(routes.layer_count);
         result.key_count = @intCast(routes.key_count);
-        for (result.stats[0..result.stat_count]) |*stat| {
-            for (0..routes.layer_count) |layer| for (practice.route_modifiers) |mods| for (0..routes.key_count) |key| {
-                if (!practice.matches(routes.get(layer, key, mods, practice.layerMask(layer)), stat.cp)) continue;
-                // Equivalent modifier variants do not create duplicate routes.
-                var duplicate = false;
-                for (stat.routes[0..stat.route_count]) |route| if (route.layer == layer and route.key == key) {
-                    duplicate = true;
-                };
-                if (duplicate) continue;
-                if (stat.route_count == 4) {
-                    stat.routes_truncated = true;
-                    continue;
-                }
-                stat.routes[stat.route_count] = .{ .layer = @intCast(layer), .key = @intCast(key), .modifiers = mods };
-                stat.route_count += 1;
-            };
-        }
+        for (result.stats[0..result.stat_count]) |*stat| addRoutes(stat, routes);
     }
-    if (cohort.assistance != .guided and result.cue_evidence and session.recorder.?.help_revealed) result.cohort.hints.revealed = true;
-    if (cohort.assistance != .guided) for (result.stats[0..result.stat_count]) |stat| if (stat.cued > 0) {
-        result.cohort.hints.revealed = true;
-        break;
-    };
+    if (cohort.assistance != .guided and hintsRevealed(&result, session)) result.cohort.hints.revealed = true;
     try result.validate();
     return result;
 }
+
+/// Records every key and modifier combination that types the statistic's character.
+fn addRoutes(stat: *Stat, routes: practice.Labels) void {
+    for (0..routes.layer_count) |layer| for (practice.route_modifiers) |mods| for (0..routes.key_count) |key| {
+        if (!practice.matches(routes.get(layer, key, mods, practice.layerMask(layer)), stat.cp)) continue;
+        // Equivalent modifier variants do not create duplicate routes.
+        const duplicate = for (stat.routes[0..stat.route_count]) |route| {
+            if (route.layer == layer and route.key == key) break true;
+        } else false;
+        if (duplicate) continue;
+        if (stat.route_count == 4) {
+            stat.routes_truncated = true;
+            continue;
+        }
+        stat.routes[stat.route_count] = .{
+            .layer = @intCast(layer),
+            .key = @intCast(key),
+            .modifiers = mods,
+        };
+        stat.route_count += 1;
+    };
+}
+
+/// Whether help was shown during the run, either explicitly or as visible cues.
+fn hintsRevealed(result: *const Record, session: *const practice.Session) bool {
+    if (result.cue_evidence and session.recorder.?.help_revealed) return true;
+    for (result.stats[0..result.stat_count]) |stat| {
+        if (stat.cued > 0) return true;
+    }
+    return false;
+}
+
 pub const Aggregate = struct {
     runs: u64 = 0,
     cue_known_runs: u64 = 0,
@@ -184,6 +287,7 @@ pub const Aggregate = struct {
     substitutions_truncated: bool = false,
     stats: [256]Stat = @splat(.{}),
     stat_count: u16 = 0,
+
     pub fn add(self: *Aggregate, record: *const Record) !void {
         try record.validate();
         if (!record.scored) return;
@@ -198,7 +302,9 @@ pub const Aggregate = struct {
         self.substitutions_truncated = self.substitutions_truncated or record.substitutions_truncated;
         for (record.substitutions[0..record.substitution_count]) |sub| {
             var index: usize = 0;
-            while (index < self.substitution_count and !(self.substitutions[index].expected == sub.expected and self.substitutions[index].typed == sub.typed)) : (index += 1) {}
+            while (index < self.substitution_count and
+                !(self.substitutions[index].expected == sub.expected and self.substitutions[index].typed == sub.typed)) : (index += 1)
+            {}
             if (index == 256) {
                 self.substitutions_truncated = true;
                 continue;
@@ -206,7 +312,11 @@ pub const Aggregate = struct {
             if (index == self.substitution_count) {
                 self.substitutions[index] = sub;
                 self.substitution_count += 1;
-            } else self.substitutions[index].count = try std.math.add(u64, self.substitutions[index].count, sub.count);
+            } else self.substitutions[index].count = try std.math.add(
+                u64,
+                self.substitutions[index].count,
+                sub.count,
+            );
         }
         for (record.stats[0..record.stat_count]) |stat| {
             var index: usize = 0;
@@ -227,6 +337,7 @@ pub const Aggregate = struct {
             }
         }
     }
+
     pub fn remove(self: *Aggregate, record: *const Record) void {
         if (!record.scored) return;
         self.runs -= 1;
@@ -249,9 +360,11 @@ pub const Aggregate = struct {
             dest.uncued_clean -= stat.uncued_clean;
         };
     }
+
     pub fn wpm(self: *const Aggregate) f64 {
-        return if (self.active_us == 0) 0 else @as(f64, @floatFromInt(self.matched)) * 12_000_000 / @as(f64, @floatFromInt(self.active_us));
+        return practice.wordsPerMinute(self.matched, self.active_us);
     }
+
     pub fn targets(self: *const Aggregate, output: *[5]u21) []const u21 {
         var candidates: [256]Stat = self.stats;
         std.mem.sort(Stat, candidates[0..self.stat_count], {}, struct {
@@ -269,9 +382,11 @@ pub const Aggregate = struct {
         return output[0..count];
     }
 };
+
 fn practice_viewWhitespace(cp: u21) bool {
     return cp == ' ' or cp == '\n' or cp == '\t';
 }
+
 test "distinct occurrences survive retries and weighted aggregation separates case" {
     const t = std.testing;
     var session: practice.Session = .{};
@@ -308,12 +423,21 @@ pub fn dateLabel(timestamp: i64, buffer: []u8) ![]const u8 {
     const year = seconds.getEpochDay().calculateYearDay();
     const month = year.calculateMonthDay();
     const time = seconds.getDaySeconds();
-    return std.fmt.bufPrint(buffer, "{d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC", .{ year.year, month.month.numeric(), month.day_index + 1, time.getHoursIntoDay(), time.getMinutesIntoHour(), time.getSecondsIntoMinute() });
+    return std.fmt.bufPrint(buffer, "{d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} UTC", .{
+        year.year,
+        month.month.numeric(),
+        month.day_index + 1,
+        time.getHoursIntoDay(),
+        time.getMinutesIntoHour(),
+        time.getSecondsIntoMinute(),
+    });
 }
+
 test "history timestamps have readable UTC labels" {
     var buffer: [32]u8 = undefined;
     try std.testing.expectEqualStrings("1970-01-01 00:00:00 UTC", try dateLabel(0, &buffer));
 }
+
 test "cue episodes preserve clean timing and hidden revealed runs remain separate" {
     const t = std.testing;
     var recorder = @import("practice_timing.zig").Recorder.init(t.allocator);
@@ -366,6 +490,7 @@ pub fn displayName(text: []const u8, buffer: *[96]u8) void {
     while (end > 0 and end < text.len and text[end] & 0xc0 == 0x80) end -= 1;
     @memcpy(buffer[0..end], text[0..end]);
 }
+
 test "bounded Unicode profile names never split a codepoint" {
     var text: [96]u8 = undefined;
     for (0..48) |index| {

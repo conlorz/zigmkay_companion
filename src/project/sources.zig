@@ -2,11 +2,20 @@ const std = @import("std");
 const p = @import("root.zig");
 
 fn moduleName(name: []const u8) bool {
-    for ([_][]const u8{ "std", "zigmkay", "layout-model", "zkeycodes" }) |allowed| if (std.mem.eql(u8, name, allowed)) return true;
+    for ([_][]const u8{
+        "std",
+        "zigmkay",
+        "layout-model",
+        "zkeycodes",
+    }) |allowed| if (std.mem.eql(u8, name, allowed)) return true;
     return false;
 }
+
 pub fn resolve(gpa: std.mem.Allocator, from: []const u8, name: []const u8) ![]u8 {
-    if (name.len == 0 or name[0] == '/' or std.mem.indexOfScalar(u8, name, '\\') != null or std.mem.indexOfScalar(u8, name, ':') != null) return error.InvalidImport;
+    if (name.len == 0 or
+        name[0] == '/' or
+        std.mem.indexOfScalar(u8, name, '\\') != null or
+        std.mem.indexOfScalar(u8, name, ':') != null) return error.InvalidImport;
     var parts: std.ArrayList([]const u8) = .empty;
     defer parts.deinit(gpa);
     if (std.fs.path.dirname(from)) |parent| {
@@ -27,6 +36,7 @@ pub fn resolve(gpa: std.mem.Allocator, from: []const u8, name: []const u8) ![]u8
     if (!p.pathValid(path)) return error.InvalidImport;
     return path;
 }
+
 fn imports(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8) ![][]u8 {
     const text = try gpa.dupeSentinel(u8, bytes, 0);
     defer gpa.free(text);
@@ -57,6 +67,7 @@ fn imports(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8) ![][]u8 
     }
     return paths.toOwnedSlice(gpa);
 }
+
 /// Static literal import closure only. This never evaluates Zig or proves arbitrary behavior.
 pub fn verify(gpa: std.mem.Allocator, snapshot: p.snapshot.Snapshot) !void {
     for (snapshot.document.callbacks, 0..) |_, ci| _ = try p.profiles.callbackEntry(snapshot, ci);
@@ -66,19 +77,26 @@ pub fn verify(gpa: std.mem.Allocator, snapshot: p.snapshot.Snapshot) !void {
             for (dependencies) |path| gpa.free(path);
             gpa.free(dependencies);
         }
-        for (dependencies) |path| _ = p.snapshot.find(snapshot, source.callback_index, path) catch return error.UnresolvedImport;
+        for (dependencies) |path| _ = p.snapshot.find(
+            snapshot,
+            source.callback_index,
+            path,
+        ) catch return error.UnresolvedImport;
     }
 }
+
 pub const Bundle = struct {
     arena: std.heap.ArenaAllocator,
     entry: []const u8,
     metadata: []const p.Source,
     bytes: []const p.snapshot.SourceBytes,
+
     pub fn deinit(self: *Bundle) void {
         self.arena.deinit();
         self.* = undefined;
     }
 };
+
 /// Copies an entry module and its literal owned import closure into immutable memory.
 /// The caller explicitly supplies the directory root; absolute/escaping imports fail.
 pub fn capture(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, entry: []const u8) !Bundle {
@@ -139,17 +157,37 @@ pub fn capture(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, entry: []con
     return .{ .arena = arena, .entry = owned_entry, .metadata = metadata, .bytes = sources.items };
 }
 
-pub fn attach(gpa: std.mem.Allocator, snapshot: p.snapshot.Snapshot, bundle: Bundle, ids: []const u8, required_layers: []const p.LayerId) !p.snapshot.Loaded {
+pub fn attach(
+    gpa: std.mem.Allocator,
+    snapshot: p.snapshot.Snapshot,
+    bundle: Bundle,
+    ids: []const u8,
+    required_layers: []const p.LayerId,
+) !p.snapshot.Loaded {
     return attachForBoard(gpa, snapshot, p.profiles.board, bundle, ids, required_layers);
 }
-pub fn attachForBoard(gpa: std.mem.Allocator, snapshot: p.snapshot.Snapshot, board: p.Board, bundle: Bundle, ids: []const u8, required_layers: []const p.LayerId) !p.snapshot.Loaded {
+
+pub fn attachForBoard(
+    gpa: std.mem.Allocator,
+    snapshot: p.snapshot.Snapshot,
+    board: p.Board,
+    bundle: Bundle,
+    ids: []const u8,
+    required_layers: []const p.LayerId,
+) !p.snapshot.Loaded {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
     var doc = snapshot.document;
     const callbacks = try a.alloc(p.Callback, doc.callbacks.len + 1);
     @memcpy(callbacks[0..doc.callbacks.len], doc.callbacks);
-    callbacks[doc.callbacks.len] = .{ .kind = .attached, .binding = bundle.entry, .ids = ids, .required_layers = required_layers, .sources = bundle.metadata };
+    callbacks[doc.callbacks.len] = .{
+        .kind = .attached,
+        .binding = bundle.entry,
+        .ids = ids,
+        .required_layers = required_layers,
+        .sources = bundle.metadata,
+    };
     const sources = try a.alloc(p.snapshot.SourceBytes, snapshot.sources.len + bundle.bytes.len);
     @memcpy(sources[0..snapshot.sources.len], snapshot.sources);
     for (bundle.bytes, sources[snapshot.sources.len..]) |source, *dest| {
@@ -165,7 +203,13 @@ pub fn attachForBoard(gpa: std.mem.Allocator, snapshot: p.snapshot.Snapshot, boa
 
 /// Creates editable mirrors only through an explicit attachment/external-editor action.
 /// Ordinary save/load never reads or overwrites these files.
-pub fn checkout(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot: p.snapshot.Snapshot, index: usize) !void {
+pub fn checkout(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    snapshot: p.snapshot.Snapshot,
+    index: usize,
+) !void {
     if (index >= snapshot.document.callbacks.len) return error.InvalidCallback;
     if (snapshot.document.callbacks[index].kind != .attached) return error.RegisteredCallbackReadOnly;
     for (snapshot.sources) |source| {
@@ -184,10 +228,24 @@ pub fn checkout(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot: p
     }
 }
 
-pub fn refresh(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot: p.snapshot.Snapshot, index: usize) !p.snapshot.Loaded {
+pub fn refresh(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    snapshot: p.snapshot.Snapshot,
+    index: usize,
+) !p.snapshot.Loaded {
     return refreshForBoard(gpa, io, dir, snapshot, p.profiles.board, index);
 }
-pub fn refreshForBoard(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, snapshot: p.snapshot.Snapshot, board: p.Board, index: usize) !p.snapshot.Loaded {
+
+pub fn refreshForBoard(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    snapshot: p.snapshot.Snapshot,
+    board: p.Board,
+    index: usize,
+) !p.snapshot.Loaded {
     if (index >= snapshot.document.callbacks.len) return error.InvalidCallback;
     const callback = snapshot.document.callbacks[index];
     if (callback.kind != .attached) return error.RegisteredCallbackReadOnly;
@@ -223,17 +281,29 @@ test "transitive callback imports preserve relative paths bytes and reject missi
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, "helpers");
-    try tmp.dir.writeFile(io, .{ .sub_path = "callback.zig", .data = "const helper = @import(\"helpers/helper.zig\");\n" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "helpers/helper.zig", .data = "const root = @import(\"../callback.zig\");\n" });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "callback.zig",
+        .data = "const helper = @import(\"helpers/helper.zig\");\n",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "helpers/helper.zig",
+        .data = "const root = @import(\"../callback.zig\");\n",
+    });
     var bundle = try capture(gpa, io, tmp.dir, "callback.zig");
     defer bundle.deinit();
     try std.testing.expectEqual(@as(usize, 2), bundle.bytes.len);
     try std.testing.expectEqualStrings("helpers/helper.zig", bundle.bytes[1].path);
     try tmp.dir.deleteFile(io, "helpers/helper.zig");
     try std.testing.expectError(error.FileNotFound, capture(gpa, io, tmp.dir, "callback.zig"));
-    try tmp.dir.writeFile(io, .{ .sub_path = "callback.zig", .data = "const helper = @import(dynamic_name);" });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "callback.zig",
+        .data = "const helper = @import(dynamic_name);",
+    });
     try std.testing.expectError(error.DynamicImportUnsupported, capture(gpa, io, tmp.dir, "callback.zig"));
-    try tmp.dir.writeFile(io, .{ .sub_path = "callback.zig", .data = "const helper = @import(\"../escape.zig\");" });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "callback.zig",
+        .data = "const helper = @import(\"../escape.zig\");",
+    });
     try std.testing.expectError(error.ImportEscapesProject, capture(gpa, io, tmp.dir, "callback.zig"));
 }
 
@@ -261,13 +331,25 @@ test "external callback checkout refresh creates a new immutable snapshot withou
     defer saved.deinit();
     try std.testing.expectEqualStrings("// version one\n", saved.snapshot.sources[0].bytes);
     const original_identity = try p.snapshot.identity(gpa, attached.snapshot, p.profiles.board);
-    try std.testing.expect(!std.mem.eql(u8, &original_identity.digest, &(try p.snapshot.identity(gpa, refreshed.snapshot, p.profiles.board)).digest));
+    try std.testing.expect(
+        !std.mem.eql(
+            u8,
+            &original_identity.digest,
+            &(try p.snapshot.identity(gpa, refreshed.snapshot, p.profiles.board)).digest,
+        ),
+    );
 }
+
 test "explicit callback attachment and refresh use the supplied board contract" {
     const t = std.testing;
     var base = try p.profiles.create(t.allocator, .qwerty);
     defer base.deinit();
-    const board = p.Board{ .id = "fixture\x00".*, .physical_layout = "explicit-fixture", .key_ids = &.{ "left", "right", "thumb" }, .sides = &.{ .X, .X, .X } };
+    const board = p.Board{
+        .id = "fixture\x00".*,
+        .physical_layout = "explicit-fixture",
+        .key_ids = &.{ "left", "right", "thumb" },
+        .sides = &.{ .X, .X, .X },
+    };
     var doc = base.snapshot.document;
     doc.board_id = board.id;
     doc.physical_layout = board.physical_layout;
@@ -290,12 +372,18 @@ test "explicit callback attachment and refresh use the supplied board contract" 
     defer attached.deinit();
     try p.snapshot.validate(attached.snapshot, board);
     try checkout(t.allocator, t.io, tmp.dir, attached.snapshot, 0);
-    try tmp.dir.writeFile(t.io, .{ .sub_path = "callbacks/0/custom.zig", .data = "// deliberately edited mirror\n" });
+    try tmp.dir.writeFile(t.io, .{
+        .sub_path = "callbacks/0/custom.zig",
+        .data = "// deliberately edited mirror\n",
+    });
     var refreshed = try refreshForBoard(t.allocator, t.io, tmp.dir, attached.snapshot, board, 0);
     defer refreshed.deinit();
     try p.snapshot.validate(refreshed.snapshot, board);
     try t.expectEqualStrings("// frozen initial callback\n", attached.snapshot.sources[0].bytes);
     try t.expectEqualStrings("// deliberately edited mirror\n", refreshed.snapshot.sources[0].bytes);
     try t.expectError(error.InvalidCallback, checkout(t.allocator, t.io, tmp.dir, attached.snapshot, 1));
-    try t.expectError(error.InvalidCallback, refreshForBoard(t.allocator, t.io, tmp.dir, attached.snapshot, board, 1));
+    try t.expectError(
+        error.InvalidCallback,
+        refreshForBoard(t.allocator, t.io, tmp.dir, attached.snapshot, board, 1),
+    );
 }

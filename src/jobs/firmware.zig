@@ -4,6 +4,7 @@ const std = @import("std");
 const uf2 = @import("firmware-uf2");
 const target_lock = @import("target_lock.zig");
 pub const Digest = [32]u8;
+
 pub fn digest(bytes: []const u8) Digest {
     var result: Digest = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &result, .{});
@@ -38,6 +39,11 @@ fn validateInputs(input: Inputs) !void {
 }
 
 pub const Command = struct {
+    /// Index of the build step name in `argv`.
+    pub const step_arg = 4;
+    /// Index of the local cache directory in `argv`.
+    pub const cache_dir_arg = 9;
+
     arena: std.heap.ArenaAllocator,
     argv: []const []const u8,
     cwd: []const u8,
@@ -46,14 +52,25 @@ pub const Command = struct {
 
     /// Input paths are absolute literals; --fork is a canonical relative path
     /// resolved from the canonical cwd. No shell, flash or device discovery.
-    pub fn init(gpa: std.mem.Allocator, input: Inputs, compiler: []const u8, repository: []const u8, export_directory: []const u8, install_directory: []const u8, development_firmware: ?[]const u8) !Command {
+    pub fn init(
+        gpa: std.mem.Allocator,
+        input: Inputs,
+        compiler: []const u8,
+        repository: []const u8,
+        export_directory: []const u8,
+        install_directory: []const u8,
+        development_firmware: ?[]const u8,
+    ) !Command {
         try validateInputs(input);
-        if ((input.lock.source_kind == .development) != (development_firmware != null)) return error.FirmwareOverrideMismatch;
+        if ((input.lock.source_kind == .development) != (development_firmware != null))
+            return error.FirmwareOverrideMismatch;
         for ([_][]const u8{ compiler, repository, export_directory, install_directory }) |path| {
-            if (!std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidBuildPath;
+            if (!std.fs.path.isAbsolute(path) or
+                std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidBuildPath;
         }
         if (development_firmware) |path| {
-            if (!std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidBuildPath;
+            if (!std.fs.path.isAbsolute(path) or
+                std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidBuildPath;
         }
         var arena: std.heap.ArenaAllocator = .init(gpa);
         errdefer arena.deinit();
@@ -64,12 +81,12 @@ pub const Command = struct {
         args[1] = "build";
         args[2] = "--build-file";
         args[3] = "build.zig";
-        args[4] = "build-project";
+        args[step_arg] = "build-project";
         args[5] = try std.fmt.allocPrint(a, "-Dproject-board={s}", .{input.lock.board});
         args[6] = try std.fmt.allocPrint(a, "-Dproject-export={s}", .{export_directory});
         args[7] = "-j2";
         args[8] = "--cache-dir";
-        args[9] = try std.fs.path.join(a, &.{ install_directory, "local-cache" });
+        args[cache_dir_arg] = try std.fs.path.join(a, &.{ install_directory, "local-cache" });
         args[10] = "-p";
         args[11] = try a.dupe(u8, install_directory);
         if (development_firmware) |path| {
@@ -87,7 +104,13 @@ pub const Command = struct {
             args[13] = relative;
         }
         const owned_path = try std.fs.path.join(a, &.{ install_directory, "firmware", "project.uf2" });
-        return .{ .arena = arena, .argv = args, .cwd = owned_cwd, .uf2_path = owned_path, .build_key = key(input) };
+        return .{
+            .arena = arena,
+            .argv = args,
+            .cwd = owned_cwd,
+            .uf2_path = owned_path,
+            .build_key = key(input),
+        };
     }
 
     pub fn deinit(self: *Command) void {
@@ -98,7 +121,16 @@ pub const Command = struct {
 
 pub const Completion = enum { succeeded, failed, cancelled };
 pub const AuditMode = enum { deep, fast_prepared_inputs_no_fresh_full_provenance_audit, bundled };
-pub const Record = struct { version: u32, audit_mode: ?AuditMode = null, inputs: Inputs, build_key: Digest, uf2_path: []const u8, uf2_size: usize, uf2_hash: Digest };
+
+pub const Record = struct {
+    version: u32,
+    audit_mode: ?AuditMode = null,
+    inputs: Inputs,
+    build_key: Digest,
+    uf2_path: []const u8,
+    uf2_size: usize,
+    uf2_hash: Digest,
+};
 
 /// An owned frozen value: it never aliases editable input strings. A failed or
 /// cancelled job cannot manufacture a manifest around an earlier UF2 file.
@@ -112,15 +144,25 @@ pub const Manifest = struct {
     uf2_size: usize,
     uf2_hash: Digest,
 
-    pub fn complete(gpa: std.mem.Allocator, completion: Completion, prepared_key: Digest, captured: Inputs, current: Inputs, path: []const u8, bytes: []const u8) !Manifest {
+    pub fn complete(
+        gpa: std.mem.Allocator,
+        completion: Completion,
+        prepared_key: Digest,
+        captured: Inputs,
+        current: Inputs,
+        path: []const u8,
+        bytes: []const u8,
+    ) !Manifest {
         switch (completion) {
             .failed => return error.BuildFailed,
             .cancelled => return error.BuildCancelled,
             .succeeded => {},
         }
         try validateInputs(captured);
-        if (!std.mem.eql(u8, &prepared_key, &key(captured)) or !std.mem.eql(u8, &prepared_key, &key(current))) return error.StaleBuild;
-        if (!std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidArtifactPath;
+        if (!std.mem.eql(u8, &prepared_key, &key(captured)) or
+            !std.mem.eql(u8, &prepared_key, &key(current))) return error.StaleBuild;
+        if (!std.fs.path.isAbsolute(path) or
+            std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidArtifactPath;
         try uf2.validate(gpa, bytes);
         var arena: std.heap.ArenaAllocator = .init(gpa);
         errdefer arena.deinit();
@@ -133,7 +175,14 @@ pub const Manifest = struct {
         owned.lock.target = try a.dupe(u8, captured.lock.target);
         owned.lock.optimize = try a.dupe(u8, captured.lock.optimize);
         const owned_path = try a.dupe(u8, path);
-        return .{ .arena = arena, .inputs = owned, .build_key = prepared_key, .uf2_path = owned_path, .uf2_size = bytes.len, .uf2_hash = digest(bytes) };
+        return .{
+            .arena = arena,
+            .inputs = owned,
+            .build_key = prepared_key,
+            .uf2_path = owned_path,
+            .uf2_size = bytes.len,
+            .uf2_hash = digest(bytes),
+        };
     }
 
     pub fn fresh(self: Manifest, current: Inputs) bool {
@@ -169,16 +218,29 @@ pub const Manifest = struct {
         // Legacy v2 records without this field were produced by deep audits.
         try validateInputs(record.inputs);
         if (!std.mem.eql(u8, &record.build_key, &key(record.inputs))) return error.ManifestKeyMismatch;
-        if (!std.fs.path.isAbsolute(record.uf2_path) or std.mem.indexOfScalar(u8, record.uf2_path, 0) != null) return error.InvalidArtifactPath;
-        if (record.uf2_size == 0 or record.uf2_size % 512 != 0 or record.uf2_size > 4 * 1024 * 1024) return error.InvalidUf2Length;
-        return .{ .arena = arena, .version = record.version, .audit_mode = record.audit_mode orelse .deep, .inputs = record.inputs, .build_key = record.build_key, .uf2_path = record.uf2_path, .uf2_size = record.uf2_size, .uf2_hash = record.uf2_hash };
+        if (!std.fs.path.isAbsolute(record.uf2_path) or
+            std.mem.indexOfScalar(u8, record.uf2_path, 0) != null) return error.InvalidArtifactPath;
+        if (record.uf2_size == 0 or
+            record.uf2_size % 512 != 0 or
+            record.uf2_size > 4 * 1024 * 1024) return error.InvalidUf2Length;
+        return .{
+            .arena = arena,
+            .version = record.version,
+            .audit_mode = record.audit_mode orelse .deep,
+            .inputs = record.inputs,
+            .build_key = record.build_key,
+            .uf2_path = record.uf2_path,
+            .uf2_size = record.uf2_size,
+            .uf2_hash = record.uf2_hash,
+        };
     }
 
     /// Re-read the exact recorded path through the caller's filesystem adapter
     /// and check these bytes immediately before offering a transfer.
     pub fn verify(self: Manifest, gpa: std.mem.Allocator, current: Inputs, bytes: []const u8) !void {
         if (!self.fresh(current)) return error.StaleBuild;
-        if (bytes.len != self.uf2_size or !std.mem.eql(u8, &self.uf2_hash, &digest(bytes))) return error.ArtifactChanged;
+        if (bytes.len != self.uf2_size or
+            !std.mem.eql(u8, &self.uf2_hash, &digest(bytes))) return error.ArtifactChanged;
         try uf2.validate(gpa, bytes);
     }
 
@@ -190,12 +252,28 @@ pub const Manifest = struct {
 
 fn fixture() [512]u8 {
     var bytes: [512]u8 = @splat(0);
-    for ([_]struct { usize, u32 }{ .{ 0, 0x0a324655 }, .{ 4, 0x9e5d5157 }, .{ 8, 0x2000 }, .{ 12, 0x10000000 }, .{ 16, 256 }, .{ 24, 1 }, .{ 28, 0xe48bff56 }, .{ 508, 0x0ab16f30 } }) |entry| std.mem.writeInt(u32, bytes[entry[0]..][0..4], entry[1], .little);
+    for ([_]struct { usize, u32 }{
+        .{ 0, 0x0a324655 },
+        .{ 4, 0x9e5d5157 },
+        .{ 8, 0x2000 },
+        .{ 12, 0x10000000 },
+        .{ 16, 256 },
+        .{ 24, 1 },
+        .{ 28, 0xe48bff56 },
+        .{ 508, 0x0ab16f30 },
+    }) |entry| std.mem.writeInt(u32, bytes[entry[0]..][0..4], entry[1], .little);
     return bytes;
 }
 
 fn inputs() Inputs {
-    return .{ .project_digest = @splat(1), .source_digest = @splat(2), .build_inputs_digest = @splat(3), .lock = target_lock.fixture(), .profile_id = @splat(5), .identity_digest = @splat(6) };
+    return .{
+        .project_digest = @splat(1),
+        .source_digest = @splat(2),
+        .build_inputs_digest = @splat(3),
+        .lock = target_lock.fixture(),
+        .profile_id = @splat(5),
+        .identity_digest = @splat(6),
+    };
 }
 
 fn publishedInputs() Inputs {
@@ -205,7 +283,15 @@ fn publishedInputs() Inputs {
 }
 
 test "firmware argv preserves literal metacharacters and selects build only" {
-    var command = try Command.init(std.testing.allocator, publishedInputs(), "/compiler with spaces/zig", "/repo", "/export ; $(touch nope)", "/cache ; output", null);
+    var command = try Command.init(
+        std.testing.allocator,
+        publishedInputs(),
+        "/compiler with spaces/zig",
+        "/repo",
+        "/export ; $(touch nope)",
+        "/cache ; output",
+        null,
+    );
     defer command.deinit();
     try std.testing.expectEqualStrings("-Dproject-export=/export ; $(touch nope)", command.argv[6]);
     try std.testing.expectEqualStrings("/cache ; output", command.argv[11]);
@@ -215,8 +301,14 @@ test "firmware argv preserves literal metacharacters and selects build only" {
         "/cache ; output/firmware/project.uf2";
     try std.testing.expectEqualStrings(expected_uf2, command.uf2_path);
     try std.testing.expectEqual(@as(usize, 12), command.argv.len);
-    try std.testing.expectError(error.InvalidBuildPath, Command.init(std.testing.allocator, inputs(), "zig", "/repo", "/export", "/cache", "/firmware"));
-    try std.testing.expectError(error.FirmwareOverrideMismatch, Command.init(std.testing.allocator, inputs(), "/zig", "/repo", "/export", "/cache", null));
+    try std.testing.expectError(
+        error.InvalidBuildPath,
+        Command.init(std.testing.allocator, inputs(), "zig", "/repo", "/export", "/cache", "/firmware"),
+    );
+    try std.testing.expectError(
+        error.FirmwareOverrideMismatch,
+        Command.init(std.testing.allocator, inputs(), "/zig", "/repo", "/export", "/cache", null),
+    );
 }
 
 test "development fork canonicalizes symlinked cwd and sibling with spaces" {
@@ -249,12 +341,29 @@ test "manifest rejects failures cancellation stale input and corrupt artifact" {
     const a = std.testing.allocator;
     const captured = inputs();
     var bytes = fixture();
-    try std.testing.expectError(error.BuildFailed, Manifest.complete(a, .failed, key(captured), captured, captured, "/cache/firmware.uf2", &bytes));
-    try std.testing.expectError(error.BuildCancelled, Manifest.complete(a, .cancelled, key(captured), captured, captured, "/cache/firmware.uf2", &bytes));
+    try std.testing.expectError(
+        error.BuildFailed,
+        Manifest.complete(a, .failed, key(captured), captured, captured, "/cache/firmware.uf2", &bytes),
+    );
+    try std.testing.expectError(
+        error.BuildCancelled,
+        Manifest.complete(a, .cancelled, key(captured), captured, captured, "/cache/firmware.uf2", &bytes),
+    );
     var current = captured;
     current.source_digest[0] ^= 1;
-    try std.testing.expectError(error.StaleBuild, Manifest.complete(a, .succeeded, key(captured), captured, current, "/cache/firmware.uf2", &bytes));
-    var manifest = try Manifest.complete(a, .succeeded, key(captured), captured, captured, "/cache/firmware.uf2", &bytes);
+    try std.testing.expectError(
+        error.StaleBuild,
+        Manifest.complete(a, .succeeded, key(captured), captured, current, "/cache/firmware.uf2", &bytes),
+    );
+    var manifest = try Manifest.complete(
+        a,
+        .succeeded,
+        key(captured),
+        captured,
+        captured,
+        "/cache/firmware.uf2",
+        &bytes,
+    );
     defer manifest.deinit();
     const record = try manifest.serialize(a);
     defer a.free(record);
@@ -267,12 +376,21 @@ test "manifest rejects failures cancellation stale input and corrupt artifact" {
     bytes[32] ^= 1;
     try std.testing.expectError(error.ArtifactChanged, manifest.verify(a, captured, &bytes));
     bytes[0] = 0;
-    try std.testing.expectError(error.InvalidUf2Magic, Manifest.complete(a, .succeeded, key(captured), captured, captured, "/cache/firmware.uf2", &bytes));
+    try std.testing.expectError(
+        error.InvalidUf2Magic,
+        Manifest.complete(a, .succeeded, key(captured), captured, captured, "/cache/firmware.uf2", &bytes),
+    );
 }
 
 test "every compiler build project identity input invalidates manifests" {
     const original = inputs();
-    inline for (.{ "project_digest", "source_digest", "build_inputs_digest", "profile_id", "identity_digest" }) |name| {
+    inline for (.{
+        "project_digest",
+        "source_digest",
+        "build_inputs_digest",
+        "profile_id",
+        "identity_digest",
+    }) |name| {
         var changed = original;
         @field(changed, name)[0] ^= 1;
         try std.testing.expect(!std.mem.eql(u8, &key(original), &key(changed)));
@@ -288,11 +406,25 @@ test "manifest freezes provenance and rejects an unpinned compiler" {
     var captured = inputs();
     captured.lock.firmware_revision = &revision;
     const bytes = fixture();
-    var manifest = try Manifest.complete(a, .succeeded, key(captured), captured, captured, "/cache/firmware.uf2", &bytes);
+    var manifest = try Manifest.complete(
+        a,
+        .succeeded,
+        key(captured),
+        captured,
+        captured,
+        "/cache/firmware.uf2",
+        &bytes,
+    );
     defer manifest.deinit();
     revision[0] = 'a';
-    try std.testing.expectEqualStrings("57497457ec77947426cbc5c6468c92e1a2e0506f", manifest.inputs.lock.firmware_revision);
+    try std.testing.expectEqualStrings(
+        "57497457ec77947426cbc5c6468c92e1a2e0506f",
+        manifest.inputs.lock.firmware_revision,
+    );
     try std.testing.expect(!manifest.fresh(captured));
     captured.lock.zig_version = "0.15.2";
-    try std.testing.expectError(error.UnsupportedCompilerVersion, Command.init(a, captured, "/zig", "/repo", "/export", "/cache", "/firmware"));
+    try std.testing.expectError(
+        error.UnsupportedCompilerVersion,
+        Command.init(a, captured, "/zig", "/repo", "/export", "/cache", "/firmware"),
+    );
 }

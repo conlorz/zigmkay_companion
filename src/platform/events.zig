@@ -1,6 +1,7 @@
 const dvui = @import("dvui");
 const Backend = @import("dvui_backend");
 const sdl = Backend.c;
+
 /// Route app-owned raw events, preserving child-window delivery. The hook can
 /// consume mapped scancodes and observes focus loss (DVUI does not expose it).
 pub fn pump(backend: *Backend, window: *dvui.Window, context: anytype) !void {
@@ -10,9 +11,15 @@ pub fn pump(backend: *Backend, window: *dvui.Window, context: anytype) !void {
         const id = windowId(event);
         const before = window.events.items.len;
         _ = try dispatch(backend, window, event, id);
-        if (@hasDecl(@TypeOf(context.*), "forwarded")) context.forwarded(event, window.events.items[before..]);
+        if (@hasDecl(@TypeOf(context.*), "forwarded")) {
+            context.forwarded(
+                event,
+                window.events.items[before..],
+            );
+        }
     }
 }
+
 pub fn windowId(event: sdl.SDL_Event) u32 {
     return switch (event.type) {
         sdl.SDL_EVENT_KEY_DOWN, sdl.SDL_EVENT_KEY_UP => event.key.windowID,
@@ -42,12 +49,15 @@ test "child window IME and drop events retain their destination" {
     event.type = sdl.SDL_EVENT_QUIT;
     try t.expectEqual(@as(u32, 0), windowId(event));
 }
+
 fn dispatch(backend: *Backend, window: *dvui.Window, event: sdl.SDL_Event, id: u32) !bool {
     if (id == 0 or sdl.SDL_GetWindowID(backend.window) == id) {
         _ = try backend.addEvent(window, event);
         return true;
     }
     var iterator = window.child_os_wins.iterator();
-    while (iterator.next_peek()) |child| if (try dispatch(child.value.backend, child.value.dvui_win, event, id)) return true;
+    while (iterator.next_peek()) |child| {
+        if (try dispatch(child.value.backend, child.value.dvui_win, event, id)) return true;
+    }
     return false;
 }

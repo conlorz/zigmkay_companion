@@ -8,6 +8,7 @@ pub const version: u16 = 1;
 pub const Capability = enum { available, unverified, unavailable };
 pub const Fidelity = enum { indexed_schematic, curated_schematic };
 pub const presentation = @import("presentation.zig");
+
 pub const Entry = struct {
     selector: []const u8,
     display: presentation.Metadata,
@@ -44,9 +45,17 @@ pub const entries = blk: {
             .layer_count = @typeInfo(@TypeOf(Profile.keymap)).array.len,
         };
         const geometry = if (std.mem.eql(u8, board.name, "lk7")) &@import("lk7-physical").keys else &presentation.geometry(dimensions.key_count);
-        if (dimensions.key_count != processing.key_count) @compileError("Default profile dimensions differ from board processing descriptor");
+        if (dimensions.key_count != processing.key_count) {
+            @compileError(
+                "Default profile dimensions differ from board processing descriptor",
+            );
+        }
         if (@hasDecl(Profile, "sides")) {
-            if (!std.mem.eql(model.Side, &Profile.sides, processing.sides)) @compileError("Default profile sides differ from board processing descriptor");
+            if (!std.mem.eql(model.Side, &Profile.sides, processing.sides)) {
+                @compileError(
+                    "Default profile sides differ from board processing descriptor",
+                );
+            }
         }
         if (@hasDecl(Profile, "encoder_actions") and Profile.encoder_actions.len != processing.encoder_actions)
             @compileError("Default profile encoder slots differ from board processing descriptor");
@@ -68,6 +77,7 @@ pub const entries = blk: {
     }
     break :blk result;
 };
+
 pub const unselected_examples = boards.unselected_examples;
 
 /// Borrowed logical defaults in firmware key-index order. Missing profile fields
@@ -110,9 +120,16 @@ pub fn defaultData(selector: []const u8) ?DefaultData {
                 .encoder_actions = if (@hasDecl(Profile, "encoder_actions")) &Profile.encoder_actions else null,
                 .has_callbacks = has_callbacks,
                 .callback_sources = if (has_callbacks) comptime blk: {
-                    const source = SourceFile{ .path = entry.default_profile_source, .bytes = @embedFile(std.fmt.comptimePrint("default-source-{d}", .{i})) };
-                    if (std.mem.startsWith(u8, entry.default_profile_source, "my_keyboards/janbeelte/"))
-                        break :blk &[_]SourceFile{ source, .{ .path = "my_keyboards/janbeelte/keymap_shared.zig", .bytes = @embedFile("janbeelte-shared-source") } };
+                    const source = SourceFile{
+                        .path = entry.default_profile_source,
+                        .bytes = @embedFile(std.fmt.comptimePrint("default-source-{d}", .{i})),
+                    };
+                    if (std.mem.startsWith(u8, entry.default_profile_source, "my_keyboards/janbeelte/")) {
+                        break :blk &[_]SourceFile{ source, .{
+                            .path = "my_keyboards/janbeelte/keymap_shared.zig",
+                            .bytes = @embedFile("janbeelte-shared-source"),
+                        } };
+                    }
                     break :blk &[_]SourceFile{source};
                 } else &.{},
             };
@@ -197,11 +214,23 @@ test "selected firmware inventory is complete and all geometry indexes validate"
         const Profile = defaults.profiles[i];
         try std.testing.expectEqualStrings(boards.entries[i].name, find(entry.selector).?.selector);
         try model.physical_layout.validateKeys(entry.geometry, entry.default_dimensions);
-        try model.physical_layout.validateLogical(entry.default_dimensions, &Profile.keymap, if (@hasDecl(Profile, "combos")) &Profile.combos else &.{});
-        if (entry.default_profile_sides) |sides| try std.testing.expectEqual(entry.default_dimensions.key_count, sides.len);
+        try model.physical_layout.validateLogical(
+            entry.default_dimensions,
+            &Profile.keymap,
+            if (@hasDecl(Profile, "combos")) &Profile.combos else &.{},
+        );
+        if (entry.default_profile_sides) |sides| {
+            try std.testing.expectEqual(
+                entry.default_dimensions.key_count,
+                sides.len,
+            );
+        }
         try std.testing.expectEqual(.unverified, entry.project_editing);
         try std.testing.expectEqual(entry.default_dimensions.key_count, entry.processing_sides.len);
-        try std.testing.expectEqual(entry.processing_digest, processingDigest(entry.selector, entry.processing_sides, entry.encoder_action_slots));
+        try std.testing.expectEqual(
+            entry.processing_digest,
+            processingDigest(entry.selector, entry.processing_sides, entry.encoder_action_slots),
+        );
     }
     try std.testing.expect(find("yak") == null);
     try std.testing.expectEqualStrings("examples/yak/main.zig", unselected_examples[0]);
@@ -215,8 +244,20 @@ test "processing digest detects indexed side and encoder slot changes" {
     const sides = try std.testing.allocator.dupe(model.Side, entry.processing_sides);
     defer std.testing.allocator.free(sides);
     sides[0] = .R;
-    try std.testing.expect(!std.mem.eql(u8, &entry.processing_digest, &processingDigest(entry.selector, sides, entry.encoder_action_slots)));
-    try std.testing.expect(!std.mem.eql(u8, &entry.processing_digest, &processingDigest(entry.selector, entry.processing_sides, entry.encoder_action_slots + 1)));
+    try std.testing.expect(
+        !std.mem.eql(
+            u8,
+            &entry.processing_digest,
+            &processingDigest(entry.selector, sides, entry.encoder_action_slots),
+        ),
+    );
+    try std.testing.expect(
+        !std.mem.eql(
+            u8,
+            &entry.processing_digest,
+            &processingDigest(entry.selector, entry.processing_sides, entry.encoder_action_slots + 1),
+        ),
+    );
 }
 
 test "schematic fallback preserves indexes and geometry edits do not change index digest" {
@@ -235,8 +276,16 @@ test "runtime defaults preserve every selected logical field and absent metadata
         const Profile = defaults.profiles[i];
         const data = defaultData(entry.selector).?;
         try std.testing.expectEqual(entry.default_dimensions.layer_count, data.layers.len);
-        for (data.layers, &Profile.keymap) |layer, expected| try std.testing.expectEqualSlices(?model.KeyDef, &expected, layer);
-        try std.testing.expectEqualSlices(model.Combo2Def, if (@hasDecl(Profile, "combos")) &Profile.combos else &.{}, data.combos);
+        for (data.layers, &Profile.keymap) |layer, expected| try std.testing.expectEqualSlices(
+            ?model.KeyDef,
+            &expected,
+            layer,
+        );
+        try std.testing.expectEqualSlices(
+            model.Combo2Def,
+            if (@hasDecl(Profile, "combos")) &Profile.combos else &.{},
+            data.combos,
+        );
         try std.testing.expectEqual(@hasDecl(Profile, "sides"), data.sides != null);
         try std.testing.expectEqual(@hasDecl(Profile, "encoder_actions"), data.encoder_actions != null);
         const ids = try keyIds(std.testing.allocator, entry);

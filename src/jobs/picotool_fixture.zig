@@ -1,5 +1,6 @@
 //! Offline wrapper stand-in: literal argv, bounded output and EOF handshake.
 const std = @import("std");
+
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var mode: []const u8 = "ok";

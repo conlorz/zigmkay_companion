@@ -1,11 +1,39 @@
 //! Exercise-only raw datapoints. Analysis eligibility never deletes an observation.
 const std = @import("std");
 pub const max_events = 32768;
-pub const Kind = enum { attempt, backspace, pause, resume_run, focus_lost, focus_gained, context_changed, hint_shown, complete, stop, hint_requested, hint_hidden };
+
+pub const Kind = enum {
+    attempt,
+    backspace,
+    pause,
+    resume_run,
+    focus_lost,
+    focus_gained,
+    context_changed,
+    hint_shown,
+    complete,
+    stop,
+    hint_requested,
+    hint_hidden,
+};
+
 pub const Input = enum { ordinary, batch, paste, repeat };
-pub const Eligibility = enum { clean, first_input, boundary, correction, batch, paste, repeat, nonpositive_interval, clock_regression };
+
+pub const Eligibility = enum {
+    clean,
+    first_input,
+    boundary,
+    correction,
+    batch,
+    paste,
+    repeat,
+    nonpositive_interval,
+    clock_regression,
+};
+
 pub const Clock = enum { injected, native_event, frame };
 pub const EventTime = struct { number: u16, now_us: u64 };
+
 pub const Event = struct {
     observed_us: u64,
     clock: Clock = .injected,
@@ -23,6 +51,7 @@ pub const Event = struct {
     assistance: u8 = 0,
     cue_visible: bool = false,
 };
+
 pub const Payload = struct {
     version: u16 = 1,
     reference: []const u21,
@@ -31,38 +60,58 @@ pub const Payload = struct {
     dropped: u64 = 0,
     cue_tracking: bool = false,
     help_revealed: bool = false,
+
     pub fn validate(self: Payload) !void {
         if (self.version != 1) return error.UnsupportedPracticeTiming;
         if (self.help_revealed and !self.cue_tracking) return error.InvalidPracticeTiming;
-        if (self.reference.len > 8192 or self.events.len > max_events or self.truncated != (self.dropped != 0)) return error.InvalidPracticeTiming;
+        if (self.reference.len > 8192 or
+            self.events.len > max_events or
+            self.truncated != (self.dropped != 0)) return error.InvalidPracticeTiming;
         for (self.reference) |cp| if (!scalar(cp)) return error.InvalidPracticeTiming;
         var elapsed: u64 = 0;
         var active: u64 = 0;
         for (self.events) |event| {
             if (event.cue_visible and !self.cue_tracking) return error.InvalidPracticeTiming;
-            if (event.position > 8192 or event.assistance > 2 or event.elapsed_us < elapsed or event.active_us < active or event.active_us > event.elapsed_us) return error.InvalidPracticeTiming;
+            if (event.position > 8192 or
+                event.assistance > 2 or
+                event.elapsed_us < elapsed or
+                event.active_us < active or
+                event.active_us > event.elapsed_us) return error.InvalidPracticeTiming;
             elapsed = event.elapsed_us;
             active = event.active_us;
             if (event.expected) |cp| {
-                if (!scalar(cp) or event.position >= self.reference.len or cp != self.reference[event.position]) return error.InvalidPracticeTiming;
+                if (!scalar(cp) or
+                    event.position >= self.reference.len or
+                    cp != self.reference[event.position]) return error.InvalidPracticeTiming;
             }
             if (event.typed) |cp| if (!scalar(cp)) return error.InvalidPracticeTiming;
             if (event.kind == .attempt) {
-                if ((event.position < self.reference.len) != (event.expected != null)) return error.InvalidPracticeTiming;
-                if (event.typed == null or event.correct != (event.expected != null and event.expected.? == event.typed.?)) return error.InvalidPracticeTiming;
+                if ((event.position < self.reference.len) != (event.expected != null))
+                    return error.InvalidPracticeTiming;
+                if (event.typed == null or
+                    event.correct != (event.expected != null and event.expected.? == event.typed.?))
+                    return error.InvalidPracticeTiming;
             } else if (event.interval_us != null or event.typed != null) return error.InvalidPracticeTiming;
             if (event.eligibility == .clean) {
-                if (event.kind != .attempt or !event.correct or event.input != .ordinary or event.interval_us == null or event.interval_us.? == 0 or event.interval_us.? > event.active_us) return error.InvalidPracticeTiming;
+                if (event.kind != .attempt or
+                    !event.correct or
+                    event.input != .ordinary or
+                    event.interval_us == null or
+                    event.interval_us.? == 0 or
+                    event.interval_us.? > event.active_us) return error.InvalidPracticeTiming;
             } else if (event.interval_us != null) return error.InvalidPracticeTiming;
         }
     }
 };
+
 fn scalar(cp: u21) bool {
     return cp <= 0x10ffff and !(cp >= 0xd800 and cp <= 0xdfff);
 }
+
 pub const Owned = struct {
     arena: std.heap.ArenaAllocator,
     payload: Payload,
+
     pub fn clone(gpa: std.mem.Allocator, payload: Payload) !Owned {
         try payload.validate();
         var arena = std.heap.ArenaAllocator.init(gpa);
@@ -72,11 +121,13 @@ pub const Owned = struct {
         copy.events = try arena.allocator().dupe(Event, payload.events);
         return .{ .arena = arena, .payload = copy };
     }
+
     pub fn deinit(self: *Owned) void {
         self.arena.deinit();
         self.* = undefined;
     }
 };
+
 pub const Recorder = struct {
     cue_tracking: bool = false,
     help_revealed: bool = false,
@@ -97,12 +148,15 @@ pub const Recorder = struct {
     assistance: u8 = 0,
     dropped: u64 = 0,
     clock: Clock = .injected,
+
     pub fn init(gpa: std.mem.Allocator) Recorder {
         return .{ .gpa = gpa };
     }
+
     pub fn deinit(self: *Recorder) void {
         self.events.deinit(self.gpa);
     }
+
     pub fn reset(self: *Recorder, reference: []const u21) void {
         @memset(&self.cue_positions, false);
         @memset(&self.clean_positions, false);
@@ -120,16 +174,27 @@ pub const Recorder = struct {
         self.batch = 0;
         self.dropped = 0;
     }
+
     pub fn begin(self: *Recorder, now: u64, assistance: u8) void {
         self.started = now;
         self.last_now = now;
         self.assistance = assistance;
     }
+
     pub fn nextBatch(self: *Recorder) u32 {
         self.batch +|= 1;
         return self.batch;
     }
-    pub fn record(self: *Recorder, kind: Kind, now: u64, active: u64, position: usize, typed: ?u21, input: Input) void {
+
+    pub fn record(
+        self: *Recorder,
+        kind: Kind,
+        now: u64,
+        active: u64,
+        position: usize,
+        typed: ?u21,
+        input: Input,
+    ) void {
         if (kind == .hint_shown and self.cue_tracking and position < self.reference_len) {
             self.cue_positions[position] = true;
             self.cue_visible = true;
@@ -141,7 +206,18 @@ pub const Recorder = struct {
         self.last_now = monotonic;
         const prior = if (self.events.items.len == 0) 0 else self.events.items[self.events.items.len - 1].active_us;
         const active_now = @max(active, prior);
-        var event = Event{ .observed_us = now, .clock = self.clock, .elapsed_us = @max(monotonic -| self.started.?, active_now), .active_us = active_now, .kind = kind, .position = @intCast(position), .typed = typed, .batch = self.batch, .input = input, .assistance = self.assistance };
+        var event = Event{
+            .observed_us = now,
+            .clock = self.clock,
+            .elapsed_us = @max(monotonic -| self.started.?, active_now),
+            .active_us = active_now,
+            .kind = kind,
+            .position = @intCast(position),
+            .typed = typed,
+            .batch = self.batch,
+            .input = input,
+            .assistance = self.assistance,
+        };
         event.cue_visible = self.cue_tracking and self.cue_visible and self.cue_position == position;
         if (kind == .hint_hidden) self.cue_visible = false;
         if (position < self.reference_len) event.expected = self.reference[position];
@@ -154,7 +230,9 @@ pub const Recorder = struct {
                 .ordinary => if (self.previous_active == null) (if (self.boundary_pending) .boundary else .first_input) else if (!self.previous_clean or !event.correct) .correction else if (active_now <= self.previous_active.?) .nonpositive_interval else .clean,
             };
             if (event.eligibility == .clean) event.interval_us = active_now - self.previous_active.?;
-            if (event.eligibility == .clean and !event.cue_visible and position < self.reference_len) self.clean_positions[position] = true;
+            if (event.eligibility == .clean and
+                !event.cue_visible and
+                position < self.reference_len) self.clean_positions[position] = true;
             self.previous_active = active_now;
             self.previous_clean = event.correct and input == .ordinary and !regressed;
             self.boundary_pending = false;
@@ -171,14 +249,45 @@ pub const Recorder = struct {
             self.dropped +|= 1;
         };
     }
+
     pub fn payload(self: *const Recorder) Payload {
-        return .{ .reference = self.reference[0..self.reference_len], .events = self.events.items, .truncated = self.dropped != 0, .dropped = self.dropped, .cue_tracking = self.cue_tracking, .help_revealed = self.help_revealed };
+        return .{
+            .reference = self.reference[0..self.reference_len],
+            .events = self.events.items,
+            .truncated = self.dropped != 0,
+            .dropped = self.dropped,
+            .cue_tracking = self.cue_tracking,
+            .help_revealed = self.help_revealed,
+        };
     }
+
     pub fn setCue(self: *Recorder, visible: bool, position: usize, now: u64, active: u64) void {
-        if (self.cue_visible and (!visible or self.cue_position != position)) self.record(.hint_hidden, now, active, self.cue_position, null, .ordinary);
-        if (visible and (!self.cue_visible or self.cue_position != position) and position < self.reference_len) self.record(.hint_shown, now, active, position, null, .ordinary);
+        if (self.cue_visible and (!visible or self.cue_position != position)) {
+            self.record(
+                .hint_hidden,
+                now,
+                active,
+                self.cue_position,
+                null,
+                .ordinary,
+            );
+        }
+        if (visible and
+            (!self.cue_visible or self.cue_position != position) and
+            position < self.reference_len)
+        {
+            self.record(
+                .hint_shown,
+                now,
+                active,
+                position,
+                null,
+                .ordinary,
+            );
+        }
     }
 };
+
 test "raw attempts survive correction and boundaries; first input and batches have no motor interval" {
     const t = std.testing;
     var r = Recorder.init(t.allocator);
@@ -204,6 +313,7 @@ test "raw attempts survive correction and boundaries; first input and batches ha
     r.reset(&.{'c'});
     try t.expectEqual(@as(u21, 'a'), owned.payload.reference[0]);
 }
+
 test "clean interval, nonpositive time, regressed clocks and explicit truncation remain distinguishable" {
     const t = std.testing;
     var r = Recorder.init(t.allocator);

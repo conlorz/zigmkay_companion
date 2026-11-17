@@ -1,6 +1,7 @@
 //! Stable mapping fingerprint excludes transient refresh serials and names.
 const std = @import("std");
 const cache = @import("label_cache.zig");
+
 pub fn mapping(labels: *const cache.LabelCache, source_id: []const u8) [32]u8 {
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
     hash.update(source_id);
@@ -15,7 +16,11 @@ pub fn mapping(labels: *const cache.LabelCache, source_id: []const u8) [32]u8 {
         std.mem.writeInt(u32, &length, @intCast(text.len), .little);
         hash.update(&length);
         hash.update(text);
-        hash.update(&.{ @intFromBool(value.dead), @intFromBool(value.shortcut), @intFromBool(value.unproven) });
+        hash.update(&.{
+            @intFromBool(value.dead),
+            @intFromBool(value.shortcut),
+            @intFromBool(value.unproven),
+        });
     };
     return hash.finalResult();
 }

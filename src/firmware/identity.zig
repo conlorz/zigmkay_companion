@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-//! Host-only canonical keymap identity. Moved from the EuroZig firmware fork
-//! (`zigmkay/src/device_protocol.zig` at e122f75), which was authored for this
-//! companion; the firmware no longer owns it.
+//! Host-only canonical keymap identity, authored for this companion and
+//! derived from the EuroZig firmware fork (`zigmkay/src/device_protocol.zig`
+//! at e122f75).
 //!
 //! The 16-byte digest is the first 16 bytes of SHA-256 over a canonical
 //! encoding of the board id, profile id, dimensions and keymap semantics. It is
@@ -33,7 +33,8 @@ pub fn validateId(id: [8]u8) Error!void {
             ended = true;
             continue;
         }
-        if (ended or !(byte >= 'a' and byte <= 'z' or byte >= '0' and byte <= '9' or byte == '_')) return error.InvalidIdentity;
+        if (ended or
+            !(byte >= 'a' and byte <= 'z' or byte >= '0' and byte <= '9' or byte == '_')) return error.InvalidIdentity;
     }
 }
 
@@ -44,6 +45,7 @@ pub fn validateIdentity(identity: Identity) Error!void {
 }
 
 pub const CallbackIdentity = struct { id: u8, behavior: []const u8 };
+
 pub const IdentityInput = struct {
     board_id: [8]u8,
     profile_id: [8]u8,
@@ -59,21 +61,26 @@ const Canonical = struct {
     hash: std.crypto.hash.sha2.Sha256 = .init(.{}),
     dimensions: core.KeymapDimensions,
     callbacks: []const CallbackIdentity,
+
     fn byte(self: *Canonical, value: u8) void {
         self.hash.update(&.{value});
     }
+
     fn boolean(self: *Canonical, value: bool) void {
         self.byte(@intFromBool(value));
     }
+
     fn word(self: *Canonical, value: u16) void {
         var bytes: [2]u8 = undefined;
         std.mem.writeInt(u16, &bytes, value, .little);
         self.hash.update(&bytes);
     }
+
     fn count(self: *Canonical, value: usize) Error!void {
         if (value > 65535) return error.InvalidIdentity;
         self.word(@intCast(value));
     }
+
     fn custom(self: *Canonical, value: ?u8) Error!void {
         self.boolean(value != null);
         if (value) |id| {
@@ -88,6 +95,7 @@ const Canonical = struct {
             self.byte(id);
         }
     }
+
     fn hold(self: *Canonical, value: core.HoldDef) Error!void {
         self.byte(value.hold_modifiers.toByte());
         self.boolean(value.hold_layer != null);
@@ -97,6 +105,7 @@ const Canonical = struct {
         }
         try self.custom(value.custom);
     }
+
     fn tap(self: *Canonical, value: core.TapDef) Error!void {
         self.boolean(value.key_press != null);
         if (value.key_press) |key_value| {
@@ -110,18 +119,21 @@ const Canonical = struct {
         self.boolean(value.media_key != null);
         if (value.media_key) |media| self.word(@backingInt(media));
         self.boolean(value.mouse_action != null);
-        if (value.mouse_action) |mouse| self.byte(switch (mouse) {
-            .LeftButton => 0,
-            .RightButton => 1,
-            .MiddleButton => 2,
-            .Button4 => 3,
-            .Button5 => 4,
-            .WheelUp => 5,
-            .WheelDown => 6,
-            .WheelLeft => 7,
-            .WheelRight => 8,
-        });
+        if (value.mouse_action) |mouse| {
+            self.byte(switch (mouse) {
+                .LeftButton => 0,
+                .RightButton => 1,
+                .MiddleButton => 2,
+                .Button4 => 3,
+                .Button5 => 4,
+                .WheelUp => 5,
+                .WheelDown => 6,
+                .WheelLeft => 7,
+                .WheelRight => 8,
+            });
+        }
     }
+
     fn key(self: *Canonical, value: ?core.KeyDef) Error!void {
         const action = value orelse {
             self.byte(5);
@@ -156,12 +168,21 @@ const Canonical = struct {
 
 /// Hashes semantic fields, never pointer addresses or compiler object representations.
 pub fn computeIdentity(input: IdentityInput) Error!Identity {
-    var identity = Identity{ .board_id = input.board_id, .profile_id = input.profile_id, .digest = undefined, .dimensions = input.dimensions };
+    var identity = Identity{
+        .board_id = input.board_id,
+        .profile_id = input.profile_id,
+        .digest = undefined,
+        .dimensions = input.dimensions,
+    };
     try validateIdentity(identity);
-    if (input.keys.len != @as(usize, input.dimensions.key_count) * input.dimensions.layer_count or input.sides.len != input.dimensions.key_count) return error.InvalidDimensions;
+    if (input.keys.len != @as(usize, input.dimensions.key_count) * input.dimensions.layer_count or
+        input.sides.len != input.dimensions.key_count) return error.InvalidDimensions;
     if (input.callbacks.len > 252) return error.InvalidCallback;
     for (input.callbacks, 0..) |callback, index| {
-        if (callback.id == 0 or callback.id >= 253 or callback.behavior.len == 0 or callback.behavior.len > 65535) return error.InvalidCallback;
+        if (callback.id == 0 or
+            callback.id >= 253 or
+            callback.behavior.len == 0 or
+            callback.behavior.len > 65535) return error.InvalidCallback;
         for (callback.behavior) |byte| if (byte < 0x21 or byte > 0x7E) return error.InvalidCallback;
         for (input.callbacks[0..index]) |earlier| if (earlier.id == callback.id) return error.InvalidCallback;
     }
@@ -181,7 +202,9 @@ pub fn computeIdentity(input: IdentityInput) Error!Identity {
     });
     try canonical.count(input.combos.len);
     for (input.combos) |combo| {
-        if (combo.key_indexes[0] >= input.dimensions.key_count or combo.key_indexes[1] >= input.dimensions.key_count or combo.key_indexes[0] == combo.key_indexes[1]) return error.InvalidKeyIndex;
+        if (combo.key_indexes[0] >= input.dimensions.key_count or
+            combo.key_indexes[1] >= input.dimensions.key_count or
+            combo.key_indexes[0] == combo.key_indexes[1]) return error.InvalidKeyIndex;
         if (combo.layer >= input.dimensions.layer_count) return error.InvalidLayer;
         canonical.byte(combo.key_indexes[0]);
         canonical.byte(combo.key_indexes[1]);
@@ -204,7 +227,17 @@ pub fn computeIdentity(input: IdentityInput) Error!Identity {
 }
 
 const base_keys = [_]?core.KeyDef{.{ .tap_only = .{ .key_press = .{ .tap_keycode = 4 } } }};
-const base_input = IdentityInput{ .board_id = .{ 't', 'e', 's', 't', 0, 0, 0, 0 }, .profile_id = .{ 'b', 'a', 's', 'e', 0, 0, 0, 0 }, .dimensions = .{ .key_count = 1, .layer_count = 1 }, .keys = &base_keys, .sides = &.{.L}, .combos = &.{}, .encoders = &.{}, .callbacks = &.{} };
+
+const base_input = IdentityInput{
+    .board_id = .{ 't', 'e', 's', 't', 0, 0, 0, 0 },
+    .profile_id = .{ 'b', 'a', 's', 'e', 0, 0, 0, 0 },
+    .dimensions = .{ .key_count = 1, .layer_count = 1 },
+    .keys = &base_keys,
+    .sides = &.{.L},
+    .combos = &.{},
+    .encoders = &.{},
+    .callbacks = &.{},
+};
 
 test "canonical profile digest uses independent semantic bytes and is the reported keymap id" {
     const literal = "zigmkay-profile-v1\x00" ++ "test\x00\x00\x00\x00" ++ "base\x00\x00\x00\x00" ++ [_]u8{ 1, 1, 1, 0, 1, 1, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -219,7 +252,22 @@ test "canonical profile digest uses independent semantic bytes and is the report
 
 test "identity changes cover optional actions sides combos encoders and callback declarations" {
     const original = (try computeIdentity(base_input)).digest;
-    const variants = [_]?core.KeyDef{ null, .none, .{ .tap_only = .{ .key_press = .{ .tap_keycode = 4, .dead = true } } }, .{ .tap_only = .{ .key_press = .{ .tap_keycode = 4, .tap_modifiers = .{ .left_shift = true } } } }, .{ .tap_only = .{ .one_shot = .{ .hold_modifiers = .{ .left_ctrl = true } } } }, .{ .tap_only = .{ .media_key = .VolumeUp } }, .{ .tap_only = .{ .mouse_action = .WheelLeft } }, .{ .hold_only = .{ .hold_layer = 0 } }, .{ .tap_hold = .{ .tap = .{}, .hold = .{}, .tapping_term = .{ .ms = 150 }, .retro_tapping = true } }, .{ .tap_with_autofire = .{ .tap = .{}, .initial_delay = .{ .ms = 10 }, .repeat_interval = .{ .ms = 20 } } } };
+    const variants = [_]?core.KeyDef{
+        null,
+        .none,
+        .{ .tap_only = .{ .key_press = .{ .tap_keycode = 4, .dead = true } } },
+        .{ .tap_only = .{ .key_press = .{ .tap_keycode = 4, .tap_modifiers = .{ .left_shift = true } } } },
+        .{ .tap_only = .{ .one_shot = .{ .hold_modifiers = .{ .left_ctrl = true } } } },
+        .{ .tap_only = .{ .media_key = .VolumeUp } },
+        .{ .tap_only = .{ .mouse_action = .WheelLeft } },
+        .{ .hold_only = .{ .hold_layer = 0 } },
+        .{ .tap_hold = .{ .tap = .{}, .hold = .{}, .tapping_term = .{ .ms = 150 }, .retro_tapping = true } },
+        .{ .tap_with_autofire = .{
+            .tap = .{},
+            .initial_delay = .{ .ms = 10 },
+            .repeat_interval = .{ .ms = 20 },
+        } },
+    };
     for (variants) |variant| {
         var input = base_input;
         input.keys = &.{variant};

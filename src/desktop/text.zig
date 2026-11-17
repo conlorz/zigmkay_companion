@@ -1,6 +1,7 @@
 const std = @import("std");
 const core = @import("layout-model");
 const native = @import("input-source");
+
 pub const Text = struct {
     bytes: [8192]u8 = @splat(0),
     len: usize = 0,
@@ -9,17 +10,21 @@ pub const Text = struct {
     fixture_dead: bool = false,
     native_session: ?native.Session = null,
     logged: usize = 0,
+
     pub fn init(use_fixture: bool) Text {
         return .{ .native_session = if (use_fixture) null else native.Session.init() };
     }
+
     pub fn deinit(self: *Text) void {
         if (self.native_session) |*session| session.deinit();
     }
+
     pub fn reset(self: *Text) void {
         self.mods = .{};
         self.fixture_dead = false;
         if (self.native_session) |*session| session.reset();
     }
+
     /// Clear text and caret as well as pending composition and modifiers.
     pub fn clear(self: *Text) void {
         @memset(self.bytes[0..self.len], 0);
@@ -27,36 +32,47 @@ pub const Text = struct {
         self.cursor = 0;
         self.reset();
     }
+
     pub fn refresh(self: *Text) bool {
         if (self.native_session) |*session| return session.refresh();
         return false;
     }
+
     pub fn value(self: *const Text) []const u8 {
         return self.bytes[0..self.len];
     }
+
     pub fn insert(self: *Text, bytes: []const u8) !void {
         if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode;
         if (bytes.len > self.bytes.len - self.len) return error.TextLimit;
-        std.mem.copyBackwards(u8, self.bytes[self.cursor + bytes.len .. self.len + bytes.len], self.bytes[self.cursor..self.len]);
+        std.mem.copyBackwards(
+            u8,
+            self.bytes[self.cursor + bytes.len .. self.len + bytes.len],
+            self.bytes[self.cursor..self.len],
+        );
         @memcpy(self.bytes[self.cursor..][0..bytes.len], bytes);
         self.cursor += bytes.len;
         self.len += bytes.len;
     }
+
     fn previous(self: *const Text) usize {
         if (self.cursor == 0) return 0;
         var index = self.cursor - 1;
         while (index > 0 and self.bytes[index] & 0xC0 == 0x80) index -= 1;
         return index;
     }
+
     fn next(self: *const Text) usize {
         if (self.cursor == self.len) return self.len;
         return self.cursor + (std.unicode.utf8ByteSequenceLength(self.bytes[self.cursor]) catch 1);
     }
+
     fn erase(self: *Text, start: usize, end: usize) void {
         std.mem.copyForwards(u8, self.bytes[start .. self.len - (end - start)], self.bytes[end..self.len]);
         self.len -= end - start;
         self.cursor = start;
     }
+
     /// Deterministic fixture is deliberately small; native acceptance separately
     /// uses actual selected EurKEY. Includes dead composition and multi-scalar output.
     fn fixture(self: *Text, code: u8, buffer: *[128]u8) []const u8 {
@@ -81,12 +97,15 @@ pub const Text = struct {
             else => "",
         };
     }
+
     pub fn output(self: *Text, commands: []const core.OutputCommand) !void {
         try self.outputMode(commands, false);
     }
+
     pub fn singleLineOutput(self: *Text, commands: []const core.OutputCommand) !void {
         try self.outputMode(commands, true);
     }
+
     /// Filter translated control characters without splitting UTF-8 scalars.
     pub fn insertSingleLine(self: *Text, bytes: []const u8) !void {
         if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicode;
@@ -99,6 +118,7 @@ pub const Text = struct {
         }
         try self.insert(bytes[start..]);
     }
+
     fn outputMode(self: *Text, commands: []const core.OutputCommand, single_line: bool) !void {
         for (commands) |command| switch (command) {
             .ModifiersChanged => |mods| self.mods = mods,
@@ -127,7 +147,10 @@ pub const Text = struct {
                     77 => self.cursor = self.len,
                     else => {
                         var buffer: [128]u8 = undefined;
-                        const bytes = if (self.native_session) |*session| session.translate(.{ .tap_keycode = code, .tap_modifiers = self.mods }, &buffer) catch |err| {
+                        const bytes = if (self.native_session) |*session| session.translate(.{
+                            .tap_keycode = code,
+                            .tap_modifiers = self.mods,
+                        }, &buffer) catch |err| {
                             if (single_line and err == error.UnsupportedUsage) {
                                 self.logged += 1;
                                 continue;
@@ -141,8 +164,14 @@ pub const Text = struct {
             else => self.logged += 1,
         };
     }
+
     /// Reuse native layout/dead-key translation, while scoring each insertion.
-    pub fn practiceOutput(self: *Text, commands: []const core.OutputCommand, session: *@import("practice.zig").Session, now: u64) !void {
+    pub fn practiceOutput(
+        self: *Text,
+        commands: []const core.OutputCommand,
+        session: *@import("practice.zig").Session,
+        now: u64,
+    ) !void {
         if (session.recorder) |recorder| recorder.clock = .frame;
         for (commands) |command| {
             if (command == .KeyCodePress) {
@@ -167,12 +196,23 @@ pub const Text = struct {
         self.cursor = 0;
     }
 };
+
 test "composition, several scalars, editing and reset have literal text outcomes" {
     var text = Text.init(true);
     defer text.deinit();
-    try text.output(&.{ .{ .ModifiersChanged = .{ .left_alt = true } }, .{ .KeyCodePress = 52 }, .{ .ModifiersChanged = .{} }, .{ .KeyCodePress = 8 } });
+    try text.output(&.{
+        .{ .ModifiersChanged = .{ .left_alt = true } },
+        .{ .KeyCodePress = 52 },
+        .{ .ModifiersChanged = .{} },
+        .{ .KeyCodePress = 8 },
+    });
     try std.testing.expectEqualStrings("é", text.value());
-    try text.output(&.{ .{ .ModifiersChanged = .{ .left_alt = true } }, .{ .KeyCodePress = 52 }, .{ .ModifiersChanged = .{} }, .{ .KeyCodePress = 4 } });
+    try text.output(&.{
+        .{ .ModifiersChanged = .{ .left_alt = true } },
+        .{ .KeyCodePress = 52 },
+        .{ .ModifiersChanged = .{} },
+        .{ .KeyCodePress = 4 },
+    });
     try std.testing.expectEqualStrings("é´a", text.value());
     try text.output(&.{ .{ .KeyCodePress = 42 }, .{ .KeyCodePress = 80 }, .{ .KeyCodePress = 76 } });
     try std.testing.expectEqualStrings("é", text.value());
@@ -180,7 +220,13 @@ test "composition, several scalars, editing and reset have literal text outcomes
     text.reset();
     try text.output(&.{.{ .KeyCodePress = 8 }});
     try std.testing.expectEqualStrings("ée", text.value());
-    try text.output(&.{ .ActivateBootMode, .{ .ConsumerKeyPressed = .VolumeUp }, .{ .MouseCommandPressed = .WheelDown }, .{ .ModifiersChanged = .{ .left_gui = true } }, .{ .KeyCodePress = 20 } });
+    try text.output(&.{
+        .ActivateBootMode,
+        .{ .ConsumerKeyPressed = .VolumeUp },
+        .{ .MouseCommandPressed = .WheelDown },
+        .{ .ModifiersChanged = .{ .left_gui = true } },
+        .{ .KeyCodePress = 20 },
+    });
     try std.testing.expectEqualStrings("ée", text.value());
     try std.testing.expectEqual(@as(usize, 4), text.logged);
 }
@@ -190,7 +236,17 @@ test "draft practice uses composed text and counts corrections without navigatio
     defer text.deinit();
     var session: @import("practice.zig").Session = .{};
     try session.load("é    a", .draft);
-    try text.practiceOutput(&.{ .{ .ModifiersChanged = .{ .left_alt = true } }, .{ .KeyCodePress = 52 }, .{ .ModifiersChanged = .{} }, .{ .KeyCodePress = 8 }, .{ .KeyCodePress = 43 }, .{ .KeyCodePress = 5 }, .{ .KeyCodePress = 42 }, .{ .KeyCodePress = 80 }, .{ .KeyCodePress = 4 } }, &session, 100);
+    try text.practiceOutput(&.{
+        .{ .ModifiersChanged = .{ .left_alt = true } },
+        .{ .KeyCodePress = 52 },
+        .{ .ModifiersChanged = .{} },
+        .{ .KeyCodePress = 8 },
+        .{ .KeyCodePress = 43 },
+        .{ .KeyCodePress = 5 },
+        .{ .KeyCodePress = 42 },
+        .{ .KeyCodePress = 80 },
+        .{ .KeyCodePress = 4 },
+    }, &session, 100);
     try std.testing.expectEqual(@import("practice.zig").State.complete, session.state);
     try std.testing.expectEqual(@as(usize, 7), session.attempts);
     try std.testing.expectEqual(@as(usize, 1), session.corrected);
@@ -201,7 +257,12 @@ test "single line text filters translated controls and edits Unicode safely" {
     defer text.deinit();
     try text.insertSingleLine("é\nß\t🙂\r\x1b\x7f");
     try std.testing.expectEqualStrings("éß🙂", text.value());
-    try text.singleLineOutput(&.{ .{ .KeyCodePress = 80 }, .{ .KeyCodePress = 42 }, .{ .KeyCodePress = 40 }, .{ .KeyCodePress = 43 } });
+    try text.singleLineOutput(&.{
+        .{ .KeyCodePress = 80 },
+        .{ .KeyCodePress = 42 },
+        .{ .KeyCodePress = 40 },
+        .{ .KeyCodePress = 43 },
+    });
     try std.testing.expectEqualStrings("é🙂", text.value());
     try std.testing.expectEqual(@as(usize, 2), text.cursor);
     try std.testing.expectEqual(@as(usize, 7), text.logged);
