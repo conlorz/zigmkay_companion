@@ -756,7 +756,7 @@ test "companion signals are derived host-side from reserved custom ids and keyco
     );
     try t.expectEqual(
         wire.Signal{ .kind = .log_toggle, .pressed = false },
-        wire.eventSignal(.{ .OnTapExitAfter = .{ .tap = log_tap } }).?,
+        wire.eventSignal(.{ .OnTapExitBefore = .{ .tap = log_tap } }).?,
     );
     try t.expectEqual(
         @as(?wire.Signal, null),

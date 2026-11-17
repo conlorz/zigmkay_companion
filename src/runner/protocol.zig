@@ -30,9 +30,10 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) !Input {
     return input;
 }
 
-/// Companion intents of the reserved keymap actions. Firmware does not route
-/// them anywhere special, so the runner derives them on the host from
-/// processor events and output commands.
+/// Companion intents of the reserved keymap actions. Firmware reports them as
+/// signal messages (`zigmkay/src/companion.zig`); the runner has no Raw HID
+/// session, so it derives the same signals from processor events and output
+/// commands. Keep both in step when the firmware rules change.
 pub const SignalKind = enum(u8) { log_toggle = 1, overlay_toggle = 2, shutdown = 3 };
 pub const Signal = struct { kind: SignalKind, pressed: bool };
 
@@ -49,7 +50,7 @@ fn customSignal(id: ?u8) ?SignalKind {
 pub fn eventSignal(event: core.ProcessorEvent) ?Signal {
     const kind, const pressed = switch (event) {
         .OnTapEnterAfter => |value| .{ customSignal(value.tap.custom), true },
-        .OnTapExitAfter => |value| .{ customSignal(value.tap.custom), false },
+        .OnTapExitBefore => |value| .{ customSignal(value.tap.custom), false },
         .OnHoldEnterAfter => |value| .{ customSignal(value.hold.custom), true },
         .OnHoldExitBefore => |value| .{ customSignal(value.hold.custom), false },
         else => return null,
