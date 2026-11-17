@@ -77,6 +77,9 @@ pub fn Driver(comptime Transport: type) type {
         /// Validated key events applied during the last poll, oldest first.
         key_events: [report_budget]protocol.KeyEvent = undefined,
         key_event_count: usize = 0,
+        /// Companion key signals received during the last poll, oldest first.
+        signal_events: [report_budget]protocol.SignalEvent = undefined,
+        signal_event_count: usize = 0,
         recording: ?*capture.Recorder = null,
         pub fn init(transport: Transport, expected: protocol.Identity, seed: u32, path: ?[]const u8) !Self {
             return .{ .transport = transport, .session = try companion.Session.init(expected), .nonces = .{ .value = seed }, .path = path };
@@ -139,6 +142,7 @@ pub fn Driver(comptime Transport: type) type {
         }
         pub fn poll(self: *Self, now: u64) void {
             self.key_event_count = 0;
+            self.signal_event_count = 0;
             if (!self.connected) {
                 if (now < self.retry_at) return;
                 const found = self.transport.discover(self.path) catch |err| {
@@ -206,6 +210,10 @@ pub fn Driver(comptime Transport: type) type {
                 // The drain budget bounds the count to the storage.
                 self.key_events[self.key_event_count] = event;
                 self.key_event_count += 1;
+            }
+            if (outcome.signal) |event| {
+                self.signal_events[self.signal_event_count] = event;
+                self.signal_event_count += 1;
             }
             if (outcome.send) |command| return self.send(command, now);
             return true;

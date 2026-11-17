@@ -42,7 +42,12 @@ pub const MessageId = enum(u8) {
     hello = 0x20,
     state = 0x21,
     key = 0x22,
+    signal = 0x23,
 };
+
+/// Companion keys on the keyboard, reported after its tap/hold decision.
+pub const SignalKind = enum(u8) { log_toggle = 1, overlay_toggle = 2, shutdown = 3 };
+pub const SignalEvent = struct { kind: SignalKind, pressed: bool };
 
 pub const KeyEvent = struct { pressed: bool, key_index: core.KeyIndex, layer: core.LayerIndex, modifiers: core.Modifiers };
 
@@ -67,11 +72,13 @@ pub const State = struct {
 };
 
 pub const Key = struct { sequence: u8, event: KeyEvent };
+pub const Signal = struct { sequence: u8, event: SignalEvent };
 
 pub const Message = union(MessageId) {
     hello: Hello,
     state: State,
     key: Key,
+    signal: Signal,
 
     /// Hello carries no sequence number.
     pub fn sequence(self: Message) ?u8 {
@@ -79,11 +86,12 @@ pub const Message = union(MessageId) {
             .hello => null,
             .state => |state| state.sequence,
             .key => |key| key.sequence,
+            .signal => |signal| signal.sequence,
         };
     }
 };
 
-pub const WireError = error{ InvalidLength, InvalidDimensions, UnsupportedVersion, InvalidBoolean, InvalidKeyIndex, InvalidLayer, InvalidLayerMask };
+pub const WireError = error{ InvalidLength, InvalidDimensions, UnsupportedVersion, InvalidBoolean, InvalidKeyIndex, InvalidLayer, InvalidLayerMask, InvalidSignal };
 pub const ProtocolError = WireError || identity.Error;
 
 pub const Identity = identity.Identity;
@@ -131,6 +139,7 @@ pub fn validate(message: Message, dimensions: core.KeymapDimensions) WireError!v
             if (key.event.key_index >= dimensions.key_count) return error.InvalidKeyIndex;
             if (key.event.layer >= dimensions.layer_count) return error.InvalidLayer;
         },
+        .signal => {},
     }
 }
 
@@ -167,6 +176,11 @@ pub fn decode(bytes: []const u8, dimensions: core.KeymapDimensions) WireError!?M
                 .modifiers = core.Modifiers.fromByte(bytes[5]),
             } } };
         },
+        .signal => blk: {
+            const kind = std.enums.fromInt(SignalKind, bytes[2]) orelse return error.InvalidSignal;
+            if (bytes[3] > 1) return error.InvalidBoolean;
+            break :blk .{ .signal = .{ .sequence = bytes[1], .event = .{ .kind = kind, .pressed = bytes[3] == 1 } } };
+        },
     };
     try validate(message, dimensions);
     return message;
@@ -198,6 +212,11 @@ pub fn encode(message: Message, dimensions: core.KeymapDimensions) WireError!Rep
             report[3] = key.event.key_index;
             report[4] = key.event.layer;
             report[5] = key.event.modifiers.toByte();
+        },
+        .signal => |signal| {
+            report[1] = signal.sequence;
+            report[2] = @backingInt(signal.event.kind);
+            report[3] = @intFromBool(signal.event.pressed);
         },
     }
     return report;
@@ -260,8 +279,18 @@ test "key decodes sequence press index layer and modifiers" {
     try std.testing.expectEqualDeep(KeyEvent{ .pressed = true, .key_index = 5, .layer = 1, .modifiers = core.Modifiers.fromByte(0x81) }, key.event);
 }
 
+test "signal decodes sequence kind and press" {
+    const bytes = literal(&.{ 0x23, 4, 2, 1 });
+    const signal = (try decode(&bytes, test_dimensions)).?.signal;
+    try std.testing.expectEqual(@as(u8, 4), signal.sequence);
+    try std.testing.expectEqualDeep(SignalEvent{ .kind = .overlay_toggle, .pressed = true }, signal.event);
+    try std.testing.expectEqual(bytes, try encode(.{ .signal = signal }, test_dimensions));
+    try std.testing.expectError(error.InvalidSignal, decode(&literal(&.{ 0x23, 4, 9, 1 }), test_dimensions));
+    try std.testing.expectError(error.InvalidBoolean, decode(&literal(&.{ 0x23, 4, 2, 2 }), test_dimensions));
+}
+
 test "decoder ignores unknown report ids including the legacy trace" {
-    for ([_]u8{ 0x00, 0x03, 0x10, 0x11, 0x12, 0x23, 0x7F, 0xA7, 0xFF }) |id| {
+    for ([_]u8{ 0x00, 0x03, 0x10, 0x11, 0x12, 0x24, 0x7F, 0xA7, 0xFF }) |id| {
         const bytes = literal(&.{ id, 1, 2, 3 });
         try std.testing.expectEqual(@as(?Message, null), try decode(&bytes, test_dimensions));
     }

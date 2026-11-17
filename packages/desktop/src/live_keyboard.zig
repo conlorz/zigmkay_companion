@@ -63,6 +63,21 @@ pub const Presenter = struct {
 /// messages, so callers derive these on the host; the live session supplies none.
 pub const SignalKind = enum { log_toggle, overlay_toggle, shutdown };
 pub const Signal = struct { kind: SignalKind, pressed: bool };
+pub const max_signals = 32;
+
+/// Converts keyboard signals from the live session, keeping at most `max_signals`.
+pub fn fromKeyboard(buffer: *[max_signals]Signal, events: []const protocol.SignalEvent) []const Signal {
+    const count = @min(events.len, buffer.len);
+    for (events[0..count], buffer[0..count]) |event, *signal| signal.* = .{
+        .kind = switch (event.kind) {
+            .log_toggle => .log_toggle,
+            .overlay_toggle => .overlay_toggle,
+            .shutdown => .shutdown,
+        },
+        .pressed = event.pressed,
+    };
+    return buffer[0..count];
+}
 
 /// Overlay requests never make an unverified draft visible. Hold state is
 /// transient and must be cleared on loss of coherent session state.
@@ -242,4 +257,10 @@ test "hello and the first state promote the verified presentation atomically" {
     const stale = try presenter.select(&labels, identity, &session, &output);
     try t.expect(stale.stale and !stale.pressed[2]);
     try t.expect(!visibility.update(stale, &.{}));
+}
+
+test "keyboard signals convert to overlay signals" {
+    var buffer: [max_signals]Signal = undefined;
+    const converted = fromKeyboard(&buffer, &.{ .{ .kind = .overlay_toggle, .pressed = true }, .{ .kind = .shutdown, .pressed = false } });
+    try std.testing.expectEqualSlices(Signal, &.{ .{ .kind = .overlay_toggle, .pressed = true }, .{ .kind = .shutdown, .pressed = false } }, converted);
 }

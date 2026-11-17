@@ -34,8 +34,8 @@
             .lazy = true,
         },
         .zigmkay_firmware = .{
-            .url = "git+https://github.com/conlorz/zigmkay_firmware.git#ae8e40ca9e05dd43f968d5c27108a05dea1937f7",
-            .hash = "zigmkay_firmware-0.1.0-EZ4qw3oYPABfaPGfUJRNLsHJACrnmq7ZgQoDp9ha4nGp",
+            .url = "git+https://github.com/conlorz/zigmkay_firmware.git#83b689262ae4a6f814ba9c7aa9fa868bf734350f",
+            .hash = "zigmkay_firmware-0.1.0-EZ4qwwEqPAAFIPjJhcIZCyqxpcP3nHeXzeRd6JIKQeIs",
             .lazy = true,
         },
         .picotool = .{

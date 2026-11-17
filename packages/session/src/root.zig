@@ -53,6 +53,7 @@ pub const BootloaderStatus = enum { idle, sent };
 pub const Outcome = struct {
     send: ?protocol.Command = null,
     key: ?protocol.KeyEvent = null,
+    signal: ?protocol.SignalEvent = null,
 };
 
 pub const timeout_ms = 500;
@@ -213,6 +214,12 @@ pub const Session = struct {
                 self.state.applyKey(key);
                 self.expected_sequence +%= 1;
                 return .{ .key = key.event };
+            },
+            .signal => |signal| {
+                if (self.phase != .live) return .{};
+                if (signal.sequence != self.expected_sequence) return .{ .send = self.resynchronize(now) };
+                self.expected_sequence +%= 1;
+                return .{ .signal = signal.event };
             },
         }
     }

@@ -742,8 +742,9 @@ pub fn main(init: std.process.Init) !void {
                 std.log.info("Keyboard connection: {t}", .{status});
                 last_live_status = status;
             }
-            // The keyboard protocol carries no overlay signals; the tray toggles the overlay.
-            life.companion_visible = visibility.updateAt(live_frame, &.{}, driver.transport.now());
+            var signals: [desktop.live_keyboard.max_signals]desktop.live_keyboard.Signal = undefined;
+            const received = desktop.live_keyboard.fromKeyboard(&signals, driver.signal_events[0..driver.signal_event_count]);
+            life.companion_visible = visibility.updateAt(live_frame, received, driver.transport.now());
             if (!life.companion_visible or (practicing and practice.config.assistance == .hidden)) if (companion_window) |id| if (Backend.c.SDL_GetWindowFromID(id)) |child_window| {
                 _ = Backend.c.SDL_HideWindow(child_window);
             };

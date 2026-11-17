@@ -31,6 +31,9 @@ const press = literal(&.{ 0x22, 1, 1, 5, 1, 0 });
 const release = literal(&.{ 0x22, 2, 0, 5, 1, 0 });
 /// Resynchronising state after 33 dropped events; key 7 is still held.
 const dropped_state = literal(&.{ 0x21, 33, 0, 0, 1, 0, 0b1000_0000 });
+/// Overlay key held then released (firmware fixture: CUSTOM_ID_COMPANION_TOGGLE hold).
+const overlay_hold = literal(&.{ 0x23, 1, 2, 1 });
+const overlay_release = literal(&.{ 0x23, 2, 2, 0 });
 /// Layer change to layer 3.
 const layer_state = literal(&.{ 0x21, 3, 3, 0, 0b1001, 0 });
 
@@ -95,6 +98,18 @@ test "connect, hello and state build the live state; keys update it" {
     try t.expectEqual(@as(u16, 0b1001), session.state.active_layers);
     try t.expect(!session.state.pressed[9]);
     try t.expectEqual(@as(?u8, 3), session.state.last_sequence);
+}
+
+test "companion key signals pass through in sequence with keys" {
+    const t = std.testing;
+    var session = try connected();
+    _ = feed(&session, hello, 1);
+    _ = feed(&session, first_state, 2);
+    const held = feed(&session, overlay_hold, 3);
+    try t.expectEqualDeep(protocol.SignalEvent{ .kind = .overlay_toggle, .pressed = true }, held.signal.?);
+    try t.expectEqualDeep(protocol.SignalEvent{ .kind = .overlay_toggle, .pressed = false }, feed(&session, overlay_release, 4).signal.?);
+    // A signal out of sequence resynchronises like a key.
+    try t.expectEqual(@as(?protocol.Command, .connect), feed(&session, overlay_hold, 5).send);
 }
 
 test "hello is matched against the open project and all-zero ids are unknown" {

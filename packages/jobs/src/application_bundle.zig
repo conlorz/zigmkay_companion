@@ -50,7 +50,7 @@ pub const Bundle = struct {
 };
 
 test "bundle descriptor rejects incompatible tools without executing them" {
-    const value: Manifest = .{ .id = @splat(1), .firmware_revision = "ae8e40ca9e05dd43f968d5c27108a05dea1937f7", .wrapper_hash = @splat(2), .picotool_hash = @splat(3) };
+    const value: Manifest = .{ .id = @splat(1), .firmware_revision = "83b689262ae4a6f814ba9c7aa9fa868bf734350f", .wrapper_hash = @splat(2), .picotool_hash = @splat(3) };
     try value.validate();
     var wrong = value;
     wrong.zig_version = "0.16.0";
