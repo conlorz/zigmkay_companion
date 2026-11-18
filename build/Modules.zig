@@ -480,6 +480,7 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
     const action_form_ui = desktopModule(b, cfg, "action_form_ui.zig", &.{
         .{ .name = "desktop-core", .module = dc },
         .{ .name = "dvui", .module = dvui },
+        .{ .name = "editor-ui", .module = ui },
         .{ .name = "project", .module = host.project },
         .{ .name = "layout-model", .module = host.layout },
     });
@@ -489,7 +490,7 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
         .{ .name = "editor-fonts", .module = fonts },
         .{ .name = "project", .module = host.project },
     }));
-    const combo_ui = desktopModule(b, cfg, "combo_ui.zig", &with_form);
+    const combo_ui = desktopModule(b, cfg, "combo_ui.zig", &(with_form ++ [_]Import{.{ .name = "project", .module = host.project }}));
     const encoder_ui = desktopModule(b, cfg, "encoder_ui.zig", &with_form);
     const callback_ui = desktopModule(b, cfg, "callback_ui.zig", &editor);
     const layer_ui = desktopModule(b, cfg, "layer_ui.zig", &(editor ++ [_]Import{.{ .name = "project", .module = host.project }}));

@@ -118,7 +118,10 @@ pub fn draw(view: *View, owner: *dispatch.State, model: *desktop.model.Model, fr
     const requests = try drawPanels(view, owner, model, frame, theme, diagnostic, stale);
     const modal: ?Modal = switch (view.modal) {
         .none => null,
-        .combo => if (try combos.draw(&view.combo.?, model, theme, diagnostic)) |result| .{ .combo = result } else null,
+        .combo => if (try combos.draw(&view.combo.?, model, theme, diagnostic, .{
+            .labels = frame.keyboard.labels,
+            .geometry = frame.keyboard.geometry,
+        })) |result| .{ .combo = result } else null,
         .callback => if (try callbacks.draw(&view.callback, model, theme, diagnostic)) |action| .{ .callback = action } else null,
         .paths => if (try paths.draw(&view.paths, model, frame.paths, theme, diagnostic)) |action| .{ .paths = action } else null,
         .encoders => if (try encoders.draw(&view.encoders.?, model, theme, diagnostic)) |result| .{ .encoders = result } else null,
