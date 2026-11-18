@@ -117,6 +117,7 @@ pub fn prepareFrame(app: *App, board: *const boards.OwnedBoard, now_us: u64) !Fr
     else if (live) app.live.board.entry.geometry else board.entry.geometry;
     const model = if (self.snapshot) |*value| &value.model else if (live) &app.live.model else &app.model;
     try updateCohort(app, model, labels, live, now_us);
+    updateAdaptiveKeys(self);
 
     const arena = app.window.arena();
     const metadata = try arena.alloc(desktop.practice.KeyMetadata, labels.key_count);
@@ -187,6 +188,20 @@ fn updateCohort(
         app.applyPractice(practice.pause(now_us), &app.model, now_us);
         practice.failure = error.PracticeContextChanged;
     }
+}
+
+/// Adaptive lessons plan from the loaded history only when it describes the
+/// same practice: board behavior, input mapping, source and verification.
+fn updateAdaptiveKeys(self: *Tutor) void {
+    const practice = &self.controller;
+    const loaded = self.history.cohort;
+    const current = practice.configCohort();
+    const same = std.mem.eql(u8, &loaded.behavior, &current.behavior) and
+        std.mem.eql(u8, &loaded.mapping, &current.mapping) and
+        loaded.source == current.source and
+        loaded.family == current.family and
+        loaded.verified == current.verified;
+    practice.adaptive_keys = if (same) if (self.history.data.keys) |value| value.* else .{} else .{};
 }
 
 /// Exercises may balance both hands only when every capital letter's hand is

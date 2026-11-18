@@ -5,6 +5,8 @@ const desktop = @import("desktop-core");
 const ui = @import("editor-ui");
 const presentation = @import("practice_presentation.zig");
 const curriculum = desktop.practice_curriculum;
+const keys = desktop.practice_keys;
+const adaptive = desktop.practice_adaptive;
 const control = desktop.practice_controller;
 
 pub const View = struct { config: control.Config = .{}, message: []const u8 = "" };
@@ -17,6 +19,7 @@ const descriptions = [_][]const u8{
     "Practice one new output on a layer reached by a proven hold provider. Familiar words remain between targets.",
     "Choose one Option/AltGr or combined modifier family. Only proven reachable output is generated.",
     "Use full sentences, paired punctuation or Zig lessons. Every generated character needs a proven reachable route.",
+    "Start with six letters. Each run focuses your weakest letter; the next one unlocks when all reach your target speed.",
 };
 
 /// Modifier families of the modifiers stage, in teaching order.
@@ -79,7 +82,7 @@ pub fn next(context: curriculum.Context, labels: desktop.practice.Labels) curric
                 else => unreachable,
             }
         },
-        .real_text => {},
+        .real_text, .adaptive => {},
     }
     return output;
 }
@@ -94,7 +97,7 @@ const Layout = struct {
     fn init(page_width: f32, wide: bool) Layout {
         const x: f32 = if (wide) 280 else 0;
         const width = page_width - x;
-        return .{ .x = x, .y = if (wide) 96 else 346, .width = width, .inner_x = x + 24, .inner_w = width - 48 };
+        return .{ .x = x, .y = if (wide) 96 else 396, .width = width, .inner_x = x + 24, .inner_w = width - 48 };
     }
 };
 
@@ -107,7 +110,7 @@ pub fn draw(
     bounds: dvui.Rect,
 ) !Action {
     const wide = bounds.w >= 1100;
-    const page = presentation.Page.init(bounds, if (wide) 880 else 1230, "practice.curriculum", theme);
+    const page = presentation.Page.init(bounds, if (wide) 880 else 1280, "practice.curriculum", theme);
     defer page.deinit();
     const width = page.width;
     presentation.header("Learn your layout", "Choose a stage. Difficulty, help and length stay independent.", width, theme);
@@ -118,12 +121,15 @@ pub fn draw(
     };
     try drawLearningPath(view, wide, width, theme);
     const layout = Layout.init(width, wide);
-    const ready = try drawStage(view, owner, labels, history, history_cohort, layout, theme);
+    const ready = if (view.config.curriculum.stage == .adaptive)
+        try drawAdaptive(view, owner, labels, layout, theme)
+    else
+        try drawStage(view, owner, labels, history, history_cohort, layout, theme);
     const options_y = layout.y + 510;
     if (try drawNextExercise(view, owner, labels, ready, layout, options_y, theme)) |action| return action;
 
     const saved_x: f32 = if (wide) 20 else 0;
-    const saved_y: f32 = if (wide) 610 else options_y + 210;
+    const saved_y: f32 = if (wide) 660 else options_y + 210;
     const restore: dvui.Rect = .{ .x = saved_x, .y = saved_y, .w = 220, .h = 38 };
     if (history) |data| if (data.latest_curriculum) |record| {
         if (ui.button(theme, "Resume saved lesson", "practice.curriculum.restore", restore)) restoreLesson(view, record);
@@ -134,14 +140,14 @@ pub fn draw(
         config.curriculum = .{};
         return .{ .free = config };
     }
-    _ = presentation.flowText(view.message, 0, if (wide) 820 else 1130, width, 15, theme.text);
+    _ = presentation.flowText(view.message, 0, if (wide) 820 else 1180, width, 15, theme.text);
     return .none;
 }
 
 fn drawLearningPath(view: *View, wide: bool, width: f32, theme: ui.Theme) !void {
     const arena = dvui.currentWindow().arena();
     const path_w: f32 = if (wide) 260 else width;
-    presentation.surface(.{ .y = 96, .w = path_w, .h = if (wide) 680 else 230 }, theme.panel);
+    presentation.surface(.{ .y = 96, .w = path_w, .h = if (wide) 680 else 280 }, theme.panel);
     presentation.label("Learning path", .{ .x = 20, .y = 110, .w = path_w - 40, .h = 30 }, 18, theme.text, null);
     for (curriculum.names, 0..) |name, index| {
         var stage_theme = theme;
@@ -238,6 +244,96 @@ fn drawStage(
         curriculum.Assessment{ .missing = expected_count };
     try drawAssessment(stage.stage, assessment, expected_count, layout, theme);
     return assessment.ready;
+}
+
+/// Shows the adaptive plan: unlocked letters with their confidence, the
+/// focused letter and the target speed. The plan is frozen when a lesson
+/// starts, so it is never ready for a manual next step.
+fn drawAdaptive(
+    view: *View,
+    owner: *control.Controller,
+    labels: desktop.practice.Labels,
+    layout: Layout,
+    theme: ui.Theme,
+) !bool {
+    const arena = dvui.currentWindow().arena();
+    const x = layout.inner_x;
+    const y = layout.y;
+    const w = layout.inner_w;
+    presentation.surface(.{ .x = layout.x, .y = y, .w = layout.width, .h = 490 }, theme.panel);
+    presentation.label("Stage 7: Adaptive keys", .{ .x = x, .y = y + 16, .w = w, .h = 34 }, 22, theme.text, null);
+    _ = presentation.flowText(descriptions[@backingInt(curriculum.Stage.adaptive)], x, y + 66, w, 16, theme.muted);
+
+    var alphabet: [26]u8 = undefined;
+    const available = curriculum.letters(labels, &alphabet);
+    const context = curriculum.adapt(view.config.curriculum, labels, &owner.adaptive_keys, keys.targetMs(owner.adaptive_target_wpm)) catch {
+        _ = presentation.flowText("This layout needs at least six reachable base-layer letters.", x, y + 140, w, 16, theme.muted);
+        return false;
+    };
+    const target_ms = keys.targetMs(owner.adaptive_target_wpm);
+    const unlocked = available[0..context.alphabet];
+    const focus = unlocked[context.family];
+    var focus_bytes: [4]u8 = undefined;
+    const title = try std.fmt.allocPrint(arena, "{d} of {d} letters unlocked · focus {s}", .{
+        unlocked.len,
+        available.len,
+        desktop.practice_view.glyph(focus, true, &focus_bytes),
+    });
+    presentation.label(title, .{ .x = x, .y = y + 140, .w = w, .h = 24 }, 14, theme.muted, null);
+    const per_row: usize = @max(1, @min(13, @as(usize, @intFromFloat(w / 42))));
+    for (available, 0..) |cp, index| {
+        const cell: dvui.Rect = .{
+            .x = x + @as(f32, @floatFromInt(index % per_row)) * 42,
+            .y = y + 172 + @as(f32, @floatFromInt(index / per_row)) * 58,
+            .w = 36,
+            .h = 34,
+        };
+        const key = owner.adaptive_keys.get(cp);
+        const open = index < unlocked.len;
+        const fill = if (cp == focus)
+            presentation.shade(theme, 0xF6D58E, 0x7A5A1E)
+        else if (open and key.confident(target_ms))
+            presentation.shade(theme, 0xC5EBDC, 0x245C4D)
+        else if (open)
+            theme.control
+        else
+            theme.bg;
+        presentation.surface(cell, fill);
+        const text = try std.fmt.allocPrint(arena, "{c}", .{cp});
+        presentation.label(text, .{ .x = cell.x + 12, .y = cell.y, .w = 24, .h = cell.h }, 18, if (open) theme.text else theme.muted, null);
+        // Locked letters are dimmed and have no caption.
+        const value = if (!open)
+            ""
+        else if (key.confidence(target_ms)) |confidence|
+            try std.fmt.allocPrint(arena, "{d:.0}%", .{@min(999, confidence * 100)})
+        else
+            "new";
+        presentation.label(value, .{ .x = cell.x, .y = cell.y + 35, .w = 40, .h = 16 }, 10, theme.muted, null);
+    }
+    const rows = (available.len + per_row - 1) / per_row;
+    const speed_y = y + 172 + @as(f32, @floatFromInt(rows)) * 58 + 8;
+    var choice: usize = std.mem.indexOfScalar(u16, &keys.target_choices, owner.adaptive_target_wpm) orelse 3;
+    const names = try arena.alloc([]const u8, keys.target_choices.len);
+    for (names, keys.target_choices) |*name, wpm| name.* = try std.fmt.allocPrint(arena, "{d} WPM", .{wpm});
+    if (dvui.dropdown(@src(), names, .{ .choice = &choice }, .{}, .{
+        .rect = .{ .x = x, .y = speed_y, .w = 140, .h = 36 },
+        .tag = "practice.curriculum.target_speed",
+    })) owner.adaptive_target_wpm = keys.target_choices[choice];
+    const target_text = try std.fmt.allocPrint(arena, "Target speed · {d:.0} ms per letter", .{target_ms});
+    presentation.label(target_text, .{ .x = x + 152, .y = speed_y, .w = w - 152, .h = 36 }, 14, theme.muted, null);
+
+    const reason = adaptive.plan(&owner.adaptive_keys, available, target_ms, view.config.curriculum.alphabet).reason;
+    const advice = switch (reason) {
+        .starting => "Each run measures these letters. Percentages compare your smoothed clean timing with the target.",
+        .new_letter => "A new letter is unlocked. Its words appear often until it has timing evidence.",
+        .weakest => "The focused letter is furthest below the target speed or accuracy. It appears in every word.",
+        .all_confident => "Every letter on this layout reached the target. Raise the target speed to keep improving.",
+    };
+    _ = presentation.flowText(advice, x, speed_y + 52, w, 14, theme.muted);
+    const fraction = @as(f32, @floatFromInt(unlocked.len)) / @as(f32, @floatFromInt(available.len));
+    presentation.surface(.{ .x = x, .y = y + 464, .w = w, .h = 6 }, theme.control);
+    presentation.surface(.{ .x = x, .y = y + 464, .w = w * fraction, .h = 6 }, ui.color(0x69BFA3));
+    return false;
 }
 
 /// Layer, modifier family or real-text corpus selectors for the current stage.
@@ -368,7 +464,11 @@ fn drawNextExercise(
     if (ui.button(presentation.primary(theme), "Start lesson", "practice.curriculum.start", start)) {
         return startLesson(view, owner, labels);
     }
-    const next_label = if (view.config.curriculum.stage == .real_text) "Repeat real text" else "Suggested next step";
+    const next_label = switch (view.config.curriculum.stage) {
+        .real_text => "Repeat real text",
+        .adaptive => "Adapts after each run",
+        else => "Suggested next step",
+    };
     const next_bounds: dvui.Rect = .{ .x = x + 177, .y = options_y + 120, .w = 205, .h = 40 };
     if (ui.buttonEnabled(theme, next_label, "practice.curriculum.next", next_bounds, ready)) {
         view.config.curriculum = next(view.config.curriculum, labels);

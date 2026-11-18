@@ -2,7 +2,10 @@
 const std = @import("std");
 const practice = @import("practice.zig");
 const generator = @import("practice_generator.zig");
-pub const Stage = enum { find_keys, fluency, shift, layers, modifiers, real_text };
+const adaptive = @import("practice_adaptive.zig");
+const keys = @import("practice_keys.zig");
+/// Stages are stored by name; new stages are appended.
+pub const Stage = enum { find_keys, fluency, shift, layers, modifiers, real_text, adaptive };
 
 pub const names = [_][]const u8{
     "Find keys",
@@ -11,10 +14,13 @@ pub const names = [_][]const u8{
     "Change layers",
     "Combine modifiers",
     "Real text",
+    "Adaptive keys",
 };
 
 pub const alphabet_order = "enaritoslcdumpghbyfvkwzxjq";
 
+/// Adaptive lessons freeze the unlocked letter count in `alphabet` and the
+/// focused letter's index among them in `family`.
 pub const Context = struct {
     version: u16 = 0,
     stage: Stage = .find_keys,
@@ -47,6 +53,7 @@ pub const Context = struct {
                     &.{ 4, 6, 64, 66 },
                     self.modifiers,
                 ) == null) return error.InvalidCurriculum;
+            if (self.stage == .adaptive and self.family >= self.alphabet) return error.InvalidCurriculum;
         }
     }
 };
@@ -129,6 +136,18 @@ pub fn family(labels: practice.Labels, context: Context, output: *[256]u21) []co
     return output[0..count];
 }
 
+/// Freezes the adaptive plan for this layout into an adaptive context.
+pub fn adapt(context: Context, labels: practice.Labels, model: *const keys.Model, target_ms: f64) !Context {
+    var alphabet: [26]u8 = undefined;
+    const available = letters(labels, &alphabet);
+    if (available.len < adaptive.start_letters) return error.CurriculumAlphabetUnavailable;
+    const value = adaptive.plan(model, available, target_ms, context.alphabet);
+    var output = context;
+    output.alphabet = value.unlocked;
+    output.family = value.focus;
+    return output;
+}
+
 pub fn hintFor(labels: practice.Labels, context: Context, cp: u21) ?practice.Hint {
     if (context.version == 0 or
         (context.stage != .shift and context.stage != .layers and context.stage != .modifiers)) return null;
@@ -199,6 +218,19 @@ pub fn generate(
             cp != focused and
             (cp > 127 or std.mem.indexOfScalar(u8, learned, @intCast(cp)) == null))
             return error.CurriculumTargetUnavailable;
+    }
+    if (context.stage == .adaptive) {
+        var focus: [5]u8 = undefined;
+        var focus_count: usize = 0;
+        for (targets) |cp| if (cp != ' ') {
+            focus[focus_count] = @intCast(cp);
+            focus_count += 1;
+        };
+        if (focus_count == 0) {
+            focus[0] = learned[context.family];
+            focus_count = 1;
+        }
+        return adaptive.generate(buffer, seed, learned, focus[0..focus_count], length);
     }
     var candidates: [generator.vocabulary.len]usize = undefined;
     const count = learnedWords(context, learned, &candidates);
@@ -400,4 +432,31 @@ test "guided mastery needs repeated exposure and fluency also needs clean calibr
     aggregate.stats[0].misses = 0;
     aggregate.runs = 2;
     try t.expect(!assess(find, aggregate, @as(?*Data, null), &.{'e'}).ready);
+}
+
+test "adaptive contexts freeze the planned letters and focus of this layout" {
+    const t = std.testing;
+    var model: keys.Model = .{ .runs = 4 };
+    for (alphabet_order[0..6]) |cp| model.keys[cp - 'a'] = .{ .runs = 3, .ms = 150, .best_ms = 150, .miss_runs = 3 };
+    const start: Context = .{ .version = 1, .stage = .adaptive };
+    const context = try adapt(start, Fixture.labels(), &model, 300);
+    try t.expectEqual(@as(u8, 7), context.alphabet);
+    try t.expectEqual(@as(u8, 6), context.family);
+    try context.validate();
+    try t.expectEqual(context, context.effective());
+    var buffer: [8192]u8 = undefined;
+    const text = try generate(&buffer, context, 5, 1, .words, &.{}, Fixture.labels());
+    var words = std.mem.splitScalar(u8, text, ' ');
+    while (words.next()) |word| {
+        try t.expect(std.mem.indexOfScalar(u8, word, 'o') != null);
+        for (word) |cp| try t.expect(std.mem.indexOfScalar(u8, alphabet_order[0..7], cp) != null);
+    }
+    // Review targets replace the planned focus; unlearned targets are rejected.
+    const review = try generate(&buffer, context, 5, 0, .words, &.{'n'}, Fixture.labels());
+    try t.expect(std.mem.count(u8, review, "n") >= adaptive.word_counts[0]);
+    try t.expectError(
+        error.CurriculumTargetUnavailable,
+        generate(&buffer, context, 5, 0, .words, &.{'z'}, Fixture.labels()),
+    );
+    try t.expectError(error.InvalidCurriculum, (Context{ .version = 1, .stage = .adaptive, .family = 6 }).validate());
 }
