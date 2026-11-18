@@ -34,7 +34,8 @@ Run `zig-out/bin/release package ABSOLUTE_PACKAGE_PATH ABSOLUTE_OUTPUT_DIRECTORY
 SOURCE_COMMIT` to create the DMG, portable EXE or AppImage. Windows uses
 `release.exe`. Packaging is a developer/CI operation and may acquire pinned
 packaging tools and corresponding sources. The installed application never does.
-AppImage inputs use [immutable asset IDs and SHA-256 pins](../packaging/appimage-pins.zon);
+AppImage inputs use [tagged release asset IDs and SHA-256 pins](../packaging/appimage-pins.zon)
+(continuous releases delete their assets when they rebuild);
 the runtime is supplied with `--runtime-file`, avoiding appimagetool's default
 latest-runtime download. Tool pins must be reviewed together with their sources.
 
