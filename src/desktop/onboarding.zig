@@ -5,7 +5,7 @@ pub const importer = @import("keymap-importer");
 pub const boards = importer.boards;
 pub const catalog = importer.catalog;
 const Model = @import("model.zig").Model;
-pub const Stage = enum { home, catalog, source, keyboard, review, created, open };
+pub const Stage = enum { home, catalog, new_layout, source, keyboard, review, open };
 
 pub const Result = union(enum) {
     inspected: importer.Captured,
@@ -237,7 +237,7 @@ fn reusableProvenance(source: ?importer.Captured, location: []const u8) ?importe
 }
 
 /// Eight random characters from the RFC 4648 base32 alphabet.
-fn randomProfileId(io: std.Io) [8]u8 {
+pub fn randomProfileId(io: std.Io) [8]u8 {
     var id: [8]u8 = undefined;
     io.random(&id);
     const alphabet = "abcdefghijklmnopqrstuvwxyz234567";

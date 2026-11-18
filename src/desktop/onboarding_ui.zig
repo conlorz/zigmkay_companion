@@ -8,6 +8,7 @@ const p = @import("project");
 const ui = @import("editor-ui");
 const keyboards_ui = @import("keyboards_ui.zig");
 const catalog_ui = @import("catalog_ui.zig");
+const new_layout_ui = @import("new_layout_ui.zig");
 
 pub const Action = enum {
     none,
@@ -34,6 +35,11 @@ pub const State = struct {
     /// The keyboard chosen on My Keyboards, an index into `library.keyboards`.
     keyboard: ?usize = null,
     catalog: catalog_ui.View = .{},
+    new_layout: new_layout_ui.View = .{},
+    /// The project New layout would create, for its current start point.
+    candidate: ?desktop.new_layout.Candidate = null,
+    candidate_key: u64 = 0,
+    candidate_failure: [256]u8 = @splat(0),
     /// Opens the folder the native chooser returns.
     awaiting_open: bool = false,
     /// Opens `location` once the open layout is saved.
@@ -73,6 +79,40 @@ pub const State = struct {
         self.clearImport();
         if (self.collection) |*value| value.deinit();
         if (self.library) |*value| value.deinit();
+        self.dropCandidate();
+    }
+
+    fn dropCandidate(self: *State) void {
+        if (self.candidate) |*value| value.deinit();
+        self.candidate = null;
+        self.candidate_key = 0;
+        self.candidate_failure = @splat(0);
+    }
+
+    /// Shows New layout for the keyboard of `catalog.entries[entry]`.
+    pub fn openNewLayout(self: *State, entry: usize) void {
+        self.clearImport();
+        self.dropCandidate();
+        self.selector = entry;
+        self.new_layout = .{ .entry = entry };
+        self.stage = .new_layout;
+    }
+
+    /// Rebuilds the New layout candidate when its start point changed. Reading
+    /// a layout to duplicate never changes it.
+    pub fn refreshCandidate(self: *State, gpa: std.mem.Allocator, io: std.Io) void {
+        if (self.stage != .new_layout) return;
+        const owned = if (self.library) |*value| value else null;
+        const wanted = new_layout_ui.key(&self.new_layout, owned);
+        if (wanted == self.candidate_key) return;
+        self.dropCandidate();
+        self.candidate_key = wanted;
+        const start_point = new_layout_ui.start(&self.new_layout, owned) orelse return;
+        const entry = &flow.catalog.entries[self.new_layout.entry];
+        self.candidate = desktop.new_layout.prepare(gpa, io, entry, start_point) catch |err| {
+            _ = std.fmt.bufPrint(&self.candidate_failure, "This start point cannot be used here: {s}", .{@errorName(err)}) catch {};
+            return;
+        };
     }
 
     pub fn replaceLibrary(self: *State, library: desktop.library.Library) void {
@@ -212,6 +252,8 @@ pub const State = struct {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
         const a = arena.allocator();
+        const new_layout = action == .create and self.stage == .new_layout;
+        if (new_layout) try self.nameNewLayout(io);
         if (action == .create or action == .add_existing) {
             const relative = try std.fmt.allocPrint(a, "keyboards/{s}", .{std.mem.sliceTo(&self.directory, 0)});
             const entry: p.collection.Entry = .{ .id = std.mem.sliceTo(&self.directory, 0), .directory = relative };
@@ -221,7 +263,13 @@ pub const State = struct {
             input.collection_fingerprint = if (self.collection) |value| value.fingerprint else null;
             input.destination = try std.fs.path.join(a, &.{ input.collection.?, relative });
         }
-        if (action == .create) {
+        if (new_layout) {
+            const candidate = self.candidate orelse return error.PreparedProjectRequired;
+            var snapshot = candidate.snapshot;
+            snapshot.document.name = std.mem.sliceTo(&self.name, 0);
+            snapshot.document.profile_id = flow.randomProfileId(io);
+            input.prepared = .{ .snapshot = snapshot, .selector = candidate.board.entry.selector };
+        } else if (action == .create) {
             const prepared = self.prepared orelse return error.PreparedProjectRequired;
             input.prepared = .{ .snapshot = prepared.project.snapshot, .selector = prepared.board.entry.selector };
         }
@@ -233,6 +281,36 @@ pub const State = struct {
         self.worker = try flow.Worker.create(gpa, io, &request, self.generation);
         self.operation = input.operation;
         self.diagnostic = @splat(0);
+    }
+
+    /// Takes the New layout name and a free collection directory for it.
+    fn nameNewLayout(self: *State, io: std.Io) !void {
+        const name = std.mem.trim(u8, std.mem.sliceTo(&self.new_layout.name, 0), " ");
+        if (name.len == 0) return error.LayoutNameRequired;
+        try set(&self.name, name);
+        const Taken = struct {
+            io: std.Io,
+            root: []const u8,
+            collection: ?p.collection.Manifest,
+
+            pub fn contains(taken: @This(), directory: []const u8) bool {
+                if (taken.collection) |manifest| for (manifest.projects) |entry| {
+                    if (std.mem.eql(u8, entry.id, directory) or
+                        std.mem.eql(u8, std.fs.path.basename(entry.directory), directory)) return true;
+                };
+                var buffer: [4300]u8 = undefined;
+                const path = std.fmt.bufPrint(&buffer, "{s}/keyboards/{s}", .{ taken.root, directory }) catch return true;
+                _ = std.Io.Dir.cwd().statFile(taken.io, path, .{}) catch return false;
+                return true;
+            }
+        };
+        var buffer: [128]u8 = undefined;
+        const directory = desktop.new_layout.directoryName(&buffer, name, Taken{
+            .io = io,
+            .root = std.mem.sliceTo(&self.root, 0),
+            .collection = if (self.collection) |value| value.manifest else null,
+        });
+        try set(&self.directory, directory);
     }
 
     pub fn poll(self: *State, owner_generation: u64) !?flow.Opened {
@@ -325,11 +403,24 @@ pub fn draw(state: *State, context: Context) !Action {
             .none => {},
             .back => state.stage = .home,
             .toggle_theme => action = .toggle_theme,
-            .choose => |index| {
+            .choose => |index| state.openNewLayout(index),
+        },
+        .new_layout => switch (new_layout_ui.draw(&state.new_layout, theme, .{
+            .library = libraryOf(state),
+            .candidate = if (state.candidate) |*value| value else null,
+            .failure = std.mem.sliceTo(&state.candidate_failure, 0),
+            .collection = std.mem.sliceTo(&state.root, 0),
+            .busy = busy,
+            .light = context.light,
+        })) {
+            .none => {},
+            .back => state.stage = .home,
+            .toggle_theme => action = .toggle_theme,
+            .create => action = .create,
+            .import_git => {
                 state.clearImport();
-                state.selector = index;
-                state.confirmed = true;
-                state.stage = .keyboard;
+                state.selector = state.new_layout.entry;
+                state.stage = .source;
             },
         },
         else => action = try legacy(state, theme, context, busy),
@@ -373,11 +464,7 @@ fn home(state: *State, theme: ui.Theme, context: Context) !Action {
         },
         .new_layout => |index| {
             const keyboard = state.library.?.keyboards[index];
-            const first = state.library.?.layouts[keyboard.layouts[0]].entry;
-            state.clearImport();
-            state.selector = entryIndex(first);
-            state.confirmed = true;
-            state.stage = .keyboard;
+            state.openNewLayout(entryIndex(state.library.?.layouts[keyboard.layouts[0]].entry));
         },
         .add_keyboard => {
             state.catalog = .{};
@@ -464,11 +551,10 @@ fn legacy(state: *State, theme: ui.Theme, context: Context, busy: bool) !Action 
     const trail: []const []const u8 = switch (state.stage) {
         .source => &.{ "My Keyboards", "Import from Git" },
         .keyboard, .review => &.{ "My Keyboards", "New layout" },
-        .created => &.{ "My Keyboards", "Layout ready" },
         else => &.{ "My Keyboards", "Open" },
     };
     if (keyboards_ui.bar(theme, trail, context.light)) action = .toggle_theme;
-    if (!busy and state.stage != .created and ui.iconButton(theme, ui.control_icons.back, "Back to My Keyboards", "onboarding.back", .{ .x = 1270, .y = 14, .w = 204, .h = 36 }, false)) {
+    if (!busy and ui.iconButton(theme, ui.control_icons.back, "Back to My Keyboards", "onboarding.back", .{ .x = 1270, .y = 14, .w = 204, .h = 36 }, false)) {
         state.clearImport();
         state.stage = .home;
     }
@@ -479,11 +565,10 @@ fn legacy(state: *State, theme: ui.Theme, context: Context, busy: bool) !Action 
     defer content.deinit();
     if (busy) return action;
     const chosen = switch (state.stage) {
-        .home, .catalog => Action.none,
+        .home, .catalog, .new_layout => Action.none,
         .source => try drawSource(state),
         .keyboard => try drawKeyboard(state),
         .review => try drawReview(state, context.host_source),
-        .created => drawCreated(state),
         .open => drawOpen(state),
     };
     if (chosen != .none) action = chosen;
@@ -594,19 +679,6 @@ fn drawReview(state: *State, host_source: []const u8) !Action {
     const destination = .{ std.mem.sliceTo(&state.root, 0), std.mem.sliceTo(&state.directory, 0) };
     dvui.label(@src(), "Destination: {s}/keyboards/{s}", destination, .{});
     if (dvui.button(@src(), "Create new project", .{}, .{ .tag = "onboarding.commit" })) action = .create;
-    return action;
-}
-
-fn drawCreated(state: *State) Action {
-    var action: Action = .none;
-    dvui.label(@src(), "Saved, reopened and added to your collection.", .{}, .{});
-    if (dvui.button(@src(), "Open editor", .{}, .{})) action = .editor;
-    if (state.preparing_tutor) {
-        dvui.label(@src(), "Preparing the native tutor runner…", .{}, .{});
-        if (dvui.button(@src(), "Cancel tutor preparation", .{}, .{})) action = .cancel_tutor;
-    } else if (dvui.button(@src(), "Try tutor", .{}, .{})) {
-        action = .tutor;
-    }
     return action;
 }
 

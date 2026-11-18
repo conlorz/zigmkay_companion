@@ -58,8 +58,8 @@ fn advanceOnboarding(app: *App) !void {
             onboarding.catalog = .{ .family = 1, .confirmed = true };
         },
         12 => {
-            onboarding.stage = .keyboard;
-            onboarding.selector = 0;
+            onboarding.openNewLayout(lk7Entry());
+            onboarding.new_layout.template = 3;
         },
         16 => onboarding.stage = .source,
         20 => {
@@ -429,4 +429,9 @@ pub fn finish(app: *App) !void {
         if (!app.owner.closed) return error.ResidentCleanQuitFailed;
     }
     if (app.mode.is(.native_tray) and !app.tray.installed) return error.NativeTrayLifecycleFailed;
+}
+
+fn lk7Entry() usize {
+    for (desktop.onboarding.catalog.entries, 0..) |entry, index| if (std.mem.eql(u8, entry.selector, "lk7")) return index;
+    unreachable;
 }

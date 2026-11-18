@@ -90,3 +90,92 @@ test "renaming a layout is one undoable edit and refuses empty names" {
     const empty = try desktop.editor_dispatch.Request.capture(&model, .{ .rename_layout = @splat(0) });
     try t.expectError(error.InvalidName, owner.request(&model, empty));
 }
+
+const new_layout = desktop.new_layout;
+const transfer = new_layout.transfer;
+
+test "a layout moves between revisions by key index and reports what drops" {
+    const t = std.testing;
+    var eurmac = try p.profiles.create(t.allocator, .eurmac);
+    defer eurmac.deinit();
+    var small = try boards.OwnedBoard.init(t.allocator, "keycaprio_colemak_0_4");
+    defer small.deinit();
+    var moved = try transfer.transfer(t.allocator, eurmac.snapshot, small.board);
+    defer moved.deinit();
+    const report = moved.report;
+    try t.expectEqual(transfer.Match.key_index, report.match);
+    try t.expectEqual(@as(usize, 34), report.source_keys);
+    try t.expectEqual(@as(usize, 30), report.matched);
+    try t.expectEqual(@as(usize, 4), report.missingCount());
+    try t.expect(report.missing[33] and !report.missing[0]);
+    try t.expect(!report.exact());
+    try t.expectEqual(eurmac.snapshot.document.layers.len, moved.snapshot.document.layers.len);
+    try t.expect(std.meta.eql(eurmac.snapshot.document.layers[0].actions[0], moved.snapshot.document.layers[0].actions[0]));
+    try t.expectEqualStrings(small.board.key_ids[0], moved.snapshot.document.combos[0].key_ids[0]);
+    try p.snapshot.validate(moved.snapshot, small.board);
+}
+
+test "boards with the same key IDs match exactly and keep callbacks" {
+    const t = std.testing;
+    var older = try boards.OwnedBoard.init(t.allocator, "keycaprio_colemak_0_6");
+    defer older.deinit();
+    var newer = try boards.OwnedBoard.init(t.allocator, "keycaprio_colemak_0_7");
+    defer newer.deinit();
+    var original = try boards.createDefault(t.allocator, older);
+    defer original.deinit();
+    var moved = try transfer.transfer(t.allocator, original.snapshot, newer.board);
+    defer moved.deinit();
+    try t.expectEqual(transfer.Match.key_id, moved.report.match);
+    try t.expect(moved.report.exact());
+    try t.expectEqual(original.snapshot.document.callbacks.len, moved.snapshot.document.callbacks.len);
+    try t.expectEqual(original.snapshot.sources.len, moved.snapshot.sources.len);
+}
+
+test "new layouts start from templates, blank or a copy without touching the original" {
+    const t = std.testing;
+    const lk7 = desktop.library.catalog.find("lk7").?;
+    var buffer: new_layout.Templates = undefined;
+    const lk7_templates = new_layout.templates(lk7, &buffer);
+    try t.expectEqual(@as(usize, 4), lk7_templates.len);
+    var eurmac = try new_layout.prepare(t.allocator, t.io, lk7, .{ .template = lk7_templates[3] });
+    defer eurmac.deinit();
+    try t.expectEqualStrings("lk7_schematic_v1", eurmac.snapshot.document.physical_layout);
+    try t.expectEqualStrings("Q", eurmac.captions[0][0]);
+    const keycaprio = desktop.library.catalog.find("keycaprio_colemak_0_7").?;
+    try t.expectEqual(@as(usize, 2), new_layout.templates(keycaprio, &buffer).len);
+    var blank = try new_layout.prepare(t.allocator, t.io, keycaprio, .blank);
+    defer blank.deinit();
+    try t.expectEqual(@as(usize, 1), blank.snapshot.document.layers.len);
+
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try p.snapshot.save(t.allocator, t.io, tmp.dir, eurmac.snapshot, eurmac.board.board);
+    const before = try tmp.dir.readFileAlloc(t.io, "project.zon", t.allocator, .limited(p.Limits.document_bytes));
+    defer t.allocator.free(before);
+    const path = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(path);
+    var same = try new_layout.prepare(t.allocator, t.io, lk7, .{ .duplicate = path });
+    defer same.deinit();
+    try t.expect(same.report == null);
+    const small = desktop.library.catalog.find("keycaprio_colemak_0_4").?;
+    var moved = try new_layout.prepare(t.allocator, t.io, small, .{ .duplicate = path });
+    defer moved.deinit();
+    try t.expectEqual(@as(usize, 4), moved.report.?.missingCount());
+    const after = try tmp.dir.readFileAlloc(t.io, "project.zon", t.allocator, .limited(p.Limits.document_bytes));
+    defer t.allocator.free(after);
+    try t.expectEqualStrings(before, after);
+}
+
+test "directory names are readable and unique" {
+    const Taken = struct {
+        names: []const []const u8,
+        pub fn contains(self: @This(), name: []const u8) bool {
+            for (self.names) |taken| if (std.mem.eql(u8, taken, name)) return true;
+            return false;
+        }
+    };
+    var buffer: [128]u8 = undefined;
+    try std.testing.expectEqualStrings("eurkey-next-mac", new_layout.directoryName(&buffer, "EurKEY Next Mac", Taken{ .names = &.{} }));
+    try std.testing.expectEqualStrings("colemak-jan-2", new_layout.directoryName(&buffer, "Colemak (Jan)", Taken{ .names = &.{"colemak-jan"} }));
+    try std.testing.expectEqualStrings("layout", new_layout.directoryName(&buffer, "äö", Taken{ .names = &.{} }));
+}

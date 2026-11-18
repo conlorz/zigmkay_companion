@@ -61,3 +61,4 @@ pub const practice_retention = @import("practice_retention.zig");
 pub const owned_worker = @import("owned_worker.zig");
 pub const onboarding = @import("onboarding.zig");
 pub const library = @import("library.zig");
+pub const new_layout = @import("new_layout.zig");

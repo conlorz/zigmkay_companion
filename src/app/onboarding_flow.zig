@@ -20,6 +20,7 @@ pub fn poll(app: *App) !void {
         refreshLibrary(app);
     }
     try openWhenSaved(app);
+    onboarding.refreshCandidate(app.gpa, app.io);
     const result = onboarding.poll(app.owner_generation) catch |err| failed: {
         onboarding.report(err);
         break :failed null;
@@ -56,8 +57,9 @@ fn switchProject(app: *App, opened: *desktop.onboarding.Opened) !void {
     if (opened.collection) |root| try keyboard_onboarding.State.set(&onboarding.root, root);
     try onboarding.reloadCollection(app.gpa, app.io);
     refreshLibrary(app);
-    onboarding.stage = if (onboarding.operation == .create) .created else .home;
-    onboarding.active = onboarding.operation == .create;
+    // A created or opened layout goes straight to the editor.
+    onboarding.stage = .home;
+    onboarding.active = false;
     onboarding.discard = false;
     app.rememberProject();
     // Monitoring starts with the first project the user selects.
