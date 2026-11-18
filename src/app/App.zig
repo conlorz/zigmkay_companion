@@ -425,7 +425,7 @@ fn draw(app: *App, board: *const boards.OwnedBoard, now_us: u64) !Drawn {
     // DVUI rounds its render scale to hundredths. Keep the fitted editor
     // aligned with the exact pixel edge, including on Retina displays.
     if (!app.practicing and app.window.data().rect.w > 0) app.window.natural_scale = app.window.rect_pixels.w / app.window.data().rect.w;
-    if (!app.fonts_installed and (app.frame_limit == null or app.mode.gallery() != null or app.mode.isStatus())) {
+    if (!app.fonts_installed and (app.frame_limit == null or app.mode.gallery() != null or app.mode.isStatus() or app.mode.isDrawers())) {
         try editor_fonts.install(app.gpa, app.io);
         app.fonts_installed = true;
     }

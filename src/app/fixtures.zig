@@ -26,6 +26,52 @@ pub const State = struct {
 pub fn beforeFrame(app: *App) !void {
     if (app.mode.is(.catalog)) try showCatalogEntry(app);
     if (app.mode.is(.onboarding)) try advanceOnboarding(app);
+    if (app.mode.isDrawers()) try showDrawer(app);
+}
+
+/// The drawers fixture shows the combo, callback and encoder drawers, each in
+/// the dark and then the light theme for four frames. Combos and callbacks use
+/// the Keycaprio 0.7 default; encoders use the first board with encoder slots.
+/// A replaced project closes popups, so drawers open one frame after it.
+fn showDrawer(app: *App) !void {
+    const scene = app.count / 4;
+    if (scene >= 6 or scene % 2 == 1) {
+        if (app.count % 4 == 0) app.view.toolbar.light = scene % 2 == 1;
+        return;
+    }
+    if (app.count % 4 == 0) {
+        app.view.toolbar.light = false;
+        var selector: []const u8 = "keycaprio_colemak_0_7";
+        if (scene == 4) for (desktop.onboarding.catalog.entries) |entry| if (entry.encoder_action_slots > 0) {
+            selector = entry.selector;
+            break;
+        };
+        var selected = try boards.OwnedBoard.init(app.gpa, selector);
+        defer selected.deinit();
+        var template = try boards.createDefault(app.gpa, selected);
+        defer template.deinit();
+        var replacement = try desktop.model.Model.init(app.gpa, selected.board, template.snapshot);
+        std.mem.swap(desktop.model.Model, &app.model, &replacement);
+        replacement.deinit();
+        app.owner_generation += 1;
+        return;
+    }
+    if (app.count % 4 != 1) return;
+    const view = &app.view;
+    switch (scene) {
+        0 => {
+            view.combo = try desktop.combo_editor.Session.init(&app.model);
+            if (app.model.document().combos.len != 0) try view.combo.?.pick(&app.model, 0);
+            view.modal = .combo;
+        },
+        2 => view.modal = .callback,
+        else => {
+            view.encoders = try desktop.encoder_editor.Session.init(&app.model);
+            // One staged, unapplied slot edit.
+            if (view.encoders.?.count > 1) view.encoders.?.drafts[1] = .{ .media_key = .VolumeUp };
+            view.modal = .encoders;
+        },
+    }
 }
 
 /// Shows each catalog board for four frames, the last two in the tutor.
@@ -265,6 +311,7 @@ pub fn statusScene(app: *const App) usize {
 }
 
 pub fn resizeStatusWindow(app: *App) void {
+    if (app.mode.isDrawers() and app.count == 1) _ = c.SDL_SetWindowSize(app.native.window, 1440, 1000);
     if (!app.mode.isStatus() or (app.count != 1 and app.count != 21)) return;
     const narrow = app.count == 21;
     _ = c.SDL_SetWindowSize(app.native.window, if (narrow) 900 else 1440, if (narrow) 600 else 1000);
@@ -366,6 +413,11 @@ fn pushEvent(event: *c.SDL_Event) !void {
 /// Verifies the drawn frame and saves screenshots of the screenshot fixtures.
 pub fn capture(app: *App) !void {
     if (app.mode.isStatus() and app.count % 4 == 0) try captureStatus(app);
+    if (app.mode.isDrawers() and app.count % 4 == 0) {
+        app.window.endRendering(.{ .manage_backend = false });
+        const path = try std.fmt.allocPrintSentinel(app.window.arena(), ".zig-cache/editor-drawers/{d}.bmp", .{(app.count - 1) / 4}, 0);
+        try screenshot(app, path, error.DrawerScreenshotRead, error.DrawerScreenshotSave);
+    }
     try rundown_gallery.capture(app);
     if (app.mode.is(.onboarding) or app.mode.is(.catalog)) try captureOnboarding(app);
 }
