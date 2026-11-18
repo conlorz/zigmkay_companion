@@ -59,7 +59,7 @@ fn drawSource(theme: ui.Theme, context: Context, intent: *Intent) !void {
         var buffer: [96]u8 = undefined;
         const commit = if (context.source) |source| if (source.provenance.commit) |value| value[0..@min(7, value.len)] else "local folder" else "sample";
         const label = std.fmt.bufPrint(&buffer, "Analyzed · {s}", .{commit}) catch "Analyzed";
-        page.pill(theme, label, .{ .x = 1116, .y = 80, .w = 236, .h = 40 }, ui.color(0x1F3A2E), null, ui.color(0x6EC59A), 1);
+        page.pill(theme, label, .{ .x = 1116, .y = 80, .w = 236, .h = 40 }, ui.mix(theme.panel, theme.success, 0.16), null, theme.success, 1);
         if (ui.iconButtonEnabled(theme, ui.control_icons.refresh, "Analyze again", "import.analyze", .{ .x = 1362, .y = 80, .w = 158, .h = 40 }, false, !context.busy)) intent.* = .analyze;
     } else if (context.inspected) {
         if (ui.iconButtonEnabled(theme, ui.control_icons.forward, "Analyze keymap", "import.analyze", .{ .x = 1116, .y = 80, .w = 404, .h = 40 }, true, !context.busy)) intent.* = .analyze;
@@ -105,7 +105,7 @@ fn drawSteps(theme: ui.Theme, context: Context) void {
         page.text(theme, step[0], .{ .x = 48, .y = y, .w = 300, .h = 22 }, 17, theme.text, true, 20 + index);
         page.text(theme, step[1], .{ .x = 48, .y = y + 26, .w = 1400, .h = 20 }, 14, theme.muted, false, 30 + index);
     }
-    if (context.failure.len != 0) page.text(theme, context.failure, .{ .x = 48, .y = 560, .w = 1400, .h = 20 }, 14, ui.color(0xF06B73), false, 40);
+    if (context.failure.len != 0) page.text(theme, context.failure, .{ .x = 48, .y = 560, .w = 1400, .h = 20 }, 14, theme.danger, false, 40);
 }
 
 fn drawComparison(theme: ui.Theme, context: Context, comparison: *const Comparison, intent: *Intent) !void {
@@ -185,8 +185,8 @@ fn well(theme: ui.Theme, rect: dvui.Rect, id: usize) void {
 fn differences(theme: ui.Theme, comparison: *const Comparison, host_source: []const u8) void {
     const report = comparison.report;
     const exact = report.exact();
-    const amber = ui.color(0xF59E0B);
-    const green = ui.color(0x6EC59A);
+    const amber = theme.warning;
+    const green = theme.success;
     const tint = if (exact) green else amber;
     const box = dvui.box(@src(), .{}, .{
         .rect = .{ .x = 16, .y = 660, .w = 1504, .h = 204 },

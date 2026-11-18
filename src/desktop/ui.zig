@@ -567,12 +567,12 @@ pub fn iconButtonEnabled(t: Theme, icon: ?[]const u8, text: []const u8, tag: []c
 }
 
 /// The green "On keyboard" pill.
-pub fn runningBadge(bounds: dvui.Rect, id: usize) void {
+pub fn runningBadge(t: Theme, bounds: dvui.Rect, id: usize) void {
     const pill = dvui.box(@src(), .{}, .{
         .id_extra = id,
         .rect = bounds,
         .background = true,
-        .color_fill = .{ .color = color(0x1F3A2E) },
+        .color_fill = .{ .color = mix(t.panel, t.success, 0.16) },
         .corners = .all(bounds.h / 2),
         .padding = .{},
         .margin = .{},
@@ -582,14 +582,14 @@ pub fn runningBadge(bounds: dvui.Rect, id: usize) void {
         .id_extra = id,
         .rect = .{ .x = bounds.x + 10, .y = bounds.y + bounds.h / 2 - 3.5, .w = 7, .h = 7 },
         .background = true,
-        .color_fill = .{ .color = color(0x22C55E) },
+        .color_fill = .{ .color = t.success },
         .corners = .all(3.5),
         .padding = .{},
         .margin = .{},
     });
     dot.deinit();
-    var green = Theme.get(false);
-    green.text = color(0x6EC59A);
+    var green = t;
+    green.text = t.success;
     var opts = options(green, .{ .x = bounds.x + 22, .y = bounds.y, .w = bounds.w - 26, .h = bounds.h }, 11);
     opts.padding = .{};
     opts.id_extra = id;
