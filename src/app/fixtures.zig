@@ -327,6 +327,9 @@ pub fn showStatusDetails(app: *App) void {
     if (statusScene(app) != 3) app.view.toolbar.menu_open = false;
     // Scene 2 shows the Export Zig source sheet.
     app.view.modal = if (statusScene(app) == 2) .paths else .none;
+    // Scene 3 shows the flash panel of a failed firmware build.
+    app.flash.panel = statusScene(app) == 3;
+    app.flash.failure = if (statusScene(app) == 3) error.FirmwareBuildFailed else null;
 }
 
 pub fn statusToolbar(app: *const App, toolbar: *@FieldType(editor.Frame, "toolbar")) void {
