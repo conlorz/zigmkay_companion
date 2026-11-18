@@ -558,8 +558,9 @@ test "host palette owns Unicode previews and chord actions refuse stale drops" {
     try t.expectEqualStrings("A", cache.caption(4, true, false));
     try t.expectEqualStrings("λ", cache.caption(4, false, true));
     try t.expectEqualStrings("λ", cache.caption(4, true, true));
-    try t.expectEqualStrings("␣", cache.caption(44, true, true));
-    try t.expectEqualStrings("Super", cache.caption(227, false, false));
+    const symbols = desktop.labels.keycap_symbols;
+    try t.expectEqualStrings(symbols.Symbol.space.text(), cache.caption(44, true, true));
+    try t.expectEqualStrings(symbols.Symbol.windows.text(), cache.caption(227, false, false));
     const BadTranslator = struct {
         pub fn keyToText(_: *@This(), _: desktop.assignment.Chord) struct { data: [1]u8, len: usize } {
             return .{ .data = .{0xff}, .len = 1 };

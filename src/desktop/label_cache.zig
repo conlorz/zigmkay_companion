@@ -469,8 +469,9 @@ test "project captions preserve thumb holds translated labels and all modifier c
     var first = try buildProjectCache(t.allocator, &source, doc);
     defer first.deinit();
     try t.expectEqual(@as(usize, 1024), first.entries.len);
-    try t.expectEqualStrings("␣\nHold Callback 7", first.lookup(0, 0, .{}).caption.?);
-    try t.expectEqualStrings("↩\nHold L42", first.lookup(0, 3, .{}).caption.?);
+    var plain: [64]u8 = undefined;
+    try t.expectEqualStrings("␣\nƒ7", labels.keycap_symbols.plain(first.lookup(0, 0, .{}).caption.?, &plain));
+    try t.expectEqualStrings("↩\nL0", labels.keycap_symbols.plain(first.lookup(0, 3, .{}).caption.?, &plain));
     try t.expectEqualStrings("a", first.lookup(0, 2, .{}).label.?);
     try t.expectEqualStrings("@", first.lookup(0, 2, .{ .left_alt = true }).label.?);
     try t.expect(first.lookup(0, 1, .{}).label == null);
@@ -528,7 +529,8 @@ test "dead shortcut and shifted tap variants remain distinct from captions" {
     var cache = try buildProjectCache(t.allocator, &source, fixtureDocument(actions));
     defer cache.deinit();
     try t.expectEqualStrings("(", cache.lookup(0, 0, .{}).caption.?);
-    try t.expectEqualStrings("(\nHold L42", cache.lookup(0, 1, .{}).caption.?);
+    var plain: [64]u8 = undefined;
+    try t.expectEqualStrings("(\nL0", labels.keycap_symbols.plain(cache.lookup(0, 1, .{}).caption.?, &plain));
     try t.expectEqualStrings("(", cache.lookup(0, 2, .{}).label.?);
     try t.expectEqualStrings(")", cache.lookup(0, 3, .{ .right_shift = true }).caption.?);
     var buffer: [64]u8 = undefined;
