@@ -54,6 +54,7 @@ the window (`geometry.fitScale`). All coordinates below are canvas units.
 | text | `#EDEFF2` | `#1F2329` | Primary text and legends |
 | muted | `#9AA3B0` | `#667180` | Secondary text, hold legends |
 | accent | `#3B82F6` | `#2563EB` | Primary actions, selection outside the keyboard |
+| danger | `#F06B73` | `#DC2626` | Failures and destructive actions |
 
 Text uses Inter (embedded): regular for body text, SemiBold for headings.
 Sizes: panel title 19, body 14, secondary 12, keycap legend 22 (fitted).
@@ -139,8 +140,10 @@ device offline"). Tutor guidance keeps its amber target and cyan hold fills.
 ## Secondary screens (5–10)
 
 Combos, Encoders, Callbacks and Open / Export open as centered modal drawers
-on a dimmed editor, 900 wide, with a title, one sentence of explanation, the
-content and a footer with the primary action on the right. Build and Flash
+on a dimmed editor, 900 wide with 28 padding, with a title, one sentence of
+explanation, the content and a footer with the primary action on the right.
+Encoder actions are labeled clockwise or counter-clockwise only where the
+board definition says so; other slots read "Action slot N". Build and Flash
 activity opens from Details below the status row. My Keyboards replaces the
 editor with a full-window collection view.
 
