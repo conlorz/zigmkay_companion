@@ -312,11 +312,11 @@ test "frozen runner survives source output replacement and preserves corrupt cac
     try tmp.dir.writeFile(t.io, .{ .sub_path = "output", .data = "new build output" });
     try frozen.verifyFile(t.allocator, t.io, inputs);
     try t.expectError(error.RunnerArtifactChanged, manifest.verifyFile(t.allocator, t.io, inputs));
-    // Explicitly loosen the fixture's read-only permission to simulate external
-    // corruption; the production freeze operation never repairs that entry.
-    const file = try std.Io.Dir.cwd().openFile(t.io, frozen.record.path, .{});
-    defer file.close(t.io);
-    try file.setPermissions(t.io, .executable_file);
+    // Replace the read-only entry to simulate external corruption; the
+    // production freeze operation never repairs that entry. Deleting works on
+    // every platform, while clearing Windows' read-only attribute needs a
+    // handle with attribute write access that Zig does not open.
+    try std.Io.Dir.cwd().deleteFile(t.io, frozen.record.path);
     try std.Io.Dir.cwd().writeFile(t.io, .{ .sub_path = frozen.record.path, .data = "corrupt cache" });
     try tmp.dir.writeFile(t.io, .{ .sub_path = "output", .data = "runner executable bytes" });
     try t.expectError(error.RunnerArtifactChanged, freeze(t.allocator, t.io, tmp.dir, manifest, inputs));
