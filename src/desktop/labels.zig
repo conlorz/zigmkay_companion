@@ -244,6 +244,22 @@ fn knownUsage(code: u8, buffer: []u8) []const u8 {
     return std.fmt.bufPrint(buffer, "HID {d}", .{code}) catch "?";
 }
 
+/// An enum tag in words for the inspector: "VolumeUp" becomes "Volume up".
+pub fn words(tag: []const u8, buffer: []u8) []const u8 {
+    var used: usize = 0;
+    for (tag, 0..) |char, index| {
+        const upper = std.ascii.isUpper(char);
+        if (upper and index != 0 and used < buffer.len) {
+            buffer[used] = ' ';
+            used += 1;
+        }
+        if (used == buffer.len) break;
+        buffer[used] = if (upper and index != 0) std.ascii.toLower(char) else char;
+        used += 1;
+    }
+    return buffer[0..used];
+}
+
 pub fn tap(value: p.Tap, buffer: []u8) []const u8 {
     return tapLabel(value, buffer, false);
 }
@@ -267,8 +283,9 @@ fn tapLabelWithLayout(
         appendSummary(buffer, &used, keyPressLabel(km, key, physical, false, &key_buffer, &scratch));
         if (key.dead) appendSummary(buffer, &used, "Dead key");
     }
-    if (value.media_key) |media| appendSummary(buffer, &used, @tagName(media));
-    if (value.mouse_action) |mouse| appendSummary(buffer, &used, @tagName(mouse));
+    var name: [64]u8 = undefined;
+    if (value.media_key) |media| appendSummary(buffer, &used, words(@tagName(media), &name));
+    if (value.mouse_action) |mouse| appendSummary(buffer, &used, words(@tagName(mouse), &name));
     if (value.custom) |custom| appendSummary(buffer, &used, signal(custom, &scratch));
     if (value.one_shot) |one| {
         appendSummary(buffer, &used, "One-shot");
@@ -694,7 +711,8 @@ test "compact keycaps draw keyboard symbols and keep descriptive search labels" 
     try expectCaption("⌃⌥⇧⌘", keycapModifiers(.macos, 0xff, &buffer));
     try expectCaption("Ctrl+⇧+Alt+Win", keycapModifiers(.windows, 0xff, &buffer));
     try expectCaption("🔊", tapLabel(.{ .media_key = .VolumeUp }, &buffer, true));
-    try std.testing.expectEqualStrings("VolumeUp", tap(.{ .media_key = .VolumeUp }, &buffer));
+    try std.testing.expectEqualStrings("Volume up", tap(.{ .media_key = .VolumeUp }, &buffer));
+    try std.testing.expectEqualStrings("Wheel down", tap(.{ .mouse_action = .WheelDown }, &buffer));
     const chord: p.Tap = .{ .key_press = .{ .tap_keycode = 29, .tap_modifiers = .{ .left_gui = true } } };
     try expectCaption(if (running_host == .macos) "⌘Z" else "Win+Z", tapLabel(chord, &buffer, true));
     try std.testing.expect(
@@ -888,8 +906,8 @@ test "compound tap and one shot summaries show every populated schema field" {
     for ([_][]const u8{
         "A",
         "Dead key",
-        "VolumeUp",
-        "WheelDown",
+        "Volume up",
+        "Wheel down",
         "Toggle companion logging",
         "One-shot",
         "L42",

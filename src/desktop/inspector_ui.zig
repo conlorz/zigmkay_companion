@@ -318,11 +318,13 @@ fn tapChips(self: *Context, value: anytype) void {
         chip(self, text, "inspector.remove.tap.one_shot", .{ .tap_one_shot = null });
     }
     if (value.media_key) |media| {
-        const text = if (fieldMixed(self, "tap", "media_key")) "Mixed media" else @tagName(media);
+        var name: [64]u8 = undefined;
+        const text = if (fieldMixed(self, "tap", "media_key")) "Mixed media" else labels.words(@tagName(media), &name);
         chip(self, text, "inspector.remove.tap.media", .{ .tap_media = null });
     }
     if (value.mouse_action) |mouse| {
-        const text = if (fieldMixed(self, "tap", "mouse_action")) "Mixed mouse" else @tagName(mouse);
+        var name: [64]u8 = undefined;
+        const text = if (fieldMixed(self, "tap", "mouse_action")) "Mixed mouse" else labels.words(@tagName(mouse), &name);
         chip(self, text, "inspector.remove.tap.mouse", .{ .tap_mouse = null });
     }
     if (value.custom) |id| {
