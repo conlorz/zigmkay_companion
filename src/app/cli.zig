@@ -69,6 +69,10 @@ pub const Mode = union(enum) {
         return mode.is(.status) or mode.is(.native_status);
     }
 
+    pub fn isDrawers(mode: Mode) bool {
+        return mode.is(.drawers) or mode.is(.native_drawers);
+    }
+
     /// Draft fixtures feed key events through the native runner processor.
     pub fn isDraft(mode: Mode) bool {
         return mode.is(.draft) or mode.is(.build);
@@ -121,7 +125,10 @@ pub const Fixture = struct {
         onboarding,
         catalog,
         status,
+        /// `--offline-drawers-frames`: the combo, callback and encoder drawers.
+        drawers,
         native_status,
+        native_drawers,
         practice,
         rundown,
         /// `--native-<scene>-frames` and `--native-layout-<scene>-frames`.
@@ -154,7 +161,7 @@ pub const Fixture = struct {
 
         fn needsNativeVideo(kind: Kind) bool {
             return switch (kind) {
-                .native_tray, .gallery, .native_status => true,
+                .native_tray, .gallery, .native_status, .native_drawers => true,
                 else => false,
             };
         }
@@ -242,7 +249,9 @@ fn parseKind(flag: []const u8) error{Usage}!Fixture.Kind {
         .{ "--offline-onboarding-frames", .onboarding },
         .{ "--offline-catalog-frames", .catalog },
         .{ "--offline-status-frames", .status },
+        .{ "--offline-drawers-frames", .drawers },
         .{ "--native-status-frames", .native_status },
+        .{ "--native-drawers-frames", .native_drawers },
         .{ "--offline-practice-frames", .practice },
         .{ "--offline-rundown-frames", .rundown },
         .{ "--offline-companion-frames", .companion },
@@ -312,6 +321,7 @@ test "physical flash requires explicit authorization" {
 test "fixture modes keep their frame bounds and video requirements" {
     const t = std.testing;
     try expectFixture(.{ .kind = .launch, .frames = 3 }, &.{ "app", "--offline-frames", "3" }, dummy_video);
+    try expectFixture(.{ .kind = .drawers, .frames = 24 }, &.{ "app", "--offline-drawers-frames", "24" }, dummy_video);
     try expectFixture(.{ .kind = .build, .frames = 30_000 }, &.{ "app", "--offline-build-frames", "30000" }, dummy_video);
     try expectFixture(
         .{ .kind = .{ .draft = "/m.zon" }, .frames = 600 },
