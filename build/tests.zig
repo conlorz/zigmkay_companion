@@ -32,7 +32,7 @@ pub const Suite = struct {
     /// Compile `module` as a test, run it for `step` and compile it for `check`.
     pub fn add(s: *Suite, step: *std.Build.Step, area: Area, module: *std.Build.Module) *std.Build.Step.Run {
         const source = module.root_source_file orelse @panic("Test root without a source file");
-        return s.addTest(step, area, module, repositoryPath(source));
+        return s.addTest(step, area, module, repositoryPath(s.b, source));
     }
 
     /// `add` for a generated module whose files are copies of the repository
@@ -108,11 +108,15 @@ fn listed(roots: []const []const u8, root: []const u8) bool {
     return false;
 }
 
-fn repositoryPath(source: std.Build.LazyPath) []const u8 {
-    return switch (source) {
-        .src_path => |path| path.sub_path,
+/// The root's repository path with `/` separators, as the inventories list
+/// it; modules store Windows source paths with `\`.
+fn repositoryPath(b: *std.Build, source: std.Build.LazyPath) []const u8 {
+    const path: []u8 = switch (source) {
+        .src_path => |path| b.allocator.dupe(u8, path.sub_path) catch @panic("OOM"),
         else => @panic("Test roots must be repository files"),
     };
+    std.mem.replaceScalar(u8, path, '\\', '/');
+    return path;
 }
 
 /// Run `exe` with `args` under SDL's dummy video and software renderer: no
