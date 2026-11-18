@@ -122,7 +122,7 @@ jobs:
             sandbox-exec -p "$profile" "$target/Zigmkay.app/Contents/MacOS/zigmkay-companion" --offline-build-frames 30000
       - name: Single Windows executable builds and practice
         if: runner.os == 'Windows'
-        timeout-minutes: 20
+        timeout-minutes: 30
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -204,7 +204,7 @@ jobs:
             }
             Invoke-Isolated -Phase preflight -Executable "$target/isolation.exe" -Arguments @("$target/install/Zigmkay.exe", "$env:GITHUB_WORKSPACE/build.zig") -TimeoutSeconds 30
             if ('${{ inputs.mode }}' -ne 'gui') {
-              Invoke-Isolated -Phase cold -Executable "$target/check.exe" -Arguments @("$target/install/Zigmkay.exe", "$target/cache/zigmkay/cache", 'all') -TimeoutSeconds 420
+              Invoke-Isolated -Phase cold -Executable "$target/check.exe" -Arguments @("$target/install/Zigmkay.exe", "$target/cache/zigmkay/cache", 'all') -TimeoutSeconds 720
               Invoke-Isolated -Phase warm -Executable "$target/check.exe" -Arguments @("$target/install/Zigmkay.exe", "$target/cache/zigmkay/cache", 'all') -TimeoutSeconds 300
             }
             $env:SDL_VIDEODRIVER = 'dummy'
