@@ -41,20 +41,23 @@ pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame, theme:
     const output = try a.alloc(desktop.physical_view.DrawKey, frame.geometry.len);
     const pressed = try a.alloc(bool, doc.key_ids.len);
     @memset(pressed, false);
-    const area: desktop.physical_view.Rect = .{ .x = 18, .y = 100, .w = 760, .h = 305 };
+    // The canvas fills the panel below its header; geometry keeps its aspect.
+    const area: desktop.physical_view.Rect = .{ .x = 20, .y = 60, .w = 760, .h = 428 };
     const plan = try desktop.physical_view.plan(output, frame.geometry, frame.labels, model.layer, .{}, area, .{ .pressed = pressed });
     const box = ui.panel(theme, .physical);
     defer box.deinit();
-    ui.label(theme, frame.board_name, .{ .x = 20, .y = 20, .w = 205, .h = 25 }, 19);
-    ui.label(theme, doc.layers[model.layer].name, .{ .x = 242, .y = 23, .w = 250, .h = 25 }, 16);
-    ui.label(theme, frame.fidelity, .{ .x = 20, .y = 64, .w = 500, .h = 24 }, 12);
+    drawLayerChip(theme, doc.layers[model.layer].name, model.layer);
+    var muted = theme;
+    muted.text = theme.muted;
+    const chip_width = layerChipWidth(theme, doc.layers[model.layer].name);
+    ui.label(muted, frame.board_name, .{ .x = 20 + chip_width + 14, .y = 26, .w = 540 - chip_width, .h = 18 }, 12);
+    ui.label(muted, frame.fidelity, .{ .x = 20, .y = 498, .w = 440, .h = 18 }, 12);
+    ui.label(muted, "Large: tap · small: hold · layer while held", .{ .x = 520, .y = 498, .w = 260, .h = 18 }, 12);
     var result: ?Result = null;
-    const views: []const []const u8 = &.{ "Keys", "Combos", "Encoders" };
-    const views_options = ui.options(theme, .{ .x = 626, .y = 15, .w = 150, .h = 36 }, 13);
-    if (dvui.dropdown(@src(), views, .{ .choice = &view.choice }, .{}, views_options)) {
+    if (try drawViewSwitch(view, theme)) |choice| {
         const captured = try desktop.key_selection.Action.capture(model, model.primary, false);
-        if (view.choice == 1) result = .{ .combo = captured };
-        if (view.choice == 2) result = .{ .encoders = captured };
+        if (choice == 1) result = .{ .combo = captured };
+        if (choice == 2) result = .{ .encoders = captured };
     }
     view.canvas_focus = false;
     if (plan.len == 0) ui.label(theme, "Physical geometry unavailable", .{ .x = 20, .y = 110, .w = 600, .h = 30 }, 16);
@@ -64,6 +67,72 @@ pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame, theme:
     };
     for (plan) |item| try drawKey(view, model, frame, item, theme, &result);
     return result;
+}
+
+fn layerChipWidth(theme: ui.Theme, name: []const u8) f32 {
+    return @min(@as(f32, 220), ui.captionSize(name, theme.captionStyle(19, 0)).w + 44);
+}
+
+/// The edited layer as a pill in its color.
+fn drawLayerChip(theme: ui.Theme, name: []const u8, layer: usize) void {
+    const color = ui.layerColor(theme, layer);
+    const width = layerChipWidth(theme, name);
+    const chip = dvui.box(@src(), .{}, .{
+        .rect = .{ .x = 20, .y = 18, .w = width, .h = 30 },
+        .background = true,
+        .color_fill = .{ .color = ui.mix(theme.panel, color, 0.2) },
+        .color_border = .{ .color = color },
+        .border = .all(1.5),
+        .corners = .all(15),
+        .padding = .{},
+        .margin = .{},
+        .tag = "keyboard.layer",
+    });
+    chip.deinit();
+    const dot = dvui.box(@src(), .{}, .{
+        .rect = .{ .x = 31, .y = 28, .w = 10, .h = 10 },
+        .background = true,
+        .color_fill = .{ .color = color },
+        .corners = .all(5),
+        .padding = .{},
+        .margin = .{},
+    });
+    dot.deinit();
+    var style = theme.captionStyle(19, 1);
+    style.align_x = 0;
+    ui.caption(name, .{ .x = 48, .y = 18, .w = width - 56, .h = 30 }, style);
+}
+
+/// Keys, Combos and Encoders as a segmented control. Keys is the canvas; the
+/// other two open their editors. Returns the chosen segment when clicked.
+fn drawViewSwitch(view: *View, theme: ui.Theme) !?usize {
+    const track = dvui.box(@src(), .{}, .{
+        .rect = .{ .x = 580, .y = 16, .w = 200, .h = 34 },
+        .background = true,
+        .color_fill = .{ .color = theme.control },
+        .corners = .all(8),
+        .padding = .{},
+        .margin = .{},
+    });
+    track.deinit();
+    const names = [_][]const u8{ "Keys", "Combos", "Encoders" };
+    const widths = [_]f32{ 60, 72, 60 };
+    var x: f32 = 584;
+    var chosen: ?usize = null;
+    for (names, widths, 0..) |name, width, index| {
+        var opts = ui.options(theme, .{ .x = x, .y = 20, .w = width, .h = 26 }, 13);
+        opts.id_extra = index;
+        opts.tag = try std.fmt.allocPrint(dvui.currentWindow().arena(), "keyboard.view.{d}", .{index});
+        opts.corners = .all(6);
+        opts.padding = .{};
+        opts.background = index == 0;
+        opts.color_fill = .{ .color = ui.mix(theme.control, theme.text, 0.12) };
+        opts.color_text = .{ .color = if (index == 0) theme.text else theme.muted };
+        if (dvui.button(@src(), name, .{}, opts) and index != 0) chosen = index;
+        x += width;
+    }
+    view.choice = 0;
+    return chosen;
 }
 
 /// The caption a transparent key falls through to, from the nearest lower

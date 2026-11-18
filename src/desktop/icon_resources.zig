@@ -12,6 +12,26 @@ const Symbol = desktop.labels.keycap_symbols.Symbol;
 const lucide = icons.tvg.lucide;
 
 pub const gui_icon = lucide.command;
+
+/// Icons of editor controls, outside keycaps.
+pub const controls = struct {
+    pub const keyboard = lucide.keyboard;
+    pub const open = lucide.@"folder-open";
+    pub const build = lucide.wrench;
+    pub const flash = lucide.zap;
+    pub const undo = lucide.@"undo-2";
+    pub const redo = lucide.@"redo-2";
+    pub const light = lucide.sun;
+    pub const dark = lucide.moon;
+    pub const add = lucide.plus;
+    pub const copy = lucide.copy;
+    pub const paste = lucide.clipboard;
+    pub const remove = lucide.x;
+    pub const duplicate = lucide.@"copy-plus";
+    pub const expand = lucide.@"chevron-down";
+    pub const next = lucide.@"chevron-right";
+    pub const search = lucide.search;
+};
 const Entry = struct { name: []const u8, bytes: []const u8 };
 
 pub const entries = [_]Entry{

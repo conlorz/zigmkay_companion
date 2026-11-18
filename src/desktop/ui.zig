@@ -197,9 +197,12 @@ fn drawLine(line: CaptionLine, start: f32, y: f32, tint: dvui.Color, style: Capt
 }
 
 fn drawText(text: []const u8, font: dvui.Font, tint: dvui.Color, bounds: dvui.Rect, id: usize) void {
-    dvui.labelNoFmt(@src(), text, .{ .align_y = 0.5 }, .{
+    // Snapped glyph metrics can exceed the measured width by a pixel or two;
+    // widen the rect symmetrically so centered text is never clipped.
+    const slack = font.size * 0.5;
+    dvui.labelNoFmt(@src(), text, .{ .align_x = 0.5, .align_y = 0.5 }, .{
         .id_extra = id,
-        .rect = bounds,
+        .rect = .{ .x = bounds.x - slack, .y = bounds.y, .w = bounds.w + slack * 2, .h = bounds.h },
         .font = font,
         .color_text = .{ .color = tint },
         .padding = .{},
@@ -344,7 +347,7 @@ pub fn panel(t: Theme, which: geometry.Panel) *dvui.BoxWidget {
     var bounds = rect(geometry.panel(which));
     const width = @max(@as(f32, 1536), dvui.parentGet().data().contentRect().w);
     if (which == .toolbar) bounds.w = width;
-    if (which == .inspector) bounds.w = width - bounds.x - 15;
+    if (which == .inspector) bounds.w = width - bounds.x - 16;
     var opts = options(t, bounds, 14);
     opts.tag = @tagName(which);
     opts.id_extra = @backingInt(which);
@@ -353,6 +356,11 @@ pub fn panel(t: Theme, which: geometry.Panel) *dvui.BoxWidget {
     opts.border = .all(1);
     opts.padding = .{};
     opts.corners = .all(12);
+    // The top bar is a full-width strip with a bottom edge.
+    if (which == .toolbar) {
+        opts.border = .{ .h = 1 };
+        opts.corners = .all(0);
+    }
     return dvui.box(@src(), .{}, opts);
 }
 
@@ -394,4 +402,51 @@ pub fn richButton(src: std.builtin.SourceLocation, text: []const u8, style: Capt
 /// The dvui theme for the editor appearance, in the editor font.
 pub fn dvuiTheme(window: *const dvui.Window, light: bool) dvui.Theme {
     return fonts.theme(window, if (light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark);
+}
+
+pub const control_icons = icon_resources.controls;
+
+/// A button with an optional leading icon and optional text, centered.
+/// `primary` fills it with the accent color.
+pub fn iconButton(t: Theme, icon: ?[]const u8, text: []const u8, tag: []const u8, r: dvui.Rect, primary: bool) bool {
+    return iconButtonEnabled(t, icon, text, tag, r, primary, true);
+}
+
+/// `iconButton`, drawn muted and inert while disabled.
+pub fn iconButtonEnabled(t: Theme, icon: ?[]const u8, text: []const u8, tag: []const u8, r: dvui.Rect, primary: bool, enabled: bool) bool {
+    const id = std.hash.Wyhash.hash(0, tag);
+    var opts = options(t, r, 15);
+    opts.tag = tag;
+    opts.id_extra = id;
+    opts.background = true;
+    opts.border = .all(if (primary) 0 else 1);
+    opts.corners = .all(8);
+    opts.padding = .{};
+    if (primary) opts.color_fill = .{ .color = t.accent };
+    const tint = if (!enabled) t.muted else if (primary) color(0xFFFFFF) else t.text;
+    var clicked = false;
+    if (enabled) {
+        clicked = dvui.button(@src(), "", .{}, opts);
+    } else {
+        const box = dvui.box(@src(), .{}, opts);
+        box.deinit();
+    }
+    const font = fonts.font(text, 15);
+    const icon_size: f32 = 18;
+    const gap: f32 = if (icon != null and text.len != 0) 8 else 0;
+    const text_w = if (text.len == 0) 0 else font.textSize(text).w;
+    const total = (if (icon != null) icon_size else 0) + gap + text_w;
+    var x = r.x + (r.w - total) / 2;
+    if (icon) |bytes| {
+        dvui.icon(@src(), tag, bytes, .{}, .{
+            .id_extra = id,
+            .color_text = .{ .color = tint },
+            .rect = .{ .x = x, .y = r.y + (r.h - icon_size) / 2, .w = icon_size, .h = icon_size },
+            .padding = .{},
+            .margin = .{},
+        });
+        x += icon_size + gap;
+    }
+    if (text.len != 0) drawText(text, font, tint, .{ .x = x, .y = r.y, .w = text_w, .h = r.h }, id);
+    return clicked;
 }

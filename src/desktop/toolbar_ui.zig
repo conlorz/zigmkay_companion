@@ -37,44 +37,74 @@ fn offer(result: *?dispatch.Request, model: *const desktop.model.Model, clicked:
     if (clicked and result.* == null) result.* = try dispatch.Request.capture(model, intent);
 }
 
+/// The top bar follows the order of work: open, build, flash. Document and
+/// view controls sit at the right edge.
 pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame) !?dispatch.Request {
     const theme = ui.Theme.get(view.light);
+    const icons = ui.control_icons;
     const box = ui.panel(theme, .toolbar);
     defer box.deinit();
+    const width = box.data().contentRect().w;
     var result: ?dispatch.Request = null;
-    ui.label(theme, "Zigmkay", .{ .x = 20, .y = 21, .w = 140, .h = 30 }, 23);
-    const keyboards = ui.button(theme, "Keyboards", "keyboard.collection", .{ .x = 130, .y = 1, .w = 95, .h = 30 });
+    ui.label(theme, "Zigmkay", .{ .x = 24, .y = 17, .w = 110, .h = 30 }, 23);
+    const keyboards = ui.iconButton(theme, icons.keyboard, frame.board_name, "keyboard.collection", .{ .x = 140, .y = 14, .w = 196, .h = 36 }, false);
     try offer(&result, model, keyboards, .{ .open = .keyboards });
-    ui.label(theme, frame.board_name, .{ .x = 135, .y = 33, .w = 90, .h = 18 }, 11);
-    ui.label(theme, frame.connection, .{ .x = 230, .y = 25, .w = 165, .h = 25 }, 12);
     // Switching profiles replaces any earlier request.
     if (try drawProfile(model, frame.profiles, theme)) |id| result = try dispatch.Request.capture(model, .{ .profile = id });
-    if (model.dirty()) ui.label(theme, "Unsaved", .{ .x = 650, .y = 27, .w = 70, .h = 23 }, 12);
-    const paths = ui.button(theme, "Open / Export", "file.paths", .{ .x = 725, .y = 8, .w = 130, .h = 36 });
+    const paths = ui.iconButton(theme, icons.open, "Open / Export", "file.paths", .{ .x = 640, .y = 14, .w = 156, .h = 36 }, false);
     try offer(&result, model, paths, .{ .open = .paths });
-    const undo = ui.buttonEnabled(theme, "Undo", "edit.undo", .{ .x = 870, .y = 8, .w = 68, .h = 36 }, model.undo_stack.items.len != 0);
-    try offer(&result, model, undo, .undo);
-    const redo = ui.buttonEnabled(theme, "Redo", "edit.redo", .{ .x = 946, .y = 8, .w = 68, .h = 36 }, model.redo_stack.items.len != 0);
-    try offer(&result, model, redo, .redo);
-    try offer(&result, model, ui.button(theme, "Save", "file.save", .{ .x = 1028, .y = 8, .w = 76, .h = 36 }), .save);
-    const build = ui.buttonEnabled(theme, "Build", "firmware.build", .{ .x = 1116, .y = 8, .w = 110, .h = 36 }, frame.can_build);
+    flowArrow(theme, 800);
+    const build = ui.iconButtonEnabled(theme, icons.build, "Build", "firmware.build", .{ .x = 820, .y = 14, .w = 118, .h = 36 }, true, frame.can_build);
     try offer(&result, model, build, .build);
-    const flash_bounds: dvui.Rect = .{ .x = 1238, .y = 8, .w = 110, .h = 36 };
+    flowArrow(theme, 942);
     const flash_label = if (frame.flash_active) "Flash details" else "Flash";
-    const flash = ui.buttonEnabled(theme, flash_label, "firmware.inspect", flash_bounds, frame.can_flash or frame.flash_active);
+    const flash_bounds: dvui.Rect = .{ .x = 962, .y = 14, .w = 128, .h = 36 };
+    const flash = ui.iconButtonEnabled(theme, icons.flash, flash_label, "firmware.inspect", flash_bounds, true, frame.can_flash or frame.flash_active);
     try offer(&result, model, flash, .flash);
-    if (ui.button(theme, if (view.light) "Dark" else "Light", "theme.toggle", .{ .x = 1358, .y = 8, .w = 78, .h = 36 })) {
+    const right = width - 16;
+    const undo = ui.iconButtonEnabled(theme, icons.undo, "", "edit.undo", .{ .x = right - 220, .y = 14, .w = 36, .h = 36 }, false, model.undo_stack.items.len != 0);
+    try offer(&result, model, undo, .undo);
+    const redo = ui.iconButtonEnabled(theme, icons.redo, "", "edit.redo", .{ .x = right - 178, .y = 14, .w = 36, .h = 36 }, false, model.redo_stack.items.len != 0);
+    try offer(&result, model, redo, .redo);
+    const save_bounds: dvui.Rect = .{ .x = right - 132, .y = 14, .w = 84, .h = 36 };
+    try offer(&result, model, ui.iconButton(theme, null, "Save", "file.save", save_bounds, false), .save);
+    // Unsaved edits show as a dot on Save.
+    if (model.dirty()) {
+        const dot = dvui.box(@src(), .{}, .{
+            .rect = .{ .x = save_bounds.x + save_bounds.w - 18, .y = save_bounds.y + 14, .w = 8, .h = 8 },
+            .background = true,
+            .color_fill = .{ .color = ui.layerColor(theme, 2) },
+            .corners = .all(4),
+            .padding = .{},
+            .margin = .{},
+            .tag = "file.unsaved",
+        });
+        dot.deinit();
+    }
+    const theme_icon = if (view.light) icons.dark else icons.light;
+    if (ui.iconButton(theme, theme_icon, "", "theme.toggle", .{ .x = right - 36, .y = 14, .w = 36, .h = 36 }, false)) {
         view.light = !view.light;
     }
-    drawActivity(view, theme, frame, box.data().contentRect().w);
+    drawActivity(view, theme, frame, width);
     return result;
+}
+
+/// The chevron between the steps of the work flow.
+fn flowArrow(theme: ui.Theme, x: f32) void {
+    dvui.icon(@src(), "flow", ui.control_icons.next, .{}, .{
+        .id_extra = @intFromFloat(x),
+        .color_text = .{ .color = theme.muted },
+        .rect = .{ .x = x, .y = 24, .w = 16, .h = 16 },
+        .padding = .{},
+        .margin = .{},
+    });
 }
 
 /// Shows the document name, as a profile picker when the document is one of the
 /// listed profiles. Returns the newly chosen profile.
 fn drawProfile(model: *const desktop.model.Model, profiles: []const Profile, theme: ui.Theme) !?[8]u8 {
     const doc = model.document();
-    const bounds: dvui.Rect = .{ .x = 405, .y = 8, .w = 240, .h = 36 };
+    const bounds: dvui.Rect = .{ .x = 346, .y = 14, .w = 230, .h = 36 };
     const names = try dvui.currentWindow().arena().alloc([]const u8, profiles.len);
     var choice: ?usize = null;
     for (profiles, names, 0..) |profile, *name, index| {
@@ -145,13 +175,13 @@ const Activity = struct {
 fn drawActivity(view: *View, theme: ui.Theme, frame: Frame, width: f32) void {
     const activity: Activity = .init(view, frame);
     const row = dvui.box(@src(), .{}, .{
-        .rect = .{ .x = 10, .y = 54, .w = width - 20, .h = 38 },
+        .rect = .{ .x = 16, .y = 64, .w = width - 32, .h = 36 },
         .padding = .{},
         .margin = .{},
         .tag = "editor.activity",
     });
     defer row.deinit();
-    const row_width = width - 20;
+    const row_width = width - 32;
     const separator = dvui.box(@src(), .{}, .{
         .rect = .{ .x = 0, .y = 0, .w = row_width, .h = 1 },
         .background = true,
@@ -161,23 +191,24 @@ fn drawActivity(view: *View, theme: ui.Theme, frame: Frame, width: f32) void {
     });
     separator.deinit();
     drawActivityIcon(activity, theme);
-    const message_width = if (activity.hint.len != 0) @min(@as(f32, 190), row_width - 300) else row_width - 300;
-    var label_options = ui.options(theme, .{ .x = 44, .y = 11, .w = message_width, .h = 24 }, 14);
+    const controls_x = row_width - 470;
+    const message_width = if (activity.hint.len != 0) @min(@as(f32, 300), controls_x - 40) else controls_x - 40;
+    var label_options = ui.options(theme, .{ .x = 30, .y = 6, .w = message_width, .h = 26 }, 14);
     label_options.padding = .{};
     label_options.tag = "editor.activity.message";
     dvui.labelNoFmt(@src(), activity.message, .{ .align_y = 0.5, .ellipsize = true }, label_options);
+    var muted = theme;
+    muted.text = theme.muted;
     if (activity.hint.len != 0) {
-        var muted = theme;
-        muted.text = theme.muted;
-        const hint_bounds: dvui.Rect = .{ .x = 44 + message_width + 10, .y = 14, .w = @max(0, row_width - message_width - 320), .h = 20 };
+        const hint_bounds: dvui.Rect = .{ .x = 30 + message_width + 12, .y = 10, .w = @max(0, controls_x - message_width - 52), .h = 20 };
         ui.label(muted, activity.hint, hint_bounds, 12);
     }
-    var auto_options = ui.options(theme, .{ .x = row_width - 234, .y = 14, .w = 120, .h = 22 }, 13);
+    ui.label(muted, frame.connection, .{ .x = controls_x, .y = 10, .w = 220, .h = 20 }, 12);
+    var auto_options = ui.options(theme, .{ .x = row_width - 220, .y = 8, .w = 120, .h = 22 }, 13);
     auto_options.padding = .{};
     auto_options.tag = "firmware.auto_build";
     _ = dvui.checkbox(@src(), &view.auto_build, "Auto-build", auto_options);
-    const details_label = if (view.details_open) "Details ▴" else "Details ▾";
-    if (ui.button(theme, details_label, "editor.activity.details", .{ .x = row_width - 98, .y = 7, .w = 90, .h = 30 })) {
+    if (ui.iconButton(theme, if (view.details_open) null else ui.control_icons.expand, "Details", "editor.activity.details", .{ .x = row_width - 92, .y = 5, .w = 92, .h = 26 }, false)) {
         view.details_open = !view.details_open;
     }
     if (view.details_open) drawDetails(view, activity, theme);
@@ -189,11 +220,11 @@ fn drawActivityIcon(activity: Activity, theme: ui.Theme) void {
     if (!activity.busy) {
         var icon_theme = theme;
         icon_theme.text = tint;
-        ui.label(icon_theme, if (activity.failed) "!" else "●", .{ .x = 12, .y = 13, .w = 18, .h = 20 }, 14);
+        ui.label(icon_theme, if (activity.failed) "!" else "●", .{ .x = 8, .y = 8, .w = 18, .h = 20 }, 14);
         return;
     }
     const track = dvui.box(@src(), .{}, .{
-        .rect = .{ .x = 8, .y = 11, .w = 22, .h = 22 },
+        .rect = .{ .x = 4, .y = 7, .w = 22, .h = 22 },
         .padding = .{},
         .margin = .{},
         .border = .all(3),
@@ -202,7 +233,7 @@ fn drawActivityIcon(activity: Activity, theme: ui.Theme) void {
     });
     track.deinit();
     dvui.spinner(@src(), .{
-        .rect = .{ .x = 8, .y = 11, .w = 22, .h = 22 },
+        .rect = .{ .x = 4, .y = 7, .w = 22, .h = 22 },
         .min_size_content = .{ .w = 22, .h = 22 },
         .padding = .{},
         .margin = .{},

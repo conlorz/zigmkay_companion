@@ -162,7 +162,7 @@ fn drawPanels(
     if (try host.draw(&view.host, model, frame.host, theme)) |action| requests.offer(dispatch.Request.fromChord(action));
     const practice_open = launcher(theme, .testing, .{
         .title = "Try it out",
-        .subtitle = "Choose OS typing or explicitly prepare the draft runner",
+        .subtitle = "Practice typing this layout",
         .button = "Open tutor",
         .tag = "practice.open",
     });
@@ -170,10 +170,10 @@ fn drawPanels(
     const callbacks_open = launcher(theme, .callbacks, .{
         .title = "Callbacks",
         .subtitle = if (model.document().callbacks.len == 0)
-            "No attached source · external Zig files"
+            "No source attached"
         else
-            "Source snapshot preserved · refresh explicitly",
-        .button = "Manage source",
+            "Source snapshot preserved",
+        .button = "Manage",
         .tag = "callback.attach",
     });
     if (callbacks_open and requests.request == null) requests.request = try dispatch.Request.capture(model, .{ .open = .callback });
@@ -214,9 +214,11 @@ const Launcher = struct { title: []const u8, subtitle: []const u8, button: []con
 fn launcher(theme: ui.Theme, which: desktop.geometry.Panel, content: Launcher) bool {
     const box = ui.panel(theme, which);
     defer box.deinit();
-    ui.label(theme, content.title, .{ .x = 18, .y = 12, .w = 200, .h = 24 }, 16);
-    ui.label(theme, content.subtitle, .{ .x = 18, .y = 49, .w = 750, .h = 24 }, 12);
-    return ui.button(theme, content.button, content.tag, .{ .x = 623, .y = 9, .w = 150, .h = 31 });
+    ui.label(theme, content.title, .{ .x = 20, .y = 18, .w = 112, .h = 22 }, 15);
+    var muted = theme;
+    muted.text = theme.muted;
+    ui.label(muted, content.subtitle, .{ .x = 20, .y = 52, .w = 206, .h = 18 }, 12);
+    return ui.iconButton(theme, null, content.button, content.tag, .{ .x = 134, .y = 12, .w = 94, .h = 30 }, false);
 }
 
 fn ensureIdle(owner: *const dispatch.State) !void {

@@ -12,14 +12,18 @@ pub const View = struct {
     source_revision: ?u64 = null,
 };
 
-/// The theme of a modifier toggle, highlighted while it is on.
-fn toggleTheme(theme: ui.Theme, on: bool) ui.Theme {
-    var result = theme;
-    if (on) {
-        result.control = theme.accent;
-        result.text = ui.color(0xFFFFFF);
-    }
-    return result;
+/// A modifier toggle, filled with the accent color while it is on.
+fn toggle(theme: ui.Theme, on: bool, text: []const u8, tag: []const u8, bounds: dvui.Rect) bool {
+    const tint = if (on) ui.color(0xFFFFFF) else theme.text;
+    var opts = ui.options(theme, bounds, 13);
+    opts.tag = tag;
+    opts.id_extra = std.hash.Wyhash.hash(0, tag);
+    opts.background = true;
+    opts.border = .all(if (on) 0 else 1);
+    opts.corners = .all(8);
+    opts.padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 };
+    if (on) opts.color_fill = .{ .color = theme.accent };
+    return ui.richButton(@src(), text, .{ .color = tint, .secondary = tint, .size = 15, .id_extra = opts.id_extra.? }, opts);
 }
 
 fn cancelDrag(view: *View) void {
@@ -30,24 +34,26 @@ fn cancelDrag(view: *View) void {
 pub fn draw(view: *View, model: *const desktop.model.Model, cache: *const desktop.host_palette.Cache, theme: ui.Theme) !?Chord {
     const box = ui.panel(theme, .os);
     defer box.deinit();
-    ui.label(theme, "OS keyboard", .{ .x = 20, .y = 18, .w = 205, .h = 25 }, 19);
-    ui.label(theme, cache.source_id, .{ .x = 225, .y = 23, .w = 320, .h = 25 }, 12);
-    if (ui.button(toggleTheme(theme, view.shift), "Shift", "os.shift", .{ .x = 622, .y = 15, .w = 70, .h = 33 })) view.shift = !view.shift;
-    const option = if (cache.host == .macos) "Option" else "Alt";
-    const option_bounds: dvui.Rect = .{ .x = 699, .y = 15, .w = 73, .h = 33 };
-    if (ui.button(toggleTheme(theme, view.option), option, "os.option", option_bounds)) view.option = !view.option;
+    ui.label(theme, "OS keyboard", .{ .x = 20, .y = 20, .w = 140, .h = 26 }, 19);
+    var muted = theme;
+    muted.text = theme.muted;
+    ui.label(muted, cache.source_id, .{ .x = 152, .y = 26, .w = 460, .h = 18 }, 12);
+    const symbols = desktop.labels.keycap_symbols.Symbol;
+    if (toggle(theme, view.shift, symbols.literal(.shift) ++ " Shift", "os.shift", .{ .x = 628, .y = 14, .w = 72, .h = 30 })) view.shift = !view.shift;
+    const option = if (cache.host == .macos) symbols.literal(.option) ++ " Option" else "Alt";
+    if (toggle(theme, view.option, option, "os.option", .{ .x = 708, .y = 14, .w = 72, .h = 30 })) view.option = !view.option;
     // A drag started from an older input source preview no longer matches its captions.
     if (view.source_revision != null and view.source_revision.? != cache.revision) cancelDrag(view);
     view.source_revision = cache.revision;
     if (view.drag) |drag| drag.validate(model) catch cancelDrag(view);
     var result: ?Chord = null;
     for (desktop.host_palette.rows, 0..) |row, ri| {
-        var x: f32 = 14;
+        var x: f32 = 25;
         for (row, 0..) |key, ki| {
             const caption = cache.caption(key.code, view.shift, view.option);
             const length = std.unicode.utf8CountCodepoints(caption) catch caption.len;
-            const size: f32 = if (length > 3) 12 else 18;
-            const bounds: dvui.Rect = .{ .x = x, .y = 58 + @as(f32, @floatFromInt(ri)) * 38, .w = 47.5 * key.units - 3, .h = 35 };
+            const size: f32 = if (length > 3) 13 else 19;
+            const bounds: dvui.Rect = .{ .x = x, .y = 60 + @as(f32, @floatFromInt(ri)) * 50, .w = 50 * key.units - 4, .h = 44 };
             var opts = ui.options(theme, bounds, size);
             opts.padding = .all(2);
             opts.id_extra = ri * 100 + ki;
@@ -55,11 +61,13 @@ pub fn draw(view: *View, model: *const desktop.model.Model, cache: *const deskto
             opts.gravity_x = 0.5;
             opts.gravity_y = 0.5;
             opts.border = .all(1);
+            opts.corners = .all(6);
+            opts.color_fill = .{ .color = theme.keycap };
             opts.tag = try std.fmt.allocPrint(dvui.currentWindow().arena(), "os.key.{d}", .{key.code});
             if (try dragSource(view, model, key.code, caption, size, opts)) |action| {
                 if (result == null) result = action;
             }
-            x += 47.5 * key.units;
+            x += 50 * key.units;
         }
     }
     return result;

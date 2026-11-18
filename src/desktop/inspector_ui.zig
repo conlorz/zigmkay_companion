@@ -409,9 +409,9 @@ fn drawHeader(self: *Context, t: ui.Theme) !usize {
     const session = &self.edit_session;
     const arena = dvui.currentWindow().arena();
     const document = self.model.document();
-    ui.label(t, "Key inspector", .{ .x = 18, .y = 18, .w = 225, .h = 26 }, 20);
-    if (ui.button(t, "Copy", "edit.copy", .{ .x = 284, .y = 14, .w = 62, .h = 34 })) self.choose(.copy);
-    if (ui.button(t, "Paste", "edit.paste", .{ .x = 352, .y = 14, .w = 70, .h = 34 })) self.choose(.paste);
+    ui.label(t, "Key inspector", .{ .x = 20, .y = 20, .w = 225, .h = 26 }, 19);
+    if (ui.iconButton(t, ui.control_icons.copy, "", "edit.copy", .{ .x = 344, .y = 12, .w = 36, .h = 32 }, false)) self.choose(.copy);
+    if (ui.iconButton(t, ui.control_icons.paste, "", "edit.paste", .{ .x = 386, .y = 12, .w = 36, .h = 32 }, false)) self.choose(.paste);
     var buffer: [512]u8 = undefined;
     drawPreview(self, t, self.keycap(self.primaryAction(), &buffer));
     var count: usize = 0;
