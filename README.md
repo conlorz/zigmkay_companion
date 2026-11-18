@@ -221,6 +221,13 @@ remaining platform and hardware acceptance work.
 
 ## License
 
-Zigmkay companion is free software under the **GNU General Public License,
-version 2**. See [LICENSE](LICENSE). Imported dependencies retain their own
-license notices.
+Zigmkay companion is free software: you can redistribute it and/or modify it
+under the terms of the **GNU General Public License as published by the Free
+Software Foundation, either version 2 of the License, or (at your option) any
+later version** (`GPL-2.0-or-later`). See [LICENSE](LICENSE) for the version 2
+text.
+
+The application compiles in the zigmkay firmware, which is licensed under GPL
+version 2 only. Builds that include it are therefore distributed under GPL
+version 2. Imported dependencies retain their own license notices; see
+[NOTICE](NOTICE).

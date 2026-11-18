@@ -14,8 +14,9 @@ only when every unlocked letter reaches a target speed. Lesson text is made of
 pronounceable pseudo-words from a character Markov model, or of real words that
 use only the unlocked letters.
 
-**License verdict:** keybr is AGPL-3.0. The companion is GPL-2.0 *only*. These
-licenses are incompatible, so neither keybr's code nor its derived data files can
+**License verdict:** keybr is AGPL-3.0. The companion's own code is
+GPL-2.0-or-later, but it compiles in the GPL-2.0-only zigmkay firmware, so the
+distributed program is GPL-2.0. These licenses are incompatible, so neither keybr's code nor its derived data files can
 ship in or with the companion. Ideas, algorithms and published behavior are not
 protected by copyright and can be reimplemented independently.
 
@@ -144,9 +145,17 @@ route produces each character.
 - The word-frequency dictionaries that generate the language models and word
   lists have no stated source or license.
 
-**Companion.** `LICENSE` is the GPL version 2 text, and the README says "GNU
-General Public License, version 2" with no "or any later version" grant. The
-companion is therefore GPL-2.0-only.
+**Companion.** `LICENSE` is the GPL version 2 text. At the time of this
+evaluation the README granted version 2 only. On 2026-11-18 the sole copyright
+holder relicensed the first-party code as GPL-2.0-or-later (README, NOTICE).
+That alone does not change the verdict:
+- The application imports the zigmkay firmware module (processor, keycodes and
+  board sources) and compiles it into the same program.
+- The firmware README says "licensed under GPL2", with no "or any later
+  version" grant. It is mostly written by other authors, so it is treated as
+  GPL-2.0-only.
+- The distributed companion is therefore a combined work that must remain
+  GPL-2.0.
 
 **Compatibility.**
 - GPL-2.0-only code cannot be combined with GPLv3 or AGPLv3 code. GPLv2 §6
@@ -156,9 +165,10 @@ companion is therefore GPL-2.0-only.
   and it rules out shipping keybr's derived data files.
 - A line-by-line translation into Zig would be a derivative work, so it is
   excluded as well.
-- Relicensing the companion as "GPL-2.0-or-later" would not help either. That
-  would need every contributor's consent, and the combination would then be
-  AGPLv3 as a whole.
+- The companion's "or later" grant would allow AGPLv3 code only if the
+  firmware's authors also granted "or later", or if the companion stopped
+  compiling the firmware in. The combination would then be AGPLv3 as a whole.
+  The clean-room port makes neither step necessary.
 
 **What is usable.**
 - Ideas, algorithms, formulas and observable behavior are not protected. This
@@ -389,7 +399,8 @@ No human typing trial has validated the constants yet.
 4. **Phase 4, content (needs a license review):**
    - Train the model on a larger, license-clean English word-frequency list,
      weighted by frequency.
-   - The source must be compatible with GPL-2.0-only. For example, CC BY-SA
+   - The source must be compatible with GPL-2.0, which binds the combined
+     program while the firmware is GPL-2.0-only. For example, CC BY-SA
      material is not, while public-domain or permissive lists may be.
    - Additional languages would follow the same rule.
 5. **User validation:** tune the smoothing weight, the minimum runs and samples,
