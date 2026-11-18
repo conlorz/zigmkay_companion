@@ -125,8 +125,11 @@ normal **Export database** action also produces a standalone online backup.
 
 The [application workflow](../.github/workflows/application-bundle.yml) preserves
 the focused Windows diagnostic/GUI modes and builds four native release targets
-on PRs and `main`, uploading downloadable packages without publishing. Linux
-runtime jobs exercise mounted and extracted AppImages on Ubuntu 22.04 and 24.04.
+on `main`, uploading downloadable packages without publishing. Linux runtime jobs
+exercise mounted and extracted AppImages on Ubuntu 22.04 and 24.04.
+Pull requests run a faster subset: macOS arm64, Windows and Linux packages, the
+macOS offline check and the Linux runtime on Ubuntu 24.04. The `full-ci` label
+runs the complete `main` set on a PR. A new push cancels the PR's running checks.
 Offline checks relocate packages into paths with spaces/Unicode, deny networking
 and system Zig/SDK access, use read-only resources and empty compiler caches, and
 build firmware/native runners for all 14 catalog selectors twice. Windows uses

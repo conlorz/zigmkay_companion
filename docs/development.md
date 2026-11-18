@@ -8,9 +8,12 @@ retain their existing scope. Follow [AGENTS.md](../AGENTS.md) when contributing.
 ## CI and Windows finalization diagnostics
 
 All four workflows run automatically on pull requests and on pushes to `main`.
-Feature-branch pushes do not duplicate the pull-request runs. Full application
-verification covers macOS and Windows, including relocated offline builds and
-the GUI build/practice smoke test, without device access.
+Feature-branch pushes do not duplicate the pull-request runs, and a new push
+cancels the pull request's running checks. Full application verification covers
+macOS and Windows, including relocated offline builds and the GUI build/practice
+smoke test, without device access. Pull requests skip macOS x86_64, the isolated
+Windows verification, the Ubuntu 22.04 runtime and the ReleaseSafe source job
+unless they carry the `full-ci` label.
 
 The **Self-contained application** workflow also supports manual dispatch:
 

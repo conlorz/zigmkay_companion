@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ['v*-preview.*']
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       mode:
@@ -15,6 +16,18 @@ on:
 
 permissions:
   contents: read
+
+# A new push supersedes the PR's running checks. Tags and unrelated labels
+# never cancel anything.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Pull requests build macOS arm64, Windows and Linux. Pushes to main, tags,
+# manual runs and PRs labeled `full-ci` add macOS x86_64, the isolated
+# Windows verification, a second Linux runtime and the ReleaseSafe source job.
+env:
+  FULL_CI: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
 
 jobs:
   windows-finalization:
@@ -44,15 +57,15 @@ jobs:
             zig-out/bin/diagnose-build-finalization*
             finalization.log
             ${{ runner.temp }}/finalization ü
-  bundle:
-    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'full' || inputs.mode == 'gui'
+  # Linux has its own job so linux-runtime starts as soon as its package exists.
+  bundle-linux:
+    if: (github.event_name != 'workflow_dispatch' || inputs.mode == 'full') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')
     strategy:
-      fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.mode == 'gui' && '[{"os":"windows-2025","platform":"windows-x86_64"}]' || '[{"os":"macos-15","platform":"macos-aarch64"},{"os":"macos-15-intel","platform":"macos-x86_64"},{"os":"windows-2025","platform":"windows-x86_64"},{"os":"ubuntu-22.04","platform":"linux-x86_64"}]') }}
+        include: [{ os: ubuntu-22.04, platform: linux-x86_64, jobs: 4 }]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
-    steps:
+    steps: &bundle-steps
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
@@ -67,16 +80,13 @@ jobs:
           sed -n 's/^deb /deb-src /p' /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/zigmkay-source.list
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libdbus-1-dev libx11-dev libudev-dev bubblewrap file binutils xkb-data
-      - name: Verify source, storage, release and subprocess contracts (no devices)
-        if: inputs.mode != 'gui'
-        run: zig build check test-practice test-jobs -Doptimize=safe -j2 --test-timeout 60s --summary all
       - name: Assemble all runtime inputs
         shell: bash
         run: |
           set -eu
           sdk=()
           if [ "$RUNNER_OS" = macOS ]; then sdk=("-Dmacos-sdk=$(xcrun --show-sdk-path)"); fi
-          zig build bundle tools -Dbundle -Drelease=true -Doptimize=safe "-Drevision=$GITHUB_SHA" "${sdk[@]}" -j2 --summary all
+          zig build bundle tools -Dbundle -Drelease=true -Doptimize=safe "-Drevision=$GITHUB_SHA" "${sdk[@]}" -j${{ matrix.jobs }} --summary all
       - name: Validate the preview tag against this exact commit
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -121,7 +131,7 @@ jobs:
           env -i HOME="$target/home" PATH=/usr/bin:/bin SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software \
             sandbox-exec -p "$profile" "$target/Zigmkay.app/Contents/MacOS/zigmkay-companion" --offline-build-frames 30000
       - name: Single Windows executable builds and practice
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && (env.FULL_CI == 'true' || inputs.mode == 'gui')
         timeout-minutes: 30
         shell: pwsh
         run: |
@@ -249,13 +259,24 @@ jobs:
           name: linux-runtime-verifier
           path: zig-out/bin/check-application-bundle
 
+  bundle:
+    if: (github.event_name != 'workflow_dispatch' || inputs.mode == 'full' || inputs.mode == 'gui') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')
+    strategy:
+      fail-fast: false
+      matrix:
+        # The 3-core macos-15 runner keeps -j2; the 4-core runners use -j4.
+        include: ${{ fromJSON(inputs.mode == 'gui' && '[{"os":"windows-2025","platform":"windows-x86_64","jobs":4}]' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[{"os":"macos-15","platform":"macos-aarch64","jobs":2},{"os":"macos-15-intel","platform":"macos-x86_64","jobs":4},{"os":"windows-2025","platform":"windows-x86_64","jobs":4}]' || '[{"os":"macos-15","platform":"macos-aarch64","jobs":2},{"os":"windows-2025","platform":"windows-x86_64","jobs":4}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps: *bundle-steps
+
   linux-runtime:
-    needs: bundle
+    needs: bundle-linux
     if: github.event_name != 'workflow_dispatch' || inputs.mode == 'full'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04]
+        os: ${{ fromJSON((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["ubuntu-22.04","ubuntu-24.04"]' || '["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -325,7 +346,7 @@ jobs:
           path: ${{ runner.temp }}/Zigmkay offline ü/cache/zigmkay/builds/build-*/build.*.log
 
   source:
-    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'full'
+    if: (github.event_name != 'workflow_dispatch' || inputs.mode == 'full') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
@@ -339,7 +360,7 @@ jobs:
       - run: zig build check test -Doptimize=safe -j2 --test-timeout 180s
 
   publish:
-    needs: [bundle, linux-runtime, source]
+    needs: [bundle, bundle-linux, linux-runtime, source]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     timeout-minutes: 30
