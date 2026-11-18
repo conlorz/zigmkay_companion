@@ -98,7 +98,8 @@ fn drawLayerChip(theme: ui.Theme, name: []const u8, layer: usize) void {
         .margin = .{},
     });
     dot.deinit();
-    var style = theme.captionStyle(19, 1);
+    // Key captions use key IDs (u16) as id_extra; stay above that range.
+    var style = theme.captionStyle(19, 0x10000);
     style.align_x = 0;
     ui.caption(name, .{ .x = 48, .y = 18, .w = width - 56, .h = 30 }, style);
 }
