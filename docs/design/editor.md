@@ -22,7 +22,14 @@ layer does, and the top bar follows the order of work: open, build, flash.
 | 7 | Callbacks | [07-callbacks](editor/07-callbacks.svg) | `callback_ui.zig` |
 | 8 | Open / Export | [08-open-export](editor/08-open-export.svg) | `paths_ui.zig` |
 | 9 | Build and Flash activity | [09-build-flash](editor/09-build-flash.svg) | `toolbar_ui.zig`, `flash_ui.zig` |
-| 10 | My Keyboards | [10-keyboards](editor/10-keyboards.svg) | `onboarding_ui.zig` |
+| 10 | My Keyboards (superseded by 13) | [10-keyboards](editor/10-keyboards.svg) | `onboarding_ui.zig` |
+| 11 | Editor head: Keyboard › Layout breadcrumb and layout menu | [11-editor-head](editor/11-editor-head.svg) | `toolbar_ui.zig`, `layout_menu.zig` |
+| 12 | Export Zig source | [12-export](editor/12-export.svg) | `paths_ui.zig` |
+| 13 | My Keyboards: hardware and its layouts | [13-my-keyboards](editor/13-my-keyboards.svg) | `onboarding_ui.zig`, `keyboards_ui.zig`, `library.zig` |
+| 14 | First launch, no keyboards yet | [14-first-launch](editor/14-first-launch.svg) | `keyboards_ui.zig` |
+| 15 | New layout with preview | [15-new-layout](editor/15-new-layout.svg) | `new_layout_ui.zig`, `layout_transfer.zig` |
+| 16 | Import from Git with comparison | [16-import-compare](editor/16-import-compare.svg) | `import_ui.zig`, `layout_transfer.zig` |
+| 17 | Add keyboard from the catalog | [17-add-keyboard](editor/17-add-keyboard.svg) | `catalog_ui.zig` |
 
 ## Canvas and grid
 
@@ -151,7 +158,8 @@ editor with a full-window collection view.
 
 Two flows were studied ([option A](editor/flow/option-a-keyboard-layouts.png),
 [option B](editor/flow/option-b-layout-first.png)). **Option A is chosen**,
-plus the import comparison step (B3) from option B.
+plus the import comparison step (B3) from option B. Screens 11 to 17 draw the
+result in the editor style; screen 10 is superseded.
 
 - Abstraction: a **keyboard** is hardware (catalog board and PCB revision,
   with its geometry); it holds several **layouts**. Today each collection
