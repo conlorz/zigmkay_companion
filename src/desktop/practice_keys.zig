@@ -16,6 +16,13 @@ pub const min_runs = 2;
 pub const max_miss_rate = 0.05;
 /// Words per minute are characters per minute divided by five.
 pub const characters_per_word = 5;
+/// Forecasts use the newest smoothed speeds and need this many of them.
+pub const trend_runs = 10;
+pub const min_trend_runs = 4;
+/// Forecasts need a linear fit explaining at least half of the variance.
+pub const min_fit = 0.5;
+/// Forecasts further away than this many runs are not shown.
+pub const max_forecast = 50;
 pub const target_choices = [_]u16{ 20, 25, 30, 35, 40, 50, 60 };
 pub const default_target_wpm: u16 = 35;
 
@@ -42,6 +49,9 @@ pub const Key = struct {
     miss_runs: u32 = 0,
     opportunities: u64 = 0,
     misses: u64 = 0,
+    /// Smoothed intervals after each of the newest timed runs, oldest first.
+    trend: [trend_runs]f64 = @splat(0),
+    trend_len: u8 = 0,
 
     pub fn known(self: Key) bool {
         return self.runs >= min_runs;
@@ -72,6 +82,41 @@ pub const Key = struct {
         return value >= 1 and self.miss_rate <= max_miss_rate;
     }
 
+    /// Estimated further runs until the smoothed speed reaches the target,
+    /// from a least-squares line through the newest smoothed speeds. Zero
+    /// when the target is reached; null without a clear upward trend.
+    pub fn forecast(self: Key, target_ms: f64) ?u32 {
+        if (self.confident(target_ms)) return 0;
+        const n = self.trend_len;
+        if (n < min_trend_runs) return null;
+        var sum_x: f64 = 0;
+        var sum_y: f64 = 0;
+        for (self.trend[0..n], 0..) |ms, index| {
+            sum_x += @floatFromInt(index);
+            sum_y += wpmFor(ms);
+        }
+        const count: f64 = @floatFromInt(n);
+        const mean_x = sum_x / count;
+        const mean_y = sum_y / count;
+        var sxx: f64 = 0;
+        var sxy: f64 = 0;
+        var syy: f64 = 0;
+        for (self.trend[0..n], 0..) |ms, index| {
+            const dx = @as(f64, @floatFromInt(index)) - mean_x;
+            const dy = wpmFor(ms) - mean_y;
+            sxx += dx * dx;
+            sxy += dx * dy;
+            syy += dy * dy;
+        }
+        if (syy == 0) return null;
+        const slope = sxy / sxx;
+        if (slope <= 0 or sxy * sxy / (sxx * syy) < min_fit) return null;
+        const fitted = mean_y + slope * (count - 1 - mean_x);
+        const runs = @ceil((wpmFor(target_ms) - fitted) / slope);
+        if (runs > max_forecast) return null;
+        return @intFromFloat(@max(1, runs));
+    }
+
     fn observe(self: *Key, character: progress.Character) void {
         self.opportunities += character.opportunities;
         self.misses += character.misses;
@@ -85,6 +130,12 @@ pub const Key = struct {
         self.ms = if (self.runs == 0) ms else self.ms + smoothing * (ms - self.ms);
         self.best_ms = if (self.runs == 0) self.ms else @min(self.best_ms, self.ms);
         self.runs += 1;
+        if (self.trend_len == trend_runs) {
+            std.mem.copyForwards(f64, self.trend[0 .. trend_runs - 1], self.trend[1..]);
+            self.trend_len -= 1;
+        }
+        self.trend[self.trend_len] = self.ms;
+        self.trend_len += 1;
     }
 };
 
@@ -180,6 +231,37 @@ test "sparse timing, truncation and misses withhold confidence" {
     try t.expectApproxEqAbs(@as(f64, 0.05), model.get('n').miss_rate, 0.000_001);
     model.add(&missed);
     try t.expect(!model.get('n').confident(300));
+}
+
+test "forecasts extrapolate a clear upward trend toward the target" {
+    const t = std.testing;
+    var model: Model = .{};
+    // Raw medians that improve steadily: 600, 550, ... 400 ms.
+    for (0..5) |index| {
+        const value = testPoint(&.{.{ .cp = 'r', .opportunities = 10, .samples = 5, .median_us = 600_000 - index * 50_000 }});
+        model.add(&value);
+    }
+    const key = model.get('r');
+    try t.expectEqual(@as(u8, 5), key.trend_len);
+    const runs = key.forecast(targetMs(35)).?;
+    try t.expect(runs >= 1 and runs <= max_forecast);
+    // Reaching the target reports zero; a slower target is already reached.
+    try t.expectEqual(@as(?u32, 0), key.forecast(key.ms + 1));
+    // Too few runs or a flat or worsening trend give no forecast.
+    var flat: Model = .{};
+    for (0..3) |_| {
+        const value = testPoint(&.{.{ .cp = 'f', .opportunities = 10, .samples = 5, .median_us = 500_000 }});
+        flat.add(&value);
+    }
+    try t.expectEqual(@as(?u32, null), flat.get('f').forecast(200));
+    const again = testPoint(&.{.{ .cp = 'f', .opportunities = 10, .samples = 5, .median_us = 500_000 }});
+    flat.add(&again);
+    try t.expectEqual(@as(?u32, null), flat.get('f').forecast(200));
+    // The trend keeps only the newest runs; a plateau has no forecast.
+    const plateau = testPoint(&.{.{ .cp = 'r', .opportunities = 10, .samples = 5, .median_us = 500_000 }});
+    for (0..12) |_| model.add(&plateau);
+    try t.expectEqual(@as(u8, trend_runs), model.get('r').trend_len);
+    try t.expectEqual(@as(?u32, null), model.get('r').forecast(200));
 }
 
 test "models are built oldest first from newest-first history and ignore other characters" {

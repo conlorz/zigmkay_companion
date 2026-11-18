@@ -67,28 +67,50 @@ pub const Options = struct {
     max_length: usize = max_length,
 };
 
+/// Whole pseudo-words that are never offered, because letter models can
+/// assemble them from harmless vocabulary.
+/// No entry repeats a single letter, which keeps the last-resort word safe.
+pub const blocked = [_][]const u8{
+    "anal", "anus", "arse", "ass",  "bitch", "boob",  "butt",  "cock",   "coon",
+    "crap", "cum",  "cunt", "damn", "dick",  "dildo", "dyke",  "fag",    "fart",
+    "fuck", "gook", "homo", "jizz", "kike",  "nazi",  "nigga", "nigger", "penis",
+    "piss", "porn", "pube", "rape", "scum",  "sex",   "shit",  "slut",   "spic",
+    "tit",  "tits", "turd", "twat", "wank",  "whore",
+};
+
+fn isBlocked(text: []const u8) bool {
+    for (blocked) |entry| if (std.mem.eql(u8, entry, text)) return true;
+    return false;
+}
+
 /// Writes one pseudo-word into `buffer` using only `options.letters`. Up to
 /// sixteen candidates are drawn until one contains the focus letter, ends
-/// before the length limit and differs from `previous`. A rare focus letter that the model did not
-/// produce then starts the word, so every word contains it.
+/// before the length limit, differs from `previous` and is not blocked. A
+/// rare focus letter that the model did not produce then starts the word,
+/// so every word contains it.
 pub fn word(random: *generator.Random, buffer: *[max_length]u8, options: Options, previous: []const u8) ![]const u8 {
     if (options.letters == 0) return error.PseudoWordLettersUnavailable;
     if (options.min_length == 0 or
         options.min_length > options.max_length or
         options.max_length > max_length) return error.InvalidPseudoWordLength;
     if (options.focus) |cp| if (options.letters & bit(cp) == 0) return error.PseudoWordFocusUnavailable;
-    var length: usize = 0;
-    var focused = false;
     for (0..16) |_| {
-        length = candidate(random, buffer, options, null);
+        const length = candidate(random, buffer, options, null);
         const text = buffer[0..length];
-        focused = if (options.focus) |cp| std.mem.indexOfScalar(u8, text, cp) != null else true;
+        const focused = if (options.focus) |cp| std.mem.indexOfScalar(u8, text, cp) != null else true;
         // Prefer words the model ended before the length limit.
         const ended = length < options.max_length;
-        if (focused and ended and !std.mem.eql(u8, text, previous)) return text;
+        if (focused and ended and !std.mem.eql(u8, text, previous) and !isBlocked(text)) return text;
     }
-    if (!focused) length = candidate(random, buffer, options, options.focus);
-    return buffer[0..length];
+    for (0..16) |_| {
+        const length = candidate(random, buffer, options, options.focus);
+        if (!isBlocked(buffer[0..length])) return buffer[0..length];
+    }
+    // Tiny alphabets can make a blocked word nearly certain. A repeated
+    // letter is never blocked.
+    const cp = options.focus orelse 'a' + @as(u8, @ctz(options.letters));
+    @memset(buffer[0..options.min_length], cp);
+    return buffer[0..options.min_length];
 }
 
 fn candidate(random: *generator.Random, buffer: *[max_length]u8, options: Options, first: ?u8) usize {
@@ -198,7 +220,22 @@ test "pseudo-words use only allowed letters, respect bounds and are reproducible
     );
 }
 
-test "a focus letter appears in nearly every pseudo-word" {
+test "blocked words are never generated" {
+    const t = std.testing;
+    for (blocked) |entry| {
+        for (entry) |cp| try t.expect(cp >= 'a' and cp <= 'z');
+        try t.expect(std.mem.indexOfNone(u8, entry, entry[0..1]) != null);
+        // Small alphabets containing a blocked word's letters reject it.
+        var buffer: [max_length]u8 = undefined;
+        for (0..64) |seed| {
+            var random: generator.Random = .{ .state = seed };
+            const text = try word(&random, &buffer, .{ .letters = letterSet(entry), .focus = entry[0] }, "");
+            try t.expect(!isBlocked(text));
+        }
+    }
+}
+
+test "a focus letter appears in every pseudo-word" {
     const t = std.testing;
     var random: generator.Random = .{ .state = 7 };
     var focused: usize = 0;

@@ -185,6 +185,11 @@ How the estimate works:
   assistance levels. Stopped runs are excluded. Comparison charts and trends
   keep their strict cohorts.
 
+When the focused letter's newest smoothed speeds show a clear upward trend,
+the panel estimates how many more runs it needs at this pace. The forecast is a
+linear fit over up to ten runs; it is hidden when the trend is flat, noisy or
+more than 50 runs away.
+
 The plan is chosen when a lesson starts, including **New exercise**, and is
 frozen with the run. Opening Lessons shows the plan that the next start will
 use. These are tutor policy values inspired by
