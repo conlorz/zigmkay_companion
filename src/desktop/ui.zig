@@ -241,6 +241,12 @@ pub const Theme = struct {
     accent: dvui.Color,
     /// Keycap faces on the keyboard canvases.
     keycap: dvui.Color,
+    /// Failures and destructive actions.
+    danger: dvui.Color,
+    /// Passed checks and saved state.
+    success: dvui.Color,
+    /// Advisories that do not block the work.
+    warning: dvui.Color,
     layers: []const u24,
 
     const light_theme: Theme = .{
@@ -252,6 +258,9 @@ pub const Theme = struct {
         .muted = color(0x667180),
         .accent = color(0x2563EB),
         .keycap = color(0xF8F9FB),
+        .danger = color(0xDC2626),
+        .success = color(0x15803D),
+        .warning = color(0xB45309),
         .layers = &layer_palette.light,
     };
     const dark_theme: Theme = .{
@@ -263,6 +272,9 @@ pub const Theme = struct {
         .muted = color(0x9AA3B0),
         .accent = color(0x3B82F6),
         .keycap = color(0x272B32),
+        .danger = color(0xF06B73),
+        .success = color(0x6EC59A),
+        .warning = color(0xF59E0B),
         .layers = &layer_palette.dark,
     };
 
@@ -275,6 +287,11 @@ pub const Theme = struct {
         return .{ .color = t.text, .secondary = t.muted, .size = size, .id_extra = id_extra, .layers = t.layers };
     }
 };
+
+/// The editor font for `text` at `size` points.
+pub fn editorFont(text: []const u8, size: f32) dvui.Font {
+    return fonts.font(text, size);
+}
 
 pub fn rect(r: anytype) dvui.Rect {
     return .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
@@ -420,6 +437,63 @@ pub fn sheet(src: std.builtin.SourceLocation, t: Theme, w: f32, h: f32, tag: []c
     });
 }
 
+/// A filled line, such as a divider between sheet sections.
+pub fn divider(t: Theme, r: dvui.Rect, id: usize) void {
+    const line = dvui.box(@src(), .{}, .{
+        .id_extra = id,
+        .rect = r,
+        .background = true,
+        .color_fill = .{ .color = t.border },
+        .padding = .{},
+        .margin = .{},
+    });
+    line.deinit();
+}
+
+/// The top of a sheet `w` wide: title, one sentence of explanation, a close
+/// button and the divider below them at y = 100. Returns true when the close
+/// button was clicked.
+pub fn sheetHeader(t: Theme, w: f32, title: []const u8, subtitle: []const u8, close_tag: []const u8) bool {
+    label(t, title, .{ .x = 28, .y = 26, .w = w - 120, .h = 30 }, 22);
+    var muted = t;
+    muted.text = t.muted;
+    label(muted, subtitle, .{ .x = 28, .y = 62, .w = w - 100, .h = 20 }, 14);
+    divider(t, .{ .x = 0, .y = 100, .w = w, .h = 1 }, 0x5eed);
+    return iconButton(t, control_icons.remove, "", close_tag, .{ .x = w - 58, .y = 22, .w = 30, .h = 30 }, false);
+}
+
+/// A secondary button in the danger color, for destructive actions.
+pub fn dangerButton(t: Theme, icon: ?[]const u8, text: []const u8, tag: []const u8, r: dvui.Rect) bool {
+    const id = std.hash.Wyhash.hash(0, tag);
+    var opts = options(t, r, 15);
+    opts.tag = tag;
+    opts.id_extra = id;
+    opts.background = true;
+    opts.border = .all(1);
+    opts.corners = .all(8);
+    opts.padding = .{};
+    opts.color_fill = .{ .color = mix(t.panel, t.danger, 0.08) };
+    opts.color_border = .{ .color = mix(t.panel, t.danger, 0.55) };
+    const clicked = dvui.button(@src(), "", .{}, opts);
+    const font_value = fonts.font(text, 15);
+    const icon_size: f32 = 17;
+    const gap: f32 = if (icon != null) 8 else 0;
+    const text_w = font_value.textSize(text).w;
+    var x = r.x + (r.w - (if (icon != null) icon_size else 0) - gap - text_w) / 2;
+    if (icon) |bytes| {
+        dvui.icon(@src(), tag, bytes, .{}, .{
+            .id_extra = id,
+            .color_text = .{ .color = t.danger },
+            .rect = .{ .x = x, .y = r.y + (r.h - icon_size) / 2, .w = icon_size, .h = icon_size },
+            .padding = .{},
+            .margin = .{},
+        });
+        x += icon_size + gap;
+    }
+    drawText(text, font_value, t.danger, .{ .x = x, .y = r.y, .w = text_w, .h = r.h }, id);
+    return clicked;
+}
+
 /// A button whose label is a caption with keyboard symbols drawn as icons.
 pub fn richButton(src: std.builtin.SourceLocation, text: []const u8, style: CaptionStyle, opts: dvui.Options) bool {
     var button_options = opts;
@@ -460,7 +534,10 @@ pub fn iconButtonEnabled(t: Theme, icon: ?[]const u8, text: []const u8, tag: []c
     opts.border = .all(if (primary) 0 else 1);
     opts.corners = .all(8);
     opts.padding = .{};
-    if (primary) opts.color_fill = .{ .color = t.accent };
+    // A disabled primary button keeps a trace of the accent so the work flow
+    // stays legible, but no longer reads as clickable.
+    if (primary) opts.color_fill = .{ .color = if (enabled) t.accent else mix(t.control, t.accent, 0.3) };
+    if (!enabled and !primary) opts.color_text = .{ .color = t.muted };
     const tint = if (!enabled) t.muted else if (primary) color(0xFFFFFF) else t.text;
     var clicked = false;
     if (enabled) {
