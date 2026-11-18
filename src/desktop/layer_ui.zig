@@ -11,19 +11,6 @@ pub const View = struct {
     name: [129]u8 = @splat(0),
 };
 
-/// Matches the layer colors of the physical key renderer.
-const palette = [_]dvui.Color{
-    ui.color(0xFF3232),
-    ui.color(0x3296FF),
-    ui.color(0xFF9632),
-    ui.color(0x96FF32),
-    ui.color(0xB432FF),
-    ui.color(0x32FFC8),
-    ui.color(0x32FF32),
-    ui.color(0xFFE632),
-    ui.color(0xFF32B4),
-};
-
 const row_pitch: f32 = 67;
 const dark_text = ui.color(0x10151C);
 
@@ -95,7 +82,7 @@ fn tint(panel: dvui.Color, accent: dvui.Color) dvui.Color {
 fn drawRow(model: *const desktop.model.Model, layer: anytype, i: usize, theme: ui.Theme) !?desktop.layer_editor.Kind {
     const arena = dvui.currentWindow().arena();
     const y = @as(f32, @floatFromInt(i)) * row_pitch;
-    const accent = palette[i % palette.len];
+    const accent = ui.layerColor(theme, i);
     const current = model.layer == i;
     var requested: ?desktop.layer_editor.Kind = null;
     var opts = ui.options(theme, .{ .x = 0, .y = y, .w = 224, .h = 59 }, 15);

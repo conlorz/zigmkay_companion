@@ -5,23 +5,17 @@ const dvui = @import("dvui");
 const desktop = @import("desktop-core");
 const zkeymap = @import("zkeymap");
 const labels = desktop.labels;
-const fonts = @import("editor-fonts");
+const ui = @import("editor-ui");
 const core = @import("layout-model");
 const CachedKeyContent = desktop.label_cache.CachedKeyContent;
 
 pub const Resources = struct { gui_icon: ?[]const u8 = null };
 
-/// Vibrant color palette for up to 9 layers.
-pub const layer_colors = [9]dvui.Color{
-    .{ .r = 255, .g = 50, .b = 50, .a = 255 }, // 0: Red
-    .{ .r = 50, .g = 150, .b = 255, .a = 255 }, // 1: Blue
-    .{ .r = 255, .g = 150, .b = 50, .a = 255 }, // 2: Orange
-    .{ .r = 150, .g = 255, .b = 50, .a = 255 }, // 3: Lime
-    .{ .r = 180, .g = 50, .b = 255, .a = 255 }, // 4: Purple
-    .{ .r = 50, .g = 255, .b = 200, .a = 255 }, // 5: Teal
-    .{ .r = 50, .g = 255, .b = 50, .a = 255 }, // 6: Green
-    .{ .r = 255, .g = 230, .b = 50, .a = 255 }, // 7: Yellow
-    .{ .r = 255, .g = 50, .b = 180, .a = 255 }, // 8: Pink
+/// The shared layer palette of the editor and companion.
+pub const layer_colors = blk: {
+    var colors: [ui.layer_palette.dark.len]dvui.Color = undefined;
+    for (&colors, ui.layer_palette.dark) |*entry, hex| entry.* = ui.color(hex);
+    break :blk colors;
 };
 
 /// Returns a muted version of a layer color.
@@ -153,7 +147,7 @@ pub fn drawPracticeKey(
     // A precomputed caption replaces every other indicator.
     if (content.caption) |caption| {
         const reserved: f32 = if (guided) 18 else 8;
-        drawCaption(caption, content.hold_signal, index, rect, scale, reserved, palette.text);
+        drawCaption(caption, index, rect, scale, reserved, palette.text);
         return;
     }
     if (content.icon) |icon_bytes| {
@@ -179,49 +173,19 @@ pub fn drawPracticeKey(
     if (content.hold_mods) |mods| drawModifierIndicators(mods, index, size, scale, palette.modifier, resources);
 }
 
-/// Draws a caption scaled down to fit the keycap, with an optional hold-signal
-/// icon after its last line.
-fn drawCaption(caption: []const u8, hold_signal: ?u8, index: usize, rect: dvui.Rect, scale: f32, reserved: f32, color: dvui.Color) void {
-    const count = std.unicode.utf8CountCodepoints(caption) catch caption.len;
-    const font_size: f32 = if (std.mem.indexOfScalar(u8, caption, '\n') != null) 13 else if (count > 9) 9 else if (count >= 4) 13 else 20;
-    var font = fonts.font(caption, font_size * scale);
-    const measured = font.textSize(caption);
-    const available_width = @max(1, rect.w - 8 * scale);
-    const available_height = @max(1, rect.h - reserved * scale);
-    const fit = @min(1, @min(available_width / @max(1, measured.w), available_height / @max(1, measured.h)));
-    font = font.withSize(font.size * fit);
-    // Pixel-snapped font metrics are not proportional to point size. Check
-    // the fitted font again so the hold line cannot become an ellipsis.
-    for (0..8) |_| {
-        const actual = font.textSize(caption);
-        if (actual.w <= available_width and actual.h <= available_height) break;
-        font = font.withSize(font.size * 0.95);
-    }
-    dvui.labelNoFmt(@src(), caption, .{ .align_x = 0.5, .align_y = 0.5 }, .{
+/// Draws a caption scaled down to fit the keycap. Keyboard symbols, including
+/// companion signals, are drawn as icons.
+fn drawCaption(caption: []const u8, index: usize, rect: dvui.Rect, scale: f32, reserved: f32, color: dvui.Color) void {
+    ui.caption(caption, .{
+        .x = 4 * scale,
+        .y = 4 * scale,
+        .w = @max(1, rect.w - 8 * scale),
+        .h = @max(1, rect.h - reserved * scale),
+    }, .{
+        .color = color,
+        .secondary = color,
+        .size = 24 * scale,
         .id_extra = index,
-        .color_text = .{ .color = color },
-        .font = font,
-        .rect = .{ .x = 3 * scale, .y = 3 * scale, .w = available_width, .h = available_height },
-        .padding = .{},
-        .margin = .{},
-    });
-    // Companion hold signals get an icon: 253 toggles logging (eye), 254 quits (cross).
-    const id = hold_signal orelse return;
-    if (id < 253) return;
-    const last_line = caption[(if (std.mem.lastIndexOfScalar(u8, caption, '\n')) |newline| newline + 1 else 0)..];
-    const text_size = font.textSize(caption);
-    const line_size = font.textSize(last_line);
-    const icon_size = font.size;
-    dvui.icon(@src(), "hold_signal", if (id == 254) dvui.entypo.cross else dvui.entypo.eye, .{}, .{
-        .color_text = .{ .color = color },
-        .rect = .{
-            .x = 3 * scale + (available_width + line_size.w) / 2 - icon_size,
-            .y = 3 * scale + (available_height + text_size.h) / 2 - line_size.h + (line_size.h - icon_size) / 2,
-            .w = icon_size,
-            .h = icon_size,
-        },
-        .padding = .{},
-        .margin = .{},
     });
 }
 
@@ -288,71 +252,76 @@ const ModifierColumn = struct {
     }
 };
 
-test "getLabel: KC_A tap_only produces correct KeyDef" {
-    const def = core.KeyDef{ .tap_only = .{
-        .key_press = .{
-            .tap_keycode = @backingInt(zkeymap.ScanCode.KC_A),
-        },
-    } };
-
-    try testing.expect(def.tap_only.key_press != null);
-    try testing.expectEqual(@as(u8, @backingInt(zkeymap.ScanCode.KC_A)), def.tap_only.key_press.?.tap_keycode);
+/// WCAG relative luminance of an sRGB color.
+fn luminance(color: dvui.Color) f64 {
+    const linear = struct {
+        fn channel(value: u8) f64 {
+            const c = @as(f64, @floatFromInt(value)) / 255;
+            return if (c <= 0.03928) c / 12.92 else std.math.pow(f64, (c + 0.055) / 1.055, 2.4);
+        }
+    }.channel;
+    return 0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b);
 }
 
-test "getLabel: transparent key returns transparent variant" {
-    const def: ?core.KeyDef = null;
-    try testing.expect(def == null);
+fn contrast(a: dvui.Color, b: dvui.Color) f64 {
+    const la = luminance(a);
+    const lb = luminance(b);
+    return (@max(la, lb) + 0.05) / (@min(la, lb) + 0.05);
 }
 
-test "getLabel: none key returns none variant" {
-    const def = core.KeyDef.none;
-    try testing.expect(def == .none);
+test "layer borders stand out from keycaps and panels in both themes" {
+    for ([_]bool{ false, true }) |light| {
+        const theme = ui.Theme.get(light);
+        for (0..theme.layers.len) |index| {
+            const border = ui.layerColor(theme, index);
+            errdefer std.debug.print("layer {d} light={} contrast {d:.2}\n", .{ index, light, contrast(border, theme.keycap) });
+            // Close to the WCAG 3:1 guideline for non-text UI components.
+            try testing.expect(contrast(border, theme.keycap) >= 2.8);
+            try testing.expect(contrast(border, theme.panel) >= 2.8);
+        }
+    }
 }
 
-test "getLabel: media key volume up has correct media_key" {
-    const def = core.KeyDef{ .tap_only = .{
-        .media_key = .VolumeUp,
-    } };
-    try testing.expectEqual(core.MediaCode.VolumeUp, def.tap_only.media_key.?);
+/// CIELAB coordinates of an sRGB color under the D65 white point.
+fn lab(color: dvui.Color) [3]f64 {
+    const linear = struct {
+        fn channel(value: u8) f64 {
+            const c = @as(f64, @floatFromInt(value)) / 255;
+            return if (c <= 0.04045) c / 12.92 else std.math.pow(f64, (c + 0.055) / 1.055, 2.4);
+        }
+        fn f(t: f64) f64 {
+            return if (t > 0.008856) std.math.cbrt(t) else 7.787 * t + 16.0 / 116.0;
+        }
+    };
+    const r = linear.channel(color.r);
+    const g = linear.channel(color.g);
+    const b = linear.channel(color.b);
+    const x = linear.f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047);
+    const y = linear.f(0.2126 * r + 0.7152 * g + 0.0722 * b);
+    const z = linear.f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883);
+    return .{ 116 * y - 16, 500 * (x - y), 200 * (y - z) };
 }
 
-test "getLabel: COM_TOG custom has correct id" {
-    const def = core.KeyDef{ .tap_only = .{
-        .custom = core.CUSTOM_ID_COMPANION_TOGGLE,
-    } };
-    try testing.expectEqual(@as(u8, core.CUSTOM_ID_COMPANION_TOGGLE), def.tap_only.custom);
+test "layer colors stay distinguishable from each other" {
+    for ([_]bool{ false, true }) |light| {
+        const theme = ui.Theme.get(light);
+        for (0..theme.layers.len) |a| for (a + 1..theme.layers.len) |b| {
+            const first = lab(ui.layerColor(theme, a));
+            const second = lab(ui.layerColor(theme, b));
+            const distance = std.math.sqrt(std.math.pow(f64, first[0] - second[0], 2) +
+                std.math.pow(f64, first[1] - second[1], 2) +
+                std.math.pow(f64, first[2] - second[2], 2));
+            errdefer std.debug.print("layers {d} and {d} light={} differ by ΔE {d:.1}\n", .{ a, b, light, distance });
+            // CIE76 ΔE: about 2.3 is just noticeable; 30 reads as a different hue at a glance.
+            try testing.expect(distance >= 30);
+        };
+    }
 }
 
-test "getLabel: mouse left click has correct action" {
-    const def = core.KeyDef{ .tap_only = .{
-        .mouse_action = .LeftButton,
-    } };
-    try testing.expect(def.tap_only.mouse_action == .LeftButton);
-}
-
-test "getLabel: tap_hold with layer has correct hold_layer" {
-    const def = core.KeyDef{ .tap_hold = .{
-        .tap = .{ .key_press = .{ .tap_keycode = @backingInt(zkeymap.ScanCode.KC_SPACE) } },
-        .hold = .{ .hold_layer = 2 },
-        .tapping_term = .{ .ms = 200 },
-    } };
-    try testing.expectEqual(@as(?core.LayerIndex, 2), def.tap_hold.hold.hold_layer);
-}
-
-test "getLabel: hold_only with modifiers shows modifier" {
-    const def = core.KeyDef{ .hold_only = .{
-        .hold_modifiers = .{ .left_shift = true, .right_shift = true },
-    } };
-    try testing.expect(def.hold_only.hold_modifiers.has_any());
-    try testing.expect(def.hold_only.hold_modifiers.left_shift);
-    try testing.expect(def.hold_only.hold_modifiers.right_shift);
-}
-
-test "getLabel: tap_with_autofire has correct structure" {
-    const def = core.KeyDef{ .tap_with_autofire = .{
-        .tap = .{ .key_press = .{ .tap_keycode = @backingInt(zkeymap.ScanCode.KC_B) } },
-        .initial_delay = .{ .ms = 100 },
-        .repeat_interval = .{ .ms = 50 },
-    } };
-    try testing.expect(def.tap_with_autofire.tap.key_press != null);
+test "keycap text keeps readable contrast on keycaps" {
+    for ([_]bool{ false, true }) |light| {
+        const theme = ui.Theme.get(light);
+        try testing.expect(contrast(theme.text, theme.keycap) >= 7);
+        try testing.expect(contrast(theme.muted, theme.keycap) >= 3);
+    }
 }

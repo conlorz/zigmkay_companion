@@ -223,3 +223,15 @@ Bounded subprocess pipe handling (2026-10-12):
 src/jobs/root.zig follows Zig 0.17.0 std/process.zig run(), with
 producer-before-reader cancellation cleanup and POSIX build process groups.
 Copyright (c) Zig contributors, MIT (Expat); see src/jobs/LICENSE.zig-stdlib.
+
+Editor font (2026-11-18): Inter 4.1 by Rasmus Andersson
+(rsms/inter release Inter-4.1.zip, package hash
+N-V-__8AAAv-sAOXPycbcfSerQ5vsDx3k-PZC5fy2p9ScNi8) is pinned in build.zig.zon.
+src/desktop/fonts.zig embeds its static Regular and SemiBold faces in the
+desktop application. Inter is licensed under the SIL Open Font License 1.1;
+release bundles copy the package's LICENSE.txt. No font files are committed.
+
+Keycap symbol icons (2026-11-18): src/desktop/icon_resources.zig maps keycap
+symbols to lucide icons from the pinned icon package. Its first-party SVG
+paths follow the lucide 24-unit grid; the forward-delete icon mirrors the
+lucide `delete` path (ISC license, Lucide contributors).

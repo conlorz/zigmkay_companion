@@ -407,10 +407,20 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
     const placement = b.createModule(.{ .root_source_file = b.path("src/platform/window_placement.zig"), .target = t, .imports = sdl_only });
     const folder_dialog = b.createModule(.{ .root_source_file = b.path("src/platform/folder_dialog.zig"), .target = t, .imports = sdl_only });
     const fonts = b.createModule(.{ .root_source_file = b.path("src/desktop/fonts.zig"), .target = t, .imports = dvui_only });
+    const inter = deps.inter.?;
+    fonts.addAnonymousImport("inter-regular", .{ .root_source_file = inter.path("extras/ttf/Inter-Regular.ttf") });
+    fonts.addAnonymousImport("inter-semibold", .{ .root_source_file = inter.path("extras/ttf/Inter-SemiBold.ttf") });
+    const icon_resources = desktopModule(b, cfg, "icon_resources.zig", &.{
+        .{ .name = "desktop-core", .module = host.desktop_core },
+        .{ .name = "icons", .module = icons },
+        .{ .name = "svg2tvg", .module = svg2tvg },
+    });
     const ui = b.createModule(.{ .root_source_file = b.path("src/desktop/ui.zig"), .target = t, .imports = dupe(b, &.{
         .{ .name = "dvui", .module = dvui },
         .{ .name = "editor-fonts", .module = fonts },
         .{ .name = "desktop-geometry", .module = core.geometry },
+        .{ .name = "desktop-core", .module = host.desktop_core },
+        .{ .name = "icon-resources", .module = icon_resources },
     }) });
     const flash_ui = b.createModule(.{ .root_source_file = b.path("src/desktop/flash_ui.zig"), .target = t, .imports = dupe(b, &.{
         .{ .name = "dvui", .module = dvui },
@@ -438,6 +448,7 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
     const physical_ui = desktopModule(b, cfg, "components/layout.zig", &.{
         .{ .name = "dvui", .module = dvui },
         .{ .name = "editor-fonts", .module = fonts },
+        .{ .name = "editor-ui", .module = ui },
         .{ .name = "desktop-core", .module = dc },
         .{ .name = "layout-model", .module = host.layout },
         .{ .name = "zkeymap", .module = host.keymap },
@@ -487,11 +498,6 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
     const native_draft_input = desktopModule(b, cfg, "draft_input_native.zig", &.{
         .{ .name = "desktop-core", .module = dc },
         .{ .name = "dvui_backend", .module = backend },
-    });
-    const icon_resources = desktopModule(b, cfg, "icon_resources.zig", &.{
-        .{ .name = "desktop-core", .module = dc },
-        .{ .name = "icons", .module = icons },
-        .{ .name = "svg2tvg", .module = svg2tvg },
     });
     const onboarding_ui = desktopModule(b, cfg, "onboarding_ui.zig", &(editor ++ [_]Import{.{ .name = "project", .module = host.project }}));
     const companion_ui = desktopModule(b, cfg, "companion_ui.zig", &.{
@@ -543,6 +549,7 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
         .key_renderer_deps = dupe(b, &.{
             .{ .name = "dvui", .module = dvui },
             .{ .name = "editor-fonts", .module = fonts },
+            .{ .name = "editor-ui", .module = ui },
             .{ .name = "desktop-core", .module = dc },
             .{ .name = "layout-model", .module = host.layout },
             .{ .name = "zkeymap", .module = host.keymap },

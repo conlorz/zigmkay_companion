@@ -24,6 +24,11 @@
             .hash = "icons-0.1.0-iJxA-ZBcLwBVzCP4wa8KwYaZw4bMrYP7eNgI-i6MrMI8",
             .lazy = true,
         },
+        .inter = .{
+            .url = "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip",
+            .hash = "N-V-__8AAAv-sAOXPycbcfSerQ5vsDx3k-PZC5fy2p9ScNi8",
+            .lazy = true,
+        },
         .zqlite = .{
             .url = "git+https://github.com/karlseguin/zqlite.zig#865223b734a5113f731ab1eb1d7d81c8ac252913",
             .hash = "zqlite-0.0.1-RWLaY4Y8nADz2l5aBE-JVyDyM3sZzHjq0agNykuVZKqQ",

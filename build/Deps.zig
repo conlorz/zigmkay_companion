@@ -21,6 +21,8 @@ dvui: ?*std.Build.Dependency = null,
 ztray: ?*std.Build.Dependency = null,
 svg2tvg: ?*std.Build.Dependency = null,
 icons: ?*std.Build.Dependency = null,
+/// Inter, the editor font on every host, with a real bold face.
+inter: ?*std.Build.Dependency = null,
 /// The prebuilt picotool shipped with non-Windows bundles.
 picotool: ?*std.Build.Dependency = null,
 micro: if (MicroBuild == void) void else ?*MicroBuild = if (MicroBuild == void) {} else null,
@@ -44,6 +46,7 @@ pub fn init(b: *std.Build, cfg: Config) error{LazyDependencyNeeded}!Deps {
         deps.ztray = lazy(b, &missing, "ztray", .{ .target = cfg.target, .optimize = cfg.optimize });
         deps.svg2tvg = lazy(b, &missing, "svg2tvg", .{ .target = cfg.target, .optimize = cfg.optimize });
         deps.icons = lazy(b, &missing, "icons", .{ .target = cfg.target, .optimize = cfg.optimize });
+        deps.inter = lazy(b, &missing, "inter", .{});
     }
     if (cfg.bundle and cfg.target.result.os.tag != .windows)
         deps.picotool = lazy(b, &missing, "picotool", .{ .target = cfg.target, .optimize = cfg.optimize });

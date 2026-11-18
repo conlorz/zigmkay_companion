@@ -9,6 +9,7 @@ const catalog = desktop.action_catalog;
 const editing = desktop.inspector_session;
 const forms = desktop.action_form;
 const fonts = @import("editor-fonts");
+const Symbol = labels.keycap_symbols.Symbol;
 
 pub const State = struct {
     target: catalog.Target = .tap,
@@ -140,12 +141,18 @@ fn chip(self: *Context, text: []const u8, tag: []const u8, operation: editing.Op
     const id = std.hash.Wyhash.hash(0, tag);
     const row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .id_extra = id, .padding = .all(2) });
     defer row.deinit();
-    dvui.labelNoFmt(@src(), text, .{}, .{
+    ui.richLabel(text, .{
+        .color = self.theme.text,
+        .secondary = self.theme.text,
+        .size = 16,
+        .align_x = 0,
+        .id_extra = id,
+    }, .{
         .expand = .horizontal,
         .background = true,
+        .color_fill = .{ .color = self.theme.panel },
         .padding = .all(5),
         .corners = .all(5),
-        .font = fonts.font(text, 13),
     });
     if (dvui.button(@src(), "×", .{}, .{ .tag = tag, .min_size_content = .{ .w = 28, .h = 28 }, .id_extra = id })) {
         self.edit_session.mutate(operation);
@@ -154,7 +161,16 @@ fn chip(self: *Context, text: []const u8, tag: []const u8, operation: editing.Op
 
 fn modifierButtons(self: *Context, target: editing.ModifierTarget) void {
     const names = switch (labels.running_host) {
-        .macos => [_][]const u8{ "L ⌃", "L ⇧", "L ⌥", "L ⌘", "R ⌃", "R ⇧", "R ⌥", "R ⌘" },
+        .macos => [_][]const u8{
+            "L " ++ Symbol.literal(.control),
+            "L " ++ Symbol.literal(.shift),
+            "L " ++ Symbol.literal(.option),
+            "L " ++ Symbol.literal(.command),
+            "R " ++ Symbol.literal(.control),
+            "R " ++ Symbol.literal(.shift),
+            "R " ++ Symbol.literal(.option),
+            "R " ++ Symbol.literal(.command),
+        },
         .windows => [_][]const u8{ "L Ctrl", "L Shift", "L Alt", "L Win", "R Ctrl", "R Shift", "R Alt", "R Win" },
         .linux => [_][]const u8{ "L Ctrl", "L Shift", "L Alt", "L Super", "R Ctrl", "R Shift", "R Alt", "R Super" },
     };
@@ -165,14 +181,14 @@ fn modifierButtons(self: *Context, target: editing.ModifierTarget) void {
         const state = self.edit_session.modifierState(target, bit);
         const text = if (state == .mixed) std.fmt.allocPrint(arena, "− {s}", .{names[bit]}) catch unreachable else names[bit];
         const tag = std.fmt.allocPrint(arena, "inspector.modifier.{s}.{d}", .{ @tagName(target), bit }) catch unreachable;
-        if (dvui.button(@src(), text, .{}, .{
+        const tint = if (state == .on) ui.color(0xFFFFFF) else self.theme.text;
+        if (ui.richButton(@src(), text, .{ .color = tint, .secondary = tint, .size = 15, .id_extra = bit }, .{
             .tag = tag,
             .id_extra = bit,
             .expand = .horizontal,
             .padding = .all(4),
             .margin = .all(1),
-            .font = fonts.font(text, 12),
-            .color_fill = .{ .color = if (state == .on) ui.color(0x126AFF) else self.theme.control },
+            .color_fill = .{ .color = if (state == .on) self.theme.accent else self.theme.control },
         })) self.edit_session.toggleModifier(target, bit);
     }
 }
@@ -260,7 +276,7 @@ fn tapChips(self: *Context, value: anytype) void {
         const text = if (fieldMixed(self, "tap", "key_press"))
             "Mixed key / chord"
         else
-            self.keycap(.{ .tap_only = .{ .key_press = key } }, &buffer);
+            labels.tap(.{ .key_press = key }, &buffer);
         chip(self, text, "inspector.remove.tap.key", .{ .tap_key = null });
     }
     if (value.one_shot) |one| {
@@ -349,6 +365,44 @@ fn drawPanel(self: *Context, t: ui.Theme) !void {
     try drawFooter(self, t, count, valid);
 }
 
+const Description = struct { tap: []const u8, hold: []const u8 };
+
+/// Spells out what a key does when tapped and when held.
+fn describe(value: ?p.Action, document: p.Document, tap_buffer: []u8, hold_buffer: []u8) Description {
+    const action = value orelse return .{ .tap = "Inherited", .hold = "" };
+    return switch (action) {
+        .none => .{ .tap = "Does nothing", .hold = "" },
+        .tap_only => |tap| .{ .tap = labels.tap(tap, tap_buffer), .hold = "" },
+        .tap_with_autofire => |autofire| .{ .tap = labels.tap(autofire.tap, tap_buffer), .hold = "Repeats" },
+        .tap_hold => |both| .{ .tap = labels.tap(both.tap, tap_buffer), .hold = labels.hold(both.hold, document, hold_buffer) },
+        .hold_only => |hold| .{ .tap = "Hold only", .hold = labels.hold(hold, document, hold_buffer) },
+    };
+}
+
+/// The keycap as the canvas draws it, on the edited layer's color.
+fn drawPreview(self: *Context, t: ui.Theme, text: []const u8) void {
+    const bounds: dvui.Rect = .{ .x = 18, .y = 60, .w = 80, .h = 72 };
+    const box = dvui.box(@src(), .{}, .{
+        .rect = bounds,
+        .background = true,
+        .color_fill = .{ .color = t.keycap },
+        .color_border = .{ .color = ui.layerColor(t, self.model.layer) },
+        .border = .all(2),
+        .corners = .all(10),
+        .padding = .{},
+        .margin = .{},
+        .tag = "inspector.preview",
+    });
+    box.deinit();
+    ui.caption(text, .{ .x = bounds.x + 7, .y = bounds.y + 7, .w = bounds.w - 14, .h = bounds.h - 14 }, .{
+        .color = t.text,
+        .secondary = t.muted,
+        .size = 26,
+        .id_extra = 3,
+        .layers = t.layers,
+    });
+}
+
 /// Title, clipboard buttons, keycap preview and assignment status. Returns the
 /// number of selected keys.
 fn drawHeader(self: *Context, t: ui.Theme) !usize {
@@ -359,14 +413,40 @@ fn drawHeader(self: *Context, t: ui.Theme) !usize {
     if (ui.button(t, "Copy", "edit.copy", .{ .x = 284, .y = 14, .w = 62, .h = 34 })) self.choose(.copy);
     if (ui.button(t, "Paste", "edit.paste", .{ .x = 352, .y = 14, .w = 70, .h = 34 })) self.choose(.paste);
     var buffer: [512]u8 = undefined;
-    _ = ui.button(t, self.keycap(self.primaryAction(), &buffer), "inspector.preview", .{ .x = 18, .y = 64, .w = 80, .h = 66 });
-    ui.label(t, document.key_ids[self.model.primary], .{ .x = 111, .y = 65, .w = 300, .h = 22 }, 15);
+    drawPreview(self, t, self.keycap(self.primaryAction(), &buffer));
     var count: usize = 0;
     for (session.selected) |selected| {
         if (selected) count += 1;
     }
-    const selection = try std.fmt.allocPrint(arena, "{s} · {d} selected", .{ document.layers[self.model.layer].name, count });
-    ui.label(t, selection, .{ .x = 111, .y = 94, .w = 300, .h = 22 }, 13);
+    // The keycap draws symbols; the description beside it spells them out.
+    var tap_buffer: [512]u8 = undefined;
+    var hold_buffer: [512]u8 = undefined;
+    const described = describe(self.primaryAction(), document, &tap_buffer, &hold_buffer);
+    ui.caption(described.tap, .{ .x = 111, .y = 62, .w = 310, .h = 24 }, .{
+        .color = t.text,
+        .secondary = t.text,
+        .size = 19,
+        .align_x = 0,
+        .id_extra = 1,
+    });
+    if (described.hold.len != 0) {
+        const hold_text = try std.fmt.allocPrint(arena, "Hold: {s}", .{described.hold});
+        ui.caption(hold_text, .{ .x = 111, .y = 87, .w = 310, .h = 20 }, .{
+            .color = t.muted,
+            .secondary = t.muted,
+            .size = 16,
+            .align_x = 0,
+            .id_extra = 2,
+        });
+    }
+    const selection = try std.fmt.allocPrint(arena, "{s} · {s} · {d} selected", .{
+        document.key_ids[self.model.primary],
+        document.layers[self.model.layer].name,
+        count,
+    });
+    var muted = t;
+    muted.text = t.muted;
+    ui.label(muted, selection, .{ .x = 111, .y = 110, .w = 310, .h = 20 }, 12);
     var mixed = false;
     for (session.selected, session.drafts) |selected, action| {
         if (selected and !std.meta.eql(action, session.first())) mixed = true;
@@ -517,12 +597,17 @@ fn drawSearch(self: *Context) !void {
     for (entries[0..found], 0..) |result, index| {
         const tag = try std.fmt.allocPrint(arena, "inspector.result.{d}", .{index});
         const text = catalog.label(result, document, &buffer);
-        if (dvui.button(@src(), text, .{}, .{
+        if (ui.richButton(@src(), text, .{
+            .color = self.theme.text,
+            .secondary = self.theme.text,
+            .size = 16,
+            .align_x = 0,
+            .id_extra = index,
+        }, .{
             .tag = tag,
             .id_extra = index,
             .expand = .horizontal,
-            .padding = .all(6),
-            .font = fonts.font(text, 13),
+            .padding = .{ .x = 10, .y = 6, .w = 10, .h = 6 },
         })) add(self, result);
     }
     if (found == 0) caption("No matching actions for this target");

@@ -3,7 +3,6 @@ const std = @import("std");
 const dvui = @import("dvui");
 const desktop = @import("desktop-core");
 const layout = @import("layout-model");
-const fonts = @import("editor-fonts");
 const ui = @import("editor-ui");
 
 pub const View = struct {
@@ -30,7 +29,7 @@ pub const Result = union(enum) {
     chord: desktop.chord_action.Action,
 };
 
-pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame, theme: ui.Theme, light: bool) !?Result {
+pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame, theme: ui.Theme) !?Result {
     const actual = try model.id();
     if (!std.mem.eql(u8, &actual, &frame.snapshot)) return error.StaleKeyboardLabels;
     const doc = model.document();
@@ -63,54 +62,72 @@ pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame, theme:
         view.drag = null;
         if (dvui.dragName("key_chord")) dvui.dragEnd();
     };
-    for (plan) |item| try drawKey(view, model, item, theme, light, &result);
+    for (plan) |item| try drawKey(view, model, frame, item, theme, &result);
     return result;
 }
 
-fn captionSize(caption: []const u8) f32 {
-    if (std.mem.indexOfScalar(u8, caption, '\n') != null) return 13;
-    const length = std.unicode.utf8CountCodepoints(caption) catch caption.len;
-    if (length > 9) return 9;
-    if (length >= 4) return 13;
-    return 20;
+/// The caption a transparent key falls through to, from the nearest lower
+/// layer that assigns the key, or null when no layer does.
+fn inheritedCaption(labels: *const desktop.label_cache.LabelCache, layer: usize, index: usize) ?[]const u8 {
+    var lower = layer;
+    while (lower > 0) {
+        lower -= 1;
+        const entry = labels.lookup(lower, index, .{});
+        if (!isTransparent(entry.*)) return entry.caption;
+    }
+    return null;
 }
 
-/// Draws one selectable key and its signal icons, and accepts host-palette chord drops.
+fn isTransparent(content: desktop.label_cache.CachedKeyContent) bool {
+    return if (content.label) |text| std.mem.eql(u8, text, "---") else false;
+}
+
+/// Draws one selectable key and accepts host-palette chord drops. The border
+/// carries the color of the edited layer; transparent keys show the legend
+/// they fall through to, dimmed.
 fn drawKey(
     view: *View,
     model: *const desktop.model.Model,
+    frame: Frame,
     item: desktop.physical_view.DrawKey,
     theme: ui.Theme,
-    light: bool,
     result: *?Result,
 ) !void {
     const index = item.placed.key_index;
     const rect = ui.rect(item.placed.rect);
     const content = item.content;
-    const caption = content.caption orelse content.label orelse content.icon_name;
+    const transparent = isTransparent(content);
+    const selected = model.selected[index];
+    const layer_color = ui.layerColor(theme, model.layer);
     var opts = ui.options(theme, rect, 20);
     opts.rotation = item.placed.rotation;
     opts.id_extra = item.placed.id;
     opts.tag = try std.fmt.allocPrint(dvui.currentWindow().arena(), "key.select.{d}", .{index});
     opts.background = true;
-    opts.border = .all(if (model.selected[index]) 2 else 1);
-    if (model.selected[index]) {
-        opts.color_border = .{ .color = ui.color(0x3296FF) };
-        opts.color_fill = .{ .color = if (light) ui.color(0xE2F0FF) else ui.color(0x233B55) };
-    }
+    opts.corners = .all(@max(4, rect.w * 0.12));
+    opts.border = .all(if (selected) 2.5 else 1.5);
+    opts.color_fill = .{ .color = if (selected) ui.mix(theme.keycap, layer_color, 0.22) else if (transparent) theme.panel else theme.keycap };
+    opts.color_border = .{ .color = if (selected) layer_color else ui.mix(theme.keycap, layer_color, if (transparent) 0.3 else 0.65) };
     opts.padding = .all(2);
-    opts.font = fonts.font(caption, captionSize(caption) * @min(1, item.scale));
     var data: dvui.WidgetData = undefined;
     opts.data_out = &data;
-    if (dvui.button(@src(), caption, .{}, opts) and result.* == null) {
+    if (dvui.button(@src(), "", .{}, opts) and result.* == null) {
         result.* = .{ .select = try desktop.key_selection.Action.capture(model, index, view.extend) };
     }
-    ui.signalIcons(opts, rect, caption, content.icon_name, content.hold_signal);
+    const inset = @max(3, rect.w * 0.08);
+    const bounds: dvui.Rect = .{ .x = rect.x + inset, .y = rect.y + inset, .w = @max(1, rect.w - inset * 2), .h = @max(1, rect.h - inset * 2) };
+    const fallthrough = if (transparent) inheritedCaption(frame.labels, model.layer, index) else null;
+    const text = if (transparent) fallthrough orelse "" else content.caption orelse content.label orelse "";
+    ui.caption(text, bounds, .{
+        .color = if (transparent) theme.muted else theme.text,
+        .secondary = theme.muted,
+        .size = 22 * @min(1, item.scale),
+        .id_extra = item.placed.id,
+        .layer_colors = !transparent,
+        .layers = theme.layers,
+    });
     if (dvui.focusedWidgetId() == data.id) view.canvas_focus = true;
     try acceptChordDrop(view, model, &data, index, result);
-    if (model.document().layers[model.layer].actions[index] == null) {
-        ui.label(theme, "inherited", .{ .x = rect.x + 3, .y = rect.y + rect.h - 10, .w = @max(0, rect.w - 6), .h = 8 }, 6);
-    }
 }
 
 fn acceptChordDrop(view: *View, model: *const desktop.model.Model, data: *dvui.WidgetData, index: usize, result: *?Result) !void {

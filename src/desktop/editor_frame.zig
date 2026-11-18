@@ -73,7 +73,7 @@ pub fn draw(view: *View, owner: *dispatch.State, model: *desktop.model.Model, fr
         else => return err,
     };
     const theme = ui.Theme.get(view.toolbar.light);
-    dvui.themeSet(if (view.toolbar.light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark);
+    dvui.themeSet(ui.dvuiTheme(dvui.currentWindow(), view.toolbar.light));
     const column = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both, .padding = .{}, .margin = .{} });
     defer column.deinit();
     const diagnostic = std.mem.sliceTo(&view.diagnostic, 0);
@@ -138,7 +138,7 @@ fn drawPanels(
     if (try layers.draw(&view.layers, model, theme)) |action| requests.offer(dispatch.Request.fromLayer(action, model));
     dropStaleHostDrag(view, model, frame.host);
     view.keyboard.drag = view.host.drag;
-    if (try keyboard.draw(&view.keyboard, model, frame.keyboard, theme, view.toolbar.light)) |action| switch (action) {
+    if (try keyboard.draw(&view.keyboard, model, frame.keyboard, theme)) |action| switch (action) {
         .select => |selected| requests.offer(dispatch.Request.fromKey(selected)),
         .chord => |chord| {
             view.host.drag = null;
@@ -201,7 +201,8 @@ fn drawStaleRecovery(owner: *dispatch.State, model: *desktop.model.Model, theme:
     for (owner.inspector.selected, 0..) |selected, index| if (selected) {
         var summary: [1024]u8 = undefined;
         const action = desktop.labels.action(owner.inspector.drafts[index], &summary);
-        dvui.label(@src(), "{s}: {s}", .{ owner.inspector.key_storage[index], action }, .{});
+        const line = try std.fmt.allocPrint(dvui.currentWindow().arena(), "{s}: {s}", .{ owner.inspector.key_storage[index], action });
+        ui.richLabel(line, theme.captionStyle(14, index), .{ .expand = .horizontal });
     };
     if (dvui.button(@src(), "Discard stale staged edits", .{}, .{})) return rendered;
     return null;

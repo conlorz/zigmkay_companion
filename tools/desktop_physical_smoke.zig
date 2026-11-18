@@ -47,7 +47,6 @@ export fn desktopKeyboardCompileProbe(
         model,
         frame.*,
         @import("editor-ui").Theme.get(false),
-        false,
     ) catch null;
 }
 

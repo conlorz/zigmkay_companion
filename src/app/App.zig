@@ -19,6 +19,7 @@ const installed = @import("app-paths");
 const tray_backend = @import("native-tray");
 const native_events = @import("native-events");
 const editor_fonts = @import("editor-fonts");
+const editor_ui = @import("editor-ui");
 
 const Captions = @import("Captions.zig");
 const CompanionOverlay = @import("CompanionOverlay.zig");
@@ -470,7 +471,7 @@ fn fitWindow(app: *App) dvui.Size.Natural {
     window.content_scale = scale * app.life.editor_scale;
     window.snap_to_pixels = window.content_scale == 1;
     if (app.mode.isRundown()) app.view.toolbar.light = app.count < @as(usize, if (app.mode.isLayoutGallery()) 19 else 7);
-    window.themeSet(if (app.view.toolbar.light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark);
+    window.themeSet(editor_ui.dvuiTheme(window, app.view.toolbar.light));
     return available;
 }
 

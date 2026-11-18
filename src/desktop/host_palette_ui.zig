@@ -3,7 +3,6 @@ const std = @import("std");
 const dvui = @import("dvui");
 const desktop = @import("desktop-core");
 const ui = @import("editor-ui");
-const fonts = @import("editor-fonts");
 const Chord = desktop.chord_action.Action;
 
 pub const View = struct {
@@ -17,7 +16,7 @@ pub const View = struct {
 fn toggleTheme(theme: ui.Theme, on: bool) ui.Theme {
     var result = theme;
     if (on) {
-        result.control = ui.color(0x126AFF);
+        result.control = theme.accent;
         result.text = ui.color(0xFFFFFF);
     }
     return result;
@@ -46,18 +45,18 @@ pub fn draw(view: *View, model: *const desktop.model.Model, cache: *const deskto
         var x: f32 = 14;
         for (row, 0..) |key, ki| {
             const caption = cache.caption(key.code, view.shift, view.option);
-            const size: f32 = if (caption.len > 3) 11 else 18;
+            const length = std.unicode.utf8CountCodepoints(caption) catch caption.len;
+            const size: f32 = if (length > 3) 12 else 18;
             const bounds: dvui.Rect = .{ .x = x, .y = 58 + @as(f32, @floatFromInt(ri)) * 38, .w = 47.5 * key.units - 3, .h = 35 };
             var opts = ui.options(theme, bounds, size);
             opts.padding = .all(2);
-            opts.font = fonts.font(caption, size);
             opts.id_extra = ri * 100 + ki;
             opts.background = true;
             opts.gravity_x = 0.5;
             opts.gravity_y = 0.5;
             opts.border = .all(1);
             opts.tag = try std.fmt.allocPrint(dvui.currentWindow().arena(), "os.key.{d}", .{key.code});
-            if (try dragSource(view, model, key.code, caption, opts)) |action| {
+            if (try dragSource(view, model, key.code, caption, size, opts)) |action| {
                 if (result == null) result = action;
             }
             x += 47.5 * key.units;
@@ -68,7 +67,7 @@ pub fn draw(view: *View, model: *const desktop.model.Model, cache: *const deskto
 
 /// A key that starts a chord drag on press. Returns the chord when the drag is
 /// released on the key itself instead of on a drop target.
-fn dragSource(view: *View, model: *const desktop.model.Model, code: u8, caption: []const u8, opts: dvui.Options) !?Chord {
+fn dragSource(view: *View, model: *const desktop.model.Model, code: u8, caption: []const u8, size: f32, opts: dvui.Options) !?Chord {
     var key: dvui.ButtonWidget = undefined;
     key.init(@src(), .{}, opts);
     defer key.deinit();
@@ -99,14 +98,13 @@ fn dragSource(view: *View, model: *const desktop.model.Model, code: u8, caption:
         } else if (mouse.action == .position) key.hover = true;
     }
     key.drawBackground();
-    dvui.labelNoFmt(@src(), caption, .{ .align_x = 0.5, .align_y = 0.5 }, .{
-        .expand = .both,
-        .gravity_x = 0.5,
-        .gravity_y = 0.5,
-        .font = opts.font,
-        .color_text = opts.color_text,
-        .padding = .{},
-        .margin = .{},
+    const content = key.data().contentRect();
+    const tint = opts.color_text.?.color;
+    ui.caption(caption, .{ .w = content.w, .h = content.h }, .{
+        .color = tint,
+        .secondary = tint,
+        .size = size,
+        .id_extra = opts.id_extra orelse 0,
     });
     key.drawFocus();
     return result;

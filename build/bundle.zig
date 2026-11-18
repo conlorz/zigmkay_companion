@@ -78,6 +78,7 @@ fn pins(b: *std.Build, revision: []const u8) *std.Build.Step.Options {
         manifest.dependencies.zqlite.hash,
         manifest.dependencies.svg2tvg.hash,
         manifest.dependencies.icons.hash,
+        manifest.dependencies.inter.hash,
         @import("../src/jobs/flash_inputs.zig").picotool_package_hash,
     });
     options.addOption([]const u8, "manifest", runtime.manifest(b));

@@ -3,9 +3,228 @@ const std = @import("std");
 const dvui = @import("dvui");
 const geometry = @import("desktop-geometry");
 const fonts = @import("editor-fonts");
+const icon_resources = @import("icon-resources");
+const symbols = @import("desktop-core").labels.keycap_symbols;
 
 pub fn color(hex: u24) dvui.Color {
     return .{ .r = @truncate(hex >> 16), .g = @truncate(hex >> 8), .b = @truncate(hex), .a = 255 };
+}
+
+/// One color per layer position, shared by the layer list, keycap borders,
+/// hold indicators and the companion. The base layer is red. Light surfaces
+/// use darker shades so that borders keep their contrast.
+pub const layer_palette = struct {
+    pub const dark = [_]u24{
+        0xEF4444, // 0 red
+        0x3B82F6, // 1 blue
+        0xF59E0B, // 2 amber
+        0x22C55E, // 3 green
+        0xA855F7, // 4 purple
+        0x14B8A6, // 5 teal
+        0xEC4899, // 6 pink
+        0xA16207, // 7 brown
+        0x94A3B8, // 8 slate
+    };
+    pub const light = [_]u24{ 0xDC2626, 0x2563EB, 0xD97706, 0x16A34A, 0x9333EA, 0x0D9488, 0xDB2777, 0x854D0E, 0x475569 };
+};
+
+pub fn layerColor(t: Theme, index: usize) dvui.Color {
+    return color(t.layers[index % t.layers.len]);
+}
+
+/// `base` blended toward `over` by `amount` (0 keeps `base`).
+pub fn mix(base: dvui.Color, over: dvui.Color, amount: f32) dvui.Color {
+    const t = std.math.clamp(amount, 0, 1);
+    const blend = struct {
+        fn channel(a: u8, b: u8, f: f32) u8 {
+            return @intFromFloat(@round(@as(f32, @floatFromInt(a)) * (1 - f) + @as(f32, @floatFromInt(b)) * f));
+        }
+    }.channel;
+    return .{ .r = blend(base.r, over.r, t), .g = blend(base.g, over.g, t), .b = blend(base.b, over.b, t), .a = base.a };
+}
+
+/// How a keycap caption is drawn. The first line is the main legend; further
+/// lines (the hold) are smaller and use `secondary`.
+pub const CaptionStyle = struct {
+    color: dvui.Color,
+    secondary: dvui.Color,
+    /// Main line size in editor points, before fitting.
+    size: f32,
+    secondary_scale: f32 = 0.7,
+    align_x: f32 = 0.5,
+    align_y: f32 = 0.5,
+    id_extra: usize = 0,
+    /// Colors a layer symbol and its number in that layer's color.
+    layer_colors: bool = true,
+    layers: []const u24 = &layer_palette.dark,
+};
+
+const CaptionLine = struct { text: []const u8, font: dvui.Font, w: f32, h: f32 };
+
+fn iconSize(font: dvui.Font) f32 {
+    return font.size * 1.3;
+}
+
+/// The horizontal space between a symbol and its neighbours.
+fn symbolGap(font: dvui.Font) f32 {
+    return font.size * 0.12;
+}
+
+fn runWidth(run: symbols.Run, font: dvui.Font) f32 {
+    return switch (run) {
+        .text => |text| font.textSize(text).w,
+        .symbol => |symbol| if (icon_resources.symbolIcon(symbol) != null)
+            iconSize(font)
+        else switch (icon_resources.glyph(symbol)) {
+            .text => |text| font.textSize(text).w,
+            else => font.textSize(symbol.glyph()).w,
+        },
+    };
+}
+
+fn measureLine(text: []const u8, font: dvui.Font) dvui.Size {
+    var width: f32 = 0;
+    var previous_symbol = false;
+    var iterator = symbols.runs(text);
+    var first = true;
+    while (iterator.next()) |run| {
+        const is_symbol = run == .symbol;
+        if (!first and (is_symbol or previous_symbol)) width += symbolGap(font);
+        width += runWidth(run, font);
+        previous_symbol = is_symbol;
+        first = false;
+    }
+    return .{ .w = width, .h = font.textSize("Ag").h };
+}
+
+/// Lays out up to four caption lines at `scale` of the nominal size.
+fn layout(text: []const u8, style: CaptionStyle, scale: f32, lines: *[4]CaptionLine) struct { count: usize, w: f32, h: f32 } {
+    var count: usize = 0;
+    var width: f32 = 0;
+    var height: f32 = 0;
+    var split = std.mem.splitScalar(u8, text, '\n');
+    while (split.next()) |line| {
+        if (count == lines.len) break;
+        const size = style.size * scale * (if (count == 0) @as(f32, 1) else style.secondary_scale);
+        const font = fonts.font(line, size);
+        const measured = measureLine(line, font);
+        lines[count] = .{ .text = line, .font = font, .w = measured.w, .h = measured.h };
+        width = @max(width, measured.w);
+        height += measured.h;
+        count += 1;
+    }
+    return .{ .count = count, .w = width, .h = height };
+}
+
+/// The size of a caption drawn at its nominal size.
+pub fn captionSize(text: []const u8, style: CaptionStyle) dvui.Size {
+    var lines: [4]CaptionLine = undefined;
+    const measured = layout(text, style, 1, &lines);
+    return .{ .w = measured.w, .h = measured.h };
+}
+
+/// Draws a caption with its keyboard symbols as icons, scaled down to fit
+/// `bounds` (relative to the current parent) and aligned inside it.
+pub fn caption(text: []const u8, bounds: dvui.Rect, style: CaptionStyle) void {
+    var lines: [4]CaptionLine = undefined;
+    var measured = layout(text, style, 1, &lines);
+    if (measured.count == 0 or measured.w <= 0) return;
+    const fit = @min(1, @min(bounds.w / @max(1, measured.w), bounds.h / @max(1, measured.h)));
+    // Pixel-snapped font metrics are not proportional to point size, so lay
+    // out again at the fitted size and shrink until the caption fits.
+    var scale = fit;
+    for (0..6) |_| {
+        measured = layout(text, style, scale, &lines);
+        if (measured.w <= bounds.w and measured.h <= bounds.h) break;
+        scale *= 0.94;
+    }
+    var y = bounds.y + (bounds.h - measured.h) * style.align_y;
+    for (lines[0..measured.count], 0..) |line, line_index| {
+        const x = bounds.x + (bounds.w - line.w) * style.align_x;
+        drawLine(line, x, y, if (line_index == 0) style.color else style.secondary, style, line_index);
+        y += line.h;
+    }
+}
+
+fn drawLine(line: CaptionLine, start: f32, y: f32, tint: dvui.Color, style: CaptionStyle, line_index: usize) void {
+    var x = start;
+    var previous_symbol = false;
+    var first = true;
+    var layer_tint: ?dvui.Color = null;
+    var iterator = symbols.runs(line.text);
+    var run_index: usize = 0;
+    while (iterator.next()) |run| : (run_index += 1) {
+        const id = style.id_extra *% 131 +% line_index *% 37 +% run_index;
+        const is_symbol = run == .symbol;
+        if (!first and (is_symbol or previous_symbol)) x += symbolGap(line.font);
+        first = false;
+        previous_symbol = is_symbol;
+        const width = runWidth(run, line.font);
+        switch (run) {
+            .symbol => |symbol| {
+                var symbol_tint = tint;
+                if (symbol == .layer and style.layer_colors) {
+                    if (layerNumber(iterator.bytes[iterator.index..])) |number| {
+                        layer_tint = color(style.layers[number % style.layers.len]);
+                        symbol_tint = layer_tint.?;
+                    }
+                }
+                if (icon_resources.symbolIcon(symbol)) |bytes| {
+                    const size = iconSize(line.font);
+                    dvui.icon(@src(), @tagName(symbol), bytes, .{}, .{
+                        .id_extra = id,
+                        .color_text = .{ .color = symbol_tint },
+                        .rect = .{ .x = x, .y = y + (line.h - size) / 2, .w = size, .h = size },
+                        .padding = .{},
+                        .margin = .{},
+                    });
+                } else {
+                    const text = switch (icon_resources.glyph(symbol)) {
+                        .text => |value| value,
+                        else => symbol.glyph(),
+                    };
+                    drawText(text, line.font, symbol_tint, .{ .x = x, .y = y, .w = width + 1, .h = line.h }, id);
+                }
+            },
+            .text => |text| {
+                const text_tint = layer_tint orelse tint;
+                layer_tint = null;
+                drawText(text, line.font, text_tint, .{ .x = x, .y = y, .w = width + 1, .h = line.h }, id);
+            },
+        }
+        x += width;
+    }
+}
+
+fn drawText(text: []const u8, font: dvui.Font, tint: dvui.Color, bounds: dvui.Rect, id: usize) void {
+    dvui.labelNoFmt(@src(), text, .{ .align_y = 0.5 }, .{
+        .id_extra = id,
+        .rect = bounds,
+        .font = font,
+        .color_text = .{ .color = tint },
+        .padding = .{},
+        .margin = .{},
+    });
+}
+
+/// The layer position written right after a layer symbol.
+fn layerNumber(rest: []const u8) ?usize {
+    var end: usize = 0;
+    while (end < rest.len and std.ascii.isDigit(rest[end])) end += 1;
+    return std.fmt.parseInt(usize, rest[0..end], 10) catch null;
+}
+
+/// A caption inside an absolutely placed box, such as a chip or list row.
+/// Unlike `caption`, it reserves `min_size` in flowing layouts.
+pub fn richLabel(text: []const u8, style: CaptionStyle, opts: dvui.Options) void {
+    var box_options = opts;
+    const size = captionSize(text, style);
+    box_options.min_size_content = .{ .w = size.w, .h = size.h };
+    box_options.id_extra = style.id_extra;
+    const box = dvui.box(@src(), .{}, box_options);
+    defer box.deinit();
+    const content = box.data().contentRect();
+    caption(text, .{ .w = content.w, .h = content.h }, style);
 }
 
 pub const Theme = struct {
@@ -15,26 +234,42 @@ pub const Theme = struct {
     border: dvui.Color,
     text: dvui.Color,
     muted: dvui.Color,
+    /// Primary actions and selection.
+    accent: dvui.Color,
+    /// Keycap faces on the keyboard canvases.
+    keycap: dvui.Color,
+    layers: []const u24,
 
     const light_theme: Theme = .{
         .bg = color(0xEEF0F3),
         .panel = color(0xFFFFFF),
-        .control = color(0xF4F5F7),
-        .border = color(0xD4D9E0),
-        .text = color(0x20242A),
-        .muted = color(0x657080),
+        .control = color(0xF2F4F7),
+        .border = color(0xD8DDE4),
+        .text = color(0x1F2329),
+        .muted = color(0x667180),
+        .accent = color(0x2563EB),
+        .keycap = color(0xF8F9FB),
+        .layers = &layer_palette.light,
     };
     const dark_theme: Theme = .{
-        .bg = color(0x191B1F),
-        .panel = color(0x22252A),
-        .control = color(0x30343B),
-        .border = color(0x424852),
-        .text = color(0xF4F5F7),
-        .muted = color(0xAAB2BF),
+        .bg = color(0x15171B),
+        .panel = color(0x1E2126),
+        .control = color(0x2A2E35),
+        .border = color(0x383D46),
+        .text = color(0xEDEFF2),
+        .muted = color(0x9AA3B0),
+        .accent = color(0x3B82F6),
+        .keycap = color(0x272B32),
+        .layers = &layer_palette.dark,
     };
 
     pub fn get(light: bool) Theme {
         return if (light) light_theme else dark_theme;
+    }
+
+    /// Caption colors for keycaps on this theme.
+    pub fn captionStyle(t: Theme, size: f32, id_extra: usize) CaptionStyle {
+        return .{ .color = t.text, .secondary = t.muted, .size = size, .id_extra = id_extra, .layers = t.layers };
     }
 };
 
@@ -138,36 +373,25 @@ pub fn editDrawer(src: std.builtin.SourceLocation, t: Theme, width: f32) *dvui.F
     return drawer(src, t, .{ .x = (screen.w - w) / 2, .y = (screen.h - h) / 2, .w = w, .h = h }, true);
 }
 
-/// Draws the companion signal icons that a keycap caption cannot show: an icon
-/// centered on companion and shutdown taps, and one after the caption's last
-/// line for hold signals 253 (toggle logging) and 254 (quit).
-pub fn signalIcons(key_options: dvui.Options, bounds: dvui.Rect, caption: []const u8, icon_name: []const u8, hold_signal: ?u8) void {
-    var icon_options = key_options;
-    icon_options.data_out = null;
-    icon_options.tag = null;
-    icon_options.background = false;
-    icon_options.border = .{};
-    const shutdown = std.mem.eql(u8, icon_name, "shutdown");
-    if (shutdown or std.mem.eql(u8, icon_name, "companion")) {
-        var tap_options = icon_options;
-        tap_options.rect = .{ .x = bounds.x + bounds.w * 0.3, .y = bounds.y + bounds.h * 0.3, .w = bounds.w * 0.4, .h = bounds.h * 0.4 };
-        dvui.icon(@src(), "tap_signal", if (shutdown) dvui.entypo.cross else dvui.entypo.eye, .{}, tap_options);
-    }
-    const id = hold_signal orelse return;
-    if (id < 253) return;
-    const font = key_options.font.?;
-    const last_line = caption[(if (std.mem.lastIndexOfScalar(u8, caption, '\n')) |newline| newline + 1 else 0)..];
-    const text_size = font.textSize(caption);
-    const line_size = font.textSize(last_line);
-    const icon_size = font.size;
-    var hold_options = icon_options;
-    hold_options.padding = .{};
-    hold_options.margin = .{};
-    hold_options.rect = .{
-        .x = bounds.x + (bounds.w + line_size.w) / 2 - icon_size,
-        .y = bounds.y + (bounds.h + text_size.h) / 2 - line_size.h + (line_size.h - icon_size) / 2,
-        .w = icon_size,
-        .h = icon_size,
-    };
-    dvui.icon(@src(), "hold_signal", if (id == 254) dvui.entypo.cross else dvui.entypo.eye, .{}, hold_options);
+
+/// A button whose label is a caption with keyboard symbols drawn as icons.
+pub fn richButton(src: std.builtin.SourceLocation, text: []const u8, style: CaptionStyle, opts: dvui.Options) bool {
+    var button_options = opts;
+    const size = captionSize(text, style);
+    button_options.min_size_content = .{ .w = size.w, .h = size.h };
+    var button_widget: dvui.ButtonWidget = undefined;
+    button_widget.init(src, .{}, button_options);
+    button_widget.processEvents();
+    button_widget.drawBackground();
+    const clicked = button_widget.clicked();
+    const content = button_widget.data().contentRect();
+    caption(text, .{ .w = content.w, .h = content.h }, style);
+    button_widget.drawFocus();
+    button_widget.deinit();
+    return clicked;
+}
+
+/// The dvui theme for the editor appearance, in the editor font.
+pub fn dvuiTheme(window: *const dvui.Window, light: bool) dvui.Theme {
+    return fonts.theme(window, if (light) dvui.Theme.builtin.adwaita_light else dvui.Theme.builtin.adwaita_dark);
 }
