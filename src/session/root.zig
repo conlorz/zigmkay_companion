@@ -144,6 +144,15 @@ pub const Session = struct {
         return .connect;
     }
 
+    /// A lost or reordered report leaves the state unknown until it is resent.
+    fn sequenceGap(self: *Session, received: u8, now: u64) Outcome {
+        std.log.info("Keyboard resynchronising after a sequence gap: expected {d}, received {d}", .{
+            self.expected_sequence,
+            received,
+        });
+        return .{ .send = self.resynchronize(now) };
+    }
+
     fn refuse(self: *Session, mismatch: Mismatch) Outcome {
         self.mismatch = mismatch;
         self.phase = .incompatible;
@@ -169,7 +178,10 @@ pub const Session = struct {
         return switch (self.phase) {
             .disconnected, .incompatible => .{},
             .negotiating => if (err == error.UnsupportedVersion) self.refuse(.unsupported_version) else .{},
-            .synchronizing, .live => .{ .send = self.resynchronize(now) },
+            .synchronizing, .live => blk: {
+                std.log.info("Keyboard resynchronising after a malformed report: {t}", .{err});
+                break :blk .{ .send = self.resynchronize(now) };
+            },
         };
     }
 
@@ -221,14 +233,14 @@ pub const Session = struct {
             .key => |key| {
                 // Keys sent before the first state report are already part of it.
                 if (self.phase != .live) return .{};
-                if (key.sequence != self.expected_sequence) return .{ .send = self.resynchronize(now) };
+                if (key.sequence != self.expected_sequence) return self.sequenceGap(key.sequence, now);
                 self.state.applyKey(key);
                 self.expected_sequence +%= 1;
                 return .{ .key = key.event };
             },
             .signal => |signal| {
                 if (self.phase != .live) return .{};
-                if (signal.sequence != self.expected_sequence) return .{ .send = self.resynchronize(now) };
+                if (signal.sequence != self.expected_sequence) return self.sequenceGap(signal.sequence, now);
                 self.expected_sequence +%= 1;
                 return .{ .signal = signal.event };
             },

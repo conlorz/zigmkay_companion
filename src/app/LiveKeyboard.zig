@@ -73,7 +73,9 @@ pub fn statusOf(driver: ?*const Driver, frame: desktop.live_keyboard.Frame) Stat
     if (active.session.phase == .incompatible) return .incompatible;
     if (!active.connected) return if (active.status == .searching) .connecting else .disconnected;
     if (frame.labels != null and !frame.stale) return .live;
-    return if (active.session.token == 0) .connecting else .stale;
+    // Only a session that already presented verified labels can become stale;
+    // until the first hello and state arrive, the handshake is still connecting.
+    return if (active.session.token == 0 or frame.labels == null) .connecting else .stale;
 }
 
 /// Whether the frame shows verified labels of the running keyboard.
