@@ -221,3 +221,47 @@ test "curated LK7 layouts match by key ID" {
     try t.expectEqual(transfer.Match.key_id, moved.report.match);
     try t.expect(moved.report.exact());
 }
+
+test "a layout copied onto another revision is created, reopened and listed" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    var eurmac = try p.profiles.create(t.allocator, .eurmac);
+    defer eurmac.deinit();
+    var original = try tmp.dir.createDirPathOpen(t.io, "eurmac", .{});
+    defer original.close(t.io);
+    try p.snapshot.save(t.allocator, t.io, original, eurmac.snapshot, p.profiles.board);
+    const source = try std.fs.path.join(t.allocator, &.{ root, "eurmac" });
+    defer t.allocator.free(source);
+    const small = desktop.library.catalog.find("keycaprio_colemak_0_4").?;
+    var candidate = try new_layout.prepare(t.allocator, t.io, small, .{ .duplicate = source });
+    defer candidate.deinit();
+    var snapshot = candidate.snapshot;
+    snapshot.document.name = "EurKEY on 0.4";
+    snapshot.document.profile_id = "copy0004".*;
+    const collection = try std.fs.path.join(t.allocator, &.{ root, "My Keyboards" });
+    defer t.allocator.free(collection);
+    const destination = try std.fs.path.join(t.allocator, &.{ collection, "keyboards/eurkey-on-0-4" });
+    defer t.allocator.free(destination);
+    var env = std.process.Environ.Map.init(t.allocator);
+    defer env.deinit();
+    var create = try desktop.onboarding.Request.init(t.allocator, .{
+        .operation = .create,
+        .prepared = .{ .snapshot = snapshot, .selector = candidate.board.entry.selector },
+        .destination = destination,
+        .collection = collection,
+        .collection_entry = .{ .id = "eurkey-on-0-4", .directory = "keyboards/eurkey-on-0-4" },
+        .toolchain = .{ .compiler = "", .build_root = "", .cache = root },
+    }, &env, @splat(0));
+    defer create.deinit();
+    var result = try create.prepare(t.allocator, t.io);
+    defer result.deinit();
+    try t.expectEqual(@as(usize, 30), result.opened.model.?.document().key_ids.len);
+    var loaded = try library.load(t.allocator, t.io, .{ .collection = collection, .projects = root });
+    defer loaded.deinit();
+    try t.expectEqual(@as(usize, 2), loaded.keyboards.len);
+    try t.expectEqualStrings("EurKEY on 0.4", loaded.layouts[0].name);
+    try t.expect(loaded.layouts[0].member != null and loaded.layouts[1].member == null);
+}

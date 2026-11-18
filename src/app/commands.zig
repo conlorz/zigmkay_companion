@@ -17,6 +17,7 @@ const App = @import("App.zig");
 const Flash = @import("Flash.zig");
 const onboarding_flow = @import("onboarding_flow.zig");
 const screens = @import("screens.zig");
+const keyboard_onboarding = @import("onboarding-ui");
 const workers = @import("workers.zig");
 
 const Command = @FieldType(editor.Result, "layout");
@@ -119,7 +120,18 @@ fn layoutCommand(app: *App, command: Command, board: *const boards.OwnedBoard) !
             if (index >= choices.paths.len or choices.choices[index].current) return .proceed;
             try switchLayout(app, choices.paths[index]);
         },
-        .new, .duplicate => openKeyboards(app),
+        .new, .duplicate => {
+            openKeyboards(app);
+            const onboarding = &app.onboarding;
+            onboarding.openNewLayout(keyboard_onboarding.entryIndex(board.entry));
+            if (command == .duplicate) {
+                const current = std.mem.sliceTo(&app.view.paths.project, 0);
+                if (onboarding.library) |*library| if (library.find(current)) |index| {
+                    onboarding.new_layout.start = .duplicate;
+                    onboarding.new_layout.duplicate = index;
+                };
+            }
+        },
         .rename => {},
         .export_source => app.view.modal = .paths,
         .reveal => reveal(app, std.mem.sliceTo(&app.view.paths.project, 0)),

@@ -531,7 +531,7 @@ fn home(state: *State, theme: ui.Theme, context: Context) !Action {
     return .none;
 }
 
-fn entryIndex(entry: *const desktop.library.catalog.Entry) usize {
+pub fn entryIndex(entry: *const desktop.library.catalog.Entry) usize {
     for (&flow.catalog.entries, 0..) |*candidate, index| if (candidate == entry) return index;
     return 0;
 }
