@@ -107,8 +107,8 @@ describe the evidence rules and database migration.
 ## Guided difficulty
 
 Open **Lessons** to choose a guided lesson without changing exercise length
-or assistance. The six stages are Find keys, Build fluency, Add Shift, Change
-layers, Combine modifiers, and Real text. Start the selected lesson explicitly;
+or assistance. The seven stages are Find keys, Build fluency, Add Shift, Change
+layers, Combine modifiers, Real text and [Adaptive keys](#adaptive-keys). Start the selected lesson explicitly;
 **Free exercises** returns to the existing unrestricted generator.
 
 ![Native guided difficulty](screenshots/typing-practice/curriculum-wide.png)
@@ -150,6 +150,47 @@ Progress titles identify the selected curriculum stage and alphabet. Small
 windows scroll to keep stage choices and controls accessible.
 
 ![Small-window lesson selection](screenshots/typing-practice/curriculum-small.png)
+
+## Adaptive keys
+
+**Lessons → 7. Adaptive keys** paces new letters by your speed instead of a
+checklist. The first lessons use six letters. Each new letter unlocks only
+after every unlocked letter has reached your target speed and is accurate.
+Every lesson focuses one letter: first a letter that still lacks evidence,
+usually the newest one, then the letter furthest below the target. Every word
+contains the focused letter. Most words are pronounceable pseudo-words built
+from the unlocked letters; every third word is a real vocabulary word when one
+fits. Short, Normal and Long use 15, 30 and 60 words.
+
+![Adaptive keys with letter confidence](screenshots/typing-practice/adaptive-wide.png)
+
+Choose a target from 20 to 60 WPM (default 35, about 343 ms per letter at five
+characters per word). The target lasts for this editor session. Each letter
+shows its confidence: the target interval divided by its smoothed clean
+interval. 100% means target speed, and **new** means too little evidence.
+
+How the estimate works:
+
+- **Smoothing.** Each run contributes the letter's median clean interval. The
+  newest run gets a 25% weight in the smoothing.
+- **Evidence needed.** A run needs three clean intervals of a letter to update
+  its timing, and a letter needs two such runs before it counts.
+- **Accuracy.** A smoothed first-pass miss rate above 5% keeps a letter from
+  counting as confident.
+- **Unlocking.** Unlocking uses the best smoothed speed a letter has reached,
+  so a slow day never locks a letter again. A lesson's letter count is never
+  reduced.
+- **Which runs count.** The estimate uses the newest 60 scored, completed
+  English runs of this layout, mapping and input source, across stages and
+  assistance levels. Stopped runs are excluded. Comparison charts and trends
+  keep their strict cohorts.
+
+The plan is chosen when a lesson starts, including **New exercise**, and is
+frozen with the run. Opening Lessons shows the plan that the next start will
+use. These are tutor policy values inspired by
+[keybr.com](https://www.keybr.com/); the [evaluation](design/keybr-evaluation.md)
+records the license reasoning and the clean-room design. No keybr code or data
+is used.
 
 ## Progress and daily activity
 
