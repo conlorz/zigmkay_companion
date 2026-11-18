@@ -162,7 +162,7 @@ fn openLayout(app: *App, path: []const u8) !void {
 /// built-in project before onboarding never write.
 pub fn autosaves(app: *const App) bool {
     return app.frame_limit == null and app.user_paths != null and app.onboarding.selected and
-        !app.onboarding.active and app.view.paths.project[0] != 0;
+        app.view.paths.project[0] != 0;
 }
 
 /// How long a draft rests before it is saved.

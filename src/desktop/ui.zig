@@ -468,3 +468,33 @@ pub fn iconButtonEnabled(t: Theme, icon: ?[]const u8, text: []const u8, tag: []c
     if (text.len != 0) drawText(text, font, tint, .{ .x = x, .y = r.y, .w = text_w, .h = r.h }, id);
     return clicked;
 }
+
+/// The green "On keyboard" pill.
+pub fn runningBadge(bounds: dvui.Rect, id: usize) void {
+    const pill = dvui.box(@src(), .{}, .{
+        .id_extra = id,
+        .rect = bounds,
+        .background = true,
+        .color_fill = .{ .color = color(0x1F3A2E) },
+        .corners = .all(bounds.h / 2),
+        .padding = .{},
+        .margin = .{},
+    });
+    pill.deinit();
+    const dot = dvui.box(@src(), .{}, .{
+        .id_extra = id,
+        .rect = .{ .x = bounds.x + 10, .y = bounds.y + bounds.h / 2 - 3.5, .w = 7, .h = 7 },
+        .background = true,
+        .color_fill = .{ .color = color(0x22C55E) },
+        .corners = .all(3.5),
+        .padding = .{},
+        .margin = .{},
+    });
+    dot.deinit();
+    var green = Theme.get(false);
+    green.text = color(0x6EC59A);
+    var opts = options(green, .{ .x = bounds.x + 22, .y = bounds.y, .w = bounds.w - 26, .h = bounds.h }, 11);
+    opts.padding = .{};
+    opts.id_extra = id;
+    dvui.labelNoFmt(@src(), "On keyboard", .{ .align_y = 0.5 }, opts);
+}

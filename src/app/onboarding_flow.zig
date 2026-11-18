@@ -7,11 +7,19 @@ const dialog = @import("folder-dialog");
 const project = @import("project");
 const App = @import("App.zig");
 const LiveKeyboard = @import("LiveKeyboard.zig");
+const commands = @import("commands.zig");
 const workers = @import("workers.zig");
 
 /// Accepts a project or collection that the wizard finished opening.
 pub fn poll(app: *App) !void {
     const onboarding = &app.onboarding;
+    // A new collection location from the chooser reloads My Keyboards.
+    if (!std.mem.eql(u8, &onboarding.root, &onboarding.listed_root)) {
+        onboarding.listed_root = onboarding.root;
+        onboarding.reloadCollection(app.gpa, app.io) catch |err| onboarding.report(err);
+        refreshLibrary(app);
+    }
+    try openWhenSaved(app);
     const result = onboarding.poll(app.owner_generation) catch |err| failed: {
         onboarding.report(err);
         break :failed null;
@@ -23,7 +31,7 @@ pub fn poll(app: *App) !void {
         try onboarding.reloadCollection(app.gpa, app.io);
         refreshLibrary(app);
         onboarding.active = true;
-        onboarding.stage = .welcome;
+        onboarding.stage = .home;
     } else if (app.unsavedChanges() and !onboarding.discard) {
         onboarding.report(error.UnsavedProjectChanges);
     } else try switchProject(app, &opened);
@@ -48,7 +56,7 @@ fn switchProject(app: *App, opened: *desktop.onboarding.Opened) !void {
     if (opened.collection) |root| try keyboard_onboarding.State.set(&onboarding.root, root);
     try onboarding.reloadCollection(app.gpa, app.io);
     refreshLibrary(app);
-    onboarding.stage = if (onboarding.operation == .create) .created else .welcome;
+    onboarding.stage = if (onboarding.operation == .create) .created else .home;
     onboarding.active = onboarding.operation == .create;
     onboarding.discard = false;
     app.rememberProject();
@@ -76,10 +84,14 @@ pub fn apply(app: *App, action: keyboard_onboarding.Action) !void {
             onboarding.active = false;
         },
         .tutor => try prepareTutor(app),
+        .toggle_theme => app.view.toolbar.light = !app.view.toolbar.light,
+        .open => if (app.unsavedChanges() and commands.autosaves(app)) {
+            onboarding.open_when_saved = true;
+        } else try start(app, .open),
         .choose_source => try chooseFolder(app, .onboarding_source),
         .choose_location => try chooseFolder(app, .onboarding_location),
         .choose_open => try chooseFolder(app, .onboarding_open),
-        .inspect, .analyze, .prepare, .create, .open, .add_existing => try start(app, action),
+        .inspect, .analyze, .prepare, .create, .add_existing => try start(app, action),
     }
 }
 
@@ -152,4 +164,17 @@ pub fn refreshLibrary(app: *App) void {
         .extra = extra.items,
     }) catch |err| return app.onboarding.report(err);
     app.onboarding.replaceLibrary(loaded);
+}
+
+/// Opens the layout chosen on My Keyboards once the open one is saved.
+fn openWhenSaved(app: *App) !void {
+    const onboarding = &app.onboarding;
+    if (!onboarding.open_when_saved or app.jobs.busy()) return;
+    if (app.view.autosave.failed) {
+        onboarding.open_when_saved = false;
+        return onboarding.report(error.SaveBeforeSwitchFailed);
+    }
+    if (app.unsavedChanges()) return;
+    onboarding.open_when_saved = false;
+    try start(app, .open);
 }

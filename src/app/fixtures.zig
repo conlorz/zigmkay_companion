@@ -5,6 +5,7 @@ const dvui = @import("dvui");
 const Backend = @import("dvui_backend");
 const desktop = @import("desktop-core");
 const boards = @import("catalog-project");
+const project = @import("project");
 const editor = @import("editor-frame-ui");
 const App = @import("App.zig");
 const rundown_gallery = @import("rundown_gallery.zig");
@@ -42,26 +43,72 @@ fn showCatalogEntry(app: *App) !void {
     app.practicing = app.count % 4 >= 2;
 }
 
+/// The onboarding gallery shows each page for four frames: the first launch,
+/// My Keyboards with sample layouts, the catalog, New layout, the import source
+/// and the review. Sample layouts exist only in memory.
 fn advanceOnboarding(app: *App) !void {
     const onboarding = &app.onboarding;
-    if (app.count == 3) onboarding.stage = .source;
-    if (app.count >= 6 and app.count < 20) {
-        onboarding.stage = .keyboard;
-        onboarding.selector = app.count - 6;
+    switch (app.count) {
+        4 => {
+            onboarding.replaceLibrary(try sampleLibrary(app));
+            onboarding.stage = .home;
+        },
+        8 => {
+            onboarding.stage = .catalog;
+            onboarding.catalog = .{ .family = 1, .confirmed = true };
+        },
+        12 => {
+            onboarding.stage = .keyboard;
+            onboarding.selector = 0;
+        },
+        16 => onboarding.stage = .source,
+        20 => {
+            var environment = std.process.Environ.Map.init(app.gpa);
+            defer environment.deinit();
+            var request = try desktop.onboarding.Request.init(app.gpa, .{
+                .operation = .prepare,
+                .selector = desktop.onboarding.catalog.entries[onboarding.selector].selector,
+                .toolchain = .{ .compiler = "", .build_root = "", .cache = "" },
+            }, &environment, @splat(0));
+            defer request.deinit();
+            const prepared = try request.prepare(app.gpa, app.io);
+            onboarding.prepared = prepared.prepared;
+            onboarding.stage = .review;
+        },
+        else => {},
     }
-    if (app.count == 20) {
-        var environment = std.process.Environ.Map.init(app.gpa);
-        defer environment.deinit();
-        var request = try desktop.onboarding.Request.init(app.gpa, .{
-            .operation = .prepare,
-            .selector = desktop.onboarding.catalog.entries[onboarding.selector].selector,
-            .toolchain = .{ .compiler = "", .build_root = "", .cache = "" },
-        }, &environment, @splat(0));
-        defer request.deinit();
-        const prepared = try request.prepare(app.gpa, app.io);
-        onboarding.prepared = prepared.prepared;
-        onboarding.stage = .review;
-    }
+}
+
+/// Layouts on three keyboards, one of them outside the collection.
+fn sampleLibrary(app: *App) !desktop.library.Library {
+    const gpa = app.gpa;
+    var eurmac = try project.profiles.create(gpa, .eurmac);
+    defer eurmac.deinit();
+    var danish = try project.profiles.create(gpa, .danish);
+    defer danish.deinit();
+    var eurkey = try project.profiles.create(gpa, .eurkey);
+    defer eurkey.deinit();
+    var molekula_board = try boards.OwnedBoard.init(gpa, "molekula");
+    defer molekula_board.deinit();
+    var molekula = try boards.createDefault(gpa, molekula_board);
+    defer molekula.deinit();
+    var keycaprio_board = try boards.OwnedBoard.init(gpa, "keycaprio_colemak_0_4");
+    defer keycaprio_board.deinit();
+    var keycaprio = try boards.createDefault(gpa, keycaprio_board);
+    defer keycaprio.deinit();
+    const now = std.Io.Timestamp.now(app.io, .real).nanoseconds;
+    const minute = 60 * std.time.ns_per_s;
+    var renamed = eurmac.snapshot.document;
+    renamed.name = "EurKEY Next Mac";
+    var jan = keycaprio.snapshot.document;
+    jan.name = "Colemak Jan";
+    return desktop.library.fromSamples(gpa, &.{
+        .{ .path = "/collection/keyboards/eurmac", .member = "keyboards/eurmac", .document = renamed, .modified = now - 2 * minute },
+        .{ .path = "/collection/keyboards/rollercole", .member = "keyboards/rollercole", .document = danish.snapshot.document, .modified = now - 8 * 24 * 60 * minute },
+        .{ .path = "/data/projects/eurkey", .document = eurkey.snapshot.document, .modified = now - 21 * 24 * 60 * minute },
+        .{ .path = "/collection/keyboards/jan", .member = "keyboards/jan", .document = jan, .modified = now - 26 * 60 * minute },
+        .{ .path = "/collection/keyboards/molekula", .member = "keyboards/molekula", .document = molekula.snapshot.document, .modified = now - 3 * 24 * 60 * minute },
+    });
 }
 
 /// Starts a draft run on the native runner, typing "aa".

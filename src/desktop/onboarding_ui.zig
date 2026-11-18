@@ -1,10 +1,13 @@
-//! Source → Keyboard → Review → Create. All IO is scheduled after drawing.
+//! My Keyboards and the pages that add keyboards and layouts. All IO is
+//! scheduled after drawing.
 const std = @import("std");
 const dvui = @import("dvui");
 const desktop = @import("desktop-core");
 const flow = desktop.onboarding;
 const p = @import("project");
 const ui = @import("editor-ui");
+const keyboards_ui = @import("keyboards_ui.zig");
+const catalog_ui = @import("catalog_ui.zig");
 
 pub const Action = enum {
     none,
@@ -21,12 +24,22 @@ pub const Action = enum {
     choose_source,
     choose_location,
     choose_open,
+    toggle_theme,
 };
 
 pub const State = struct {
     active: bool = true,
     selected: bool = false,
-    stage: flow.Stage = .welcome,
+    stage: flow.Stage = .home,
+    /// The keyboard chosen on My Keyboards, an index into `library.keyboards`.
+    keyboard: ?usize = null,
+    catalog: catalog_ui.View = .{},
+    /// Opens the folder the native chooser returns.
+    awaiting_open: bool = false,
+    /// Opens `location` once the open layout is saved.
+    open_when_saved: bool = false,
+    /// The collection root My Keyboards was last loaded from.
+    listed_root: [4096]u8 = @splat(0),
     generation: u64 = 1,
     editor_generation: u64 = 0,
     captured: [32]u8 = @splat(0),
@@ -115,8 +128,10 @@ pub const State = struct {
         self.worker = null;
         self.generation +%= 1;
         self.clearImport();
-        self.stage = .welcome;
+        self.stage = .home;
         self.active = true;
+        self.awaiting_open = false;
+        self.open_when_saved = false;
         self.discard = false;
         self.diagnostic = @splat(0);
     }
@@ -276,94 +291,202 @@ fn field(comptime label: []const u8, buffer: []u8) void {
     entry.deinit();
 }
 
-pub fn draw(state: *State, dirty: bool, host_source: []const u8, light: bool) !Action {
-    const theme = ui.Theme.get(light);
-    const canvas = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .both,
-        .padding = .all(28),
+/// What the onboarding pages know about the editor and the connected keyboard.
+pub const Context = struct {
+    dirty: bool = false,
+    /// Whether the open layout saves itself; otherwise unsaved edits need an
+    /// explicit discard before another project opens.
+    autosaves: bool = false,
+    host_source: []const u8 = "Offline",
+    light: bool = false,
+    current_path: []const u8 = "",
+    running: ?keyboards_ui.Running = null,
+    now: i96 = 0,
+};
+
+pub fn draw(state: *State, context: Context) !Action {
+    const theme = ui.Theme.get(context.light);
+    const scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both, .padding = .{}, .border = .{}, .background = false });
+    defer scroll.deinit();
+    const canvas = dvui.box(@src(), .{}, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = keyboards_ui.canvas_width, .h = keyboards_ui.canvas_height },
+        .padding = .{},
+        .margin = .{},
         .background = true,
         .color_fill = .{ .color = theme.bg },
-        .font = dvui.Font.find(.{ .family = "Vera Sans", .size = 16 }),
     });
     defer canvas.deinit();
-    const scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
-    defer scroll.deinit();
-    dvui.label(@src(), "My Keyboards", .{}, .{ .font = dvui.Font.find(.{ .family = "Vera Sans", .size = 28 }).withWeight(.bold) });
-    const steps = switch (state.stage) {
-        .welcome => "Choose a keyboard project",
-        .source => "Source → Keyboard → Review → Create",
-        .keyboard => "Keyboard → Review → Create",
-        .review => "Review → Create",
-        .created => "Keyboard ready",
-        .open => "Open project or collection",
-    };
-    dvui.label(@src(), "{s}", .{steps}, .{});
     var action: Action = .none;
     const busy = state.worker != null;
-    if (busy) {
-        dvui.label(@src(), "Preparing {s}…", .{if (state.operation) |operation| @tagName(operation) else "keyboard"}, .{});
-        if (state.operation != .create and dvui.button(@src(), "Cancel", .{}, .{})) action = .cancel;
+    switch (state.stage) {
+        .home => action = try home(state, theme, context),
+        .catalog => switch (catalog_ui.draw(&state.catalog, theme, context.light, libraryOf(state))) {
+            .none => {},
+            .back => state.stage = .home,
+            .toggle_theme => action = .toggle_theme,
+            .choose => |index| {
+                state.clearImport();
+                state.selector = index;
+                state.confirmed = true;
+                state.stage = .keyboard;
+            },
+        },
+        else => action = try legacy(state, theme, context, busy),
     }
-    {
-        const controls = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
-        defer controls.deinit();
-        if (busy) {
-            dvui.label(@src(), "Wait for preparation before continuing.", .{}, .{});
-        } else {
-            const chosen = switch (state.stage) {
-                .welcome => try drawWelcome(state),
-                .source => try drawSource(state),
-                .keyboard => try drawKeyboard(state),
-                .review => try drawReview(state, host_source),
-                .created => drawCreated(state),
-                .open => drawOpen(state),
-            };
-            if (chosen != .none) action = chosen;
-        }
-        if (dirty) {
-            const warning = "The editor has unsaved changes. Save them in the editor or explicitly discard them when switching.";
-            dvui.label(@src(), warning, .{}, .{});
-            _ = dvui.checkbox(@src(), &state.discard, "Discard the current unsaved changes when opening the new project", .{});
-            if (!state.discard and (action == .open or action == .create or action == .add_existing)) action = .none;
-        }
-        dvui.labelNoFmt(@src(), std.mem.sliceTo(&state.diagnostic, 0), .{}, .{});
-        const final = state.stage == .welcome or state.stage == .created;
-        if (!busy and !final and dvui.button(@src(), "Back to My Keyboards", .{}, .{})) {
-            state.clearImport();
-            state.stage = .welcome;
-        }
+    if (state.awaiting_open and state.location[0] != 0 and action == .none) {
+        state.awaiting_open = false;
+        action = .open;
     }
+    if (busy) drawBusy(state, theme, &action);
+    if (context.dirty and !context.autosaves) {
+        const warning = "The editor has unsaved changes.";
+        banner(theme, warning, ui.color(0xF59E0B), 0);
+        var opts = ui.options(theme, .{ .x = 560, .y = 1012, .w = 560, .h = 22 }, 13);
+        opts.padding = .{};
+        _ = dvui.checkbox(@src(), &state.discard, "Discard them when opening another project", opts);
+        if (!state.discard and (action == .open or action == .create or action == .add_existing)) action = .none;
+    }
+    const diagnostic = std.mem.sliceTo(&state.diagnostic, 0);
+    if (diagnostic.len != 0) banner(theme, diagnostic, ui.color(0xF06B73), 1);
     return action;
 }
 
-fn drawWelcome(state: *State) !Action {
+fn libraryOf(state: *const State) ?*const desktop.library.Library {
+    return if (state.library) |*value| value else null;
+}
+
+fn home(state: *State, theme: ui.Theme, context: Context) !Action {
+    const intent = keyboards_ui.draw(theme, context.light, &state.keyboard, .{
+        .library = libraryOf(state),
+        .current_path = context.current_path,
+        .running = context.running,
+        .now = context.now,
+        .has_editor = state.selected,
+        .collection = std.mem.sliceTo(&state.root, 0),
+    });
+    switch (intent) {
+        .none => {},
+        .open_layout => |index| {
+            try State.set(&state.location, state.library.?.layouts[index].path);
+            return .open;
+        },
+        .new_layout => |index| {
+            const keyboard = state.library.?.keyboards[index];
+            const first = state.library.?.layouts[keyboard.layouts[0]].entry;
+            state.clearImport();
+            state.selector = entryIndex(first);
+            state.confirmed = true;
+            state.stage = .keyboard;
+        },
+        .add_keyboard => {
+            state.catalog = .{};
+            state.stage = .catalog;
+        },
+        .import_git => {
+            state.clearImport();
+            state.stage = .source;
+        },
+        .open_folder => {
+            state.location = @splat(0);
+            state.awaiting_open = true;
+            return .choose_open;
+        },
+        .change_location => return .choose_location,
+        .editor => return .editor,
+        .toggle_theme => return .toggle_theme,
+    }
+    return .none;
+}
+
+fn entryIndex(entry: *const desktop.library.catalog.Entry) usize {
+    for (&flow.catalog.entries, 0..) |*candidate, index| if (candidate == entry) return index;
+    return 0;
+}
+
+/// A one-line message across the bottom of the page.
+fn banner(theme: ui.Theme, message: []const u8, tint: dvui.Color, id: usize) void {
+    const y: f32 = if (id == 0) 1004 else 964;
+    const strip = dvui.box(@src(), .{}, .{
+        .id_extra = id,
+        .rect = .{ .x = 16, .y = y, .w = keyboards_ui.canvas_width - 32, .h = 36 },
+        .background = true,
+        .color_fill = .{ .color = ui.mix(theme.panel, tint, 0.14) },
+        .color_border = .{ .color = tint },
+        .border = .all(1),
+        .corners = .all(8),
+        .padding = .{},
+        .margin = .{},
+        .tag = if (id == 0) "onboarding.unsaved" else "onboarding.diagnostic",
+    });
+    strip.deinit();
+    keyboards_ui.text(theme, message, .{ .x = 32, .y = y + 8, .w = 520, .h = 20 }, 13, theme.text, false, 900 + id);
+}
+
+/// While a worker prepares something, a strip names it and offers Cancel.
+fn drawBusy(state: *State, theme: ui.Theme, action: *Action) void {
+    const strip = dvui.box(@src(), .{}, .{
+        .rect = .{ .x = 16, .y = 924, .w = keyboards_ui.canvas_width - 32, .h = 36 },
+        .background = true,
+        .color_fill = .{ .color = theme.control },
+        .color_border = .{ .color = theme.border },
+        .border = .all(1),
+        .corners = .all(8),
+        .padding = .{},
+        .margin = .{},
+        .tag = "onboarding.busy",
+    });
+    strip.deinit();
+    dvui.spinner(@src(), .{
+        .rect = .{ .x = 30, .y = 932, .w = 20, .h = 20 },
+        .min_size_content = .{ .w = 20, .h = 20 },
+        .padding = .{},
+        .margin = .{},
+        .color_text = .{ .color = theme.accent },
+    });
+    var buffer: [96]u8 = undefined;
+    const label = std.fmt.bufPrint(&buffer, "Working: {s}…", .{if (state.operation) |operation| switch (operation) {
+        .inspect => "capturing the source",
+        .analyze => "analyzing the keymap",
+        .prepare => "preparing the layout",
+        .create => "creating the layout",
+        .open => "opening",
+        .add_existing => "adding the project",
+    } else "preparing"}) catch "Working…";
+    keyboards_ui.text(theme, label, .{ .x = 60, .y = 932, .w = 600, .h = 20 }, 13, theme.text, false, 910);
+    if (state.operation != .create and ui.iconButton(theme, null, "Cancel", "onboarding.cancel", .{ .x = keyboards_ui.canvas_width - 128, .y = 928, .w = 96, .h = 28 }, false)) action.* = .cancel;
+}
+
+/// Pages of the earlier wizard, framed in the current style until they are
+/// replaced.
+fn legacy(state: *State, theme: ui.Theme, context: Context, busy: bool) !Action {
     var action: Action = .none;
-    if (dvui.button(@src(), "Create keyboard", .{}, .{ .tag = "onboarding.create" })) {
+    const trail: []const []const u8 = switch (state.stage) {
+        .source => &.{ "My Keyboards", "Import from Git" },
+        .keyboard, .review => &.{ "My Keyboards", "New layout" },
+        .created => &.{ "My Keyboards", "Layout ready" },
+        else => &.{ "My Keyboards", "Open" },
+    };
+    if (keyboards_ui.bar(theme, trail, context.light)) action = .toggle_theme;
+    if (!busy and state.stage != .created and ui.iconButton(theme, ui.control_icons.back, "Back to My Keyboards", "onboarding.back", .{ .x = 1270, .y = 14, .w = 204, .h = 36 }, false)) {
         state.clearImport();
-        state.stage = .keyboard;
+        state.stage = .home;
     }
-    if (dvui.button(@src(), "Import existing keymap", .{}, .{ .tag = "onboarding.import" })) {
-        state.clearImport();
-        state.stage = .source;
-    }
-    if (dvui.button(@src(), "Open project or collection", .{}, .{ .tag = "onboarding.open" })) {
-        state.stage = .open;
-        state.add_existing = false;
-    }
-    if (state.collection) |collection| {
-        for (collection.manifest.projects, 0..) |entry, index| {
-            if (!dvui.button(@src(), entry.id, .{}, .{ .id_extra = index })) continue;
-            const path = try std.fs.path.join(dvui.currentWindow().arena(), &.{ std.mem.sliceTo(&state.root, 0), entry.directory });
-            try State.set(&state.location, path);
-            action = .open;
-        }
-        if (dvui.button(@src(), "Add keyboard", .{}, .{})) state.stage = .keyboard;
-        if (dvui.button(@src(), "Add existing project", .{}, .{})) {
-            state.stage = .open;
-            state.add_existing = true;
-        }
-    }
-    if (state.selected and dvui.button(@src(), "Back to editor", .{}, .{})) action = .editor;
+    keyboards_ui.panel(theme, .{ .x = 16, .y = 80, .w = keyboards_ui.canvas_width - 32, .h = 836 }, 3);
+    const body = dvui.scrollArea(@src(), .{}, .{ .rect = .{ .x = 40, .y = 100, .w = keyboards_ui.canvas_width - 80, .h = 796 }, .background = false });
+    defer body.deinit();
+    const content = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal, .font = ui.options(theme, .{}, 15).font, .color_text = .{ .color = theme.text } });
+    defer content.deinit();
+    if (busy) return action;
+    const chosen = switch (state.stage) {
+        .home, .catalog => Action.none,
+        .source => try drawSource(state),
+        .keyboard => try drawKeyboard(state),
+        .review => try drawReview(state, context.host_source),
+        .created => drawCreated(state),
+        .open => drawOpen(state),
+    };
+    if (chosen != .none) action = chosen;
     return action;
 }
 

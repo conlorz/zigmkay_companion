@@ -28,8 +28,15 @@ pub fn draw(app: *App, board: *const boards.OwnedBoard, practice: Tutor.Frame, c
     var screen: Screen = .{};
     app.onboarding.preparing_tutor = app.jobs.runner != null;
     if (app.onboarding.active) {
-        const source = if (app.source) |*value| value.id() else "Offline";
-        screen.onboarding = try keyboard_onboarding.draw(&app.onboarding, app.unsavedChanges(), source, app.view.toolbar.light);
+        screen.onboarding = try keyboard_onboarding.draw(&app.onboarding, .{
+            .dirty = app.unsavedChanges(),
+            .autosaves = commands.autosaves(app),
+            .host_source = if (app.source) |*value| value.id() else "Offline",
+            .light = app.view.toolbar.light,
+            .current_path = std.mem.sliceTo(&app.view.paths.project, 0),
+            .running = if (runningIdentity(app)) |identity| .{ .board_id = identity.board_id, .profile_id = identity.profile_id } else null,
+            .now = std.Io.Timestamp.now(app.io, .real).nanoseconds,
+        });
     } else if (app.practicing) {
         screen.tutor = Tutor.draw(app, practice, now_us);
     } else if (app.life.editor_visible) {

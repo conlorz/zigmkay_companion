@@ -210,7 +210,7 @@ fn layoutRow(theme: ui.Theme, choice: Choice, index: usize, y: f32) bool {
     const right_width: f32 = if (choice.running) 104 else 120;
     rowLabel(theme, choice.name, 46, y, width - 56 - right_width - 8, 14, choice.current, 0);
     if (choice.running) {
-        runningBadge(.{ .x = width - padding - 10 - 98, .y = y + 8, .w = 98, .h = 20 }, index);
+        ui.runningBadge(.{ .x = width - padding - 10 - 98, .y = y + 8, .w = 98, .h = 20 }, index);
     } else if (choice.detail.len != 0) {
         var muted = theme;
         muted.text = theme.muted;
@@ -228,34 +228,4 @@ fn actionRow(theme: ui.Theme, action: Action, id: usize, y: f32) bool {
     rowLabel(tinted, action.text, 46, y, 180, 14, false, 0);
     if (quiet) rowLabel(tinted, action.detail, width - padding - 130, y, 120, 12, false, 1);
     return clicked;
-}
-
-/// The green "On keyboard" pill.
-pub fn runningBadge(bounds: dvui.Rect, id: usize) void {
-    const pill = dvui.box(@src(), .{}, .{
-        .id_extra = id,
-        .rect = bounds,
-        .background = true,
-        .color_fill = .{ .color = ui.color(0x1F3A2E) },
-        .corners = .all(bounds.h / 2),
-        .padding = .{},
-        .margin = .{},
-    });
-    pill.deinit();
-    const dot = dvui.box(@src(), .{}, .{
-        .id_extra = id,
-        .rect = .{ .x = bounds.x + 10, .y = bounds.y + bounds.h / 2 - 3.5, .w = 7, .h = 7 },
-        .background = true,
-        .color_fill = .{ .color = ui.color(0x22C55E) },
-        .corners = .all(3.5),
-        .padding = .{},
-        .margin = .{},
-    });
-    dot.deinit();
-    var green = ui.Theme.get(false);
-    green.text = ui.color(0x6EC59A);
-    var opts = ui.options(green, .{ .x = bounds.x + 22, .y = bounds.y, .w = bounds.w - 26, .h = bounds.h }, 11);
-    opts.padding = .{};
-    opts.id_extra = id;
-    dvui.labelNoFmt(@src(), "On keyboard", .{ .align_y = 0.5 }, opts);
 }

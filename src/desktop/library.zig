@@ -167,17 +167,49 @@ fn read(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, root: ?[]const
     const bytes = try dir.readFileAlloc(io, "project.zon", a, .limited(p.Limits.document_bytes));
     const stat = try dir.statFile(io, "project.zon", .{});
     const doc = try p.parse(a, bytes, null);
+    return describe(a, gpa, .{ .path = candidate.path, .member = candidate.member, .document = doc, .modified = stat.mtime.nanoseconds });
+}
+
+/// A layout that exists only in memory.
+pub const Sample = struct {
+    path: []const u8,
+    member: ?[]const u8 = null,
+    document: p.Document,
+    modified: i96 = 0,
+};
+
+/// A library of in-memory documents, for offscreen galleries.
+pub fn fromSamples(gpa: std.mem.Allocator, samples: []const Sample) !Library {
+    var library: Library = .{ .arena = .init(gpa) };
+    errdefer library.arena.deinit();
+    const a = library.arena.allocator();
+    const layouts = try a.alloc(Layout, samples.len);
+    for (samples, layouts) |sample, *layout| {
+        var copy = sample;
+        copy.document = try p.owned_zon.clone(a, sample.document);
+        layout.* = try describe(a, gpa, copy);
+    }
+    library.layouts = layouts;
+    library.keyboards = try group(a, layouts);
+    return library;
+}
+
+/// Summarizes a validated document; `a` owns the document and the result.
+fn describe(a: std.mem.Allocator, gpa: std.mem.Allocator, sample: Sample) !Layout {
+    const doc = sample.document;
     var board = try boards.OwnedBoard.fromDocument(gpa, doc);
     defer board.deinit();
     const base = try a.alloc([]const u8, doc.key_ids.len);
     for (base, doc.layers[0].actions) |*caption, action| {
         var buffer: [256]u8 = undefined;
-        caption.* = if (action == null) "" else try a.dupe(u8, labels.keycap(action, doc, &buffer));
+        const text = if (action == null) "" else labels.keycap(action, doc, &buffer);
+        // Disabled keys read "---" in the editor; previews leave them blank.
+        caption.* = if (std.mem.eql(u8, text, "---")) "" else try a.dupe(u8, text);
     }
     return .{
         .name = doc.name,
-        .path = candidate.path,
-        .member = candidate.member,
+        .path = sample.path,
+        .member = sample.member,
         .entry = board.entry,
         .board_id = doc.board_id,
         .profile_id = doc.profile_id,
@@ -186,7 +218,7 @@ fn read(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, root: ?[]const
         .combo_count = doc.combos.len,
         .callback_count = doc.callbacks.len,
         .encoder_count = doc.encoders.len,
-        .modified = stat.mtime.nanoseconds,
+        .modified = sample.modified,
         .base = base,
     };
 }

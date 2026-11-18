@@ -5,7 +5,7 @@ pub const importer = @import("keymap-importer");
 pub const boards = importer.boards;
 pub const catalog = importer.catalog;
 const Model = @import("model.zig").Model;
-pub const Stage = enum { welcome, source, keyboard, review, created, open };
+pub const Stage = enum { home, catalog, source, keyboard, review, created, open };
 
 pub const Result = union(enum) {
     inspected: importer.Captured,
