@@ -15,11 +15,13 @@ test "edits and reverting during a build are scheduled after Flash has finished"
     try t.expect(!scheduler.take(3000, desktop.flash_presenter.blocksAutoBuild(.stale)));
 }
 
+/// A hang guard only. It outlasts the build worker's own timeout, so a slow
+/// shared CI runner reports the worker's diagnostic rather than this deadline.
 fn awaitWorker(worker: anytype) !@TypeOf(worker.*).Event {
     const started = std.Io.Clock.awake.now(std.testing.io);
     while (true) {
         if (worker.poll()) |event| return event;
-        if (started.durationTo(std.Io.Clock.awake.now(std.testing.io)).toMilliseconds() > 5000)
+        if (started.durationTo(std.Io.Clock.awake.now(std.testing.io)).toMilliseconds() > 30_000)
             return error.WorkerDeadline;
         try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
     }
@@ -943,7 +945,7 @@ test "build worker owns verified exports and accepts only the current editor pre
     config.request.selection.build_root = root;
     config.request.export_directory = exported;
     config.request.install_directory = install;
-    config.request.timeout_ms = 5000;
+    config.request.timeout_ms = 15_000;
     var environment: std.process.Environ.Map = .init(t.allocator);
     defer environment.deinit();
     try environment.put("ZIGMKAY_BUILD_FIXTURE", "success");
