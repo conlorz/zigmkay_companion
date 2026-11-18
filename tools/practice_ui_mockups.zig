@@ -351,8 +351,7 @@ fn draw(c: *Canvas, n: usize) !void {
 
 pub fn main(init: std.process.Init) !void {
     if (!std.mem.eql(u8, @import("builtin").zig_version_string, "0.17.0")) return error.WrongCompiler;
-    const args = try init.minimal.args.toSlice(init.gpa);
-    defer init.gpa.free(args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 2) return error.Usage;
     var dir = try std.Io.Dir.cwd().createDirPathOpen(init.io, args[1], .{});
     defer dir.close(init.io);

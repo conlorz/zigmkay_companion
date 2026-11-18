@@ -4,8 +4,7 @@ const p = @import("project");
 const jobs = @import("companion-jobs");
 
 pub fn main(init: std.process.Init) !void {
-    const args = try init.minimal.args.toSlice(init.gpa);
-    defer init.gpa.free(args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 3) return error.Usage;
     var loaded = try p.profiles.create(init.gpa, .eurkey);
     defer loaded.deinit();
