@@ -22,6 +22,16 @@ Its implementation baseline is 3ee4135d308f18f15cc51b1d73e33e1b36bf517f;
 the intervening changes are planning documents only.
 
 LICENSE is copied verbatim from that repository (GNU GPL version 2).
+
+License grant (2026-11-18): the copyright holder of the first-party sources,
+including the sources extracted below from the reference repository paths it
+authored, offers them under GPL version 2 or (at your option) any later version
+(SPDX GPL-2.0-or-later). Earlier "GPLv2" statements in this file record
+provenance. Exceptions: the historical fixture
+tests/fixtures/historical/rollercole-0.16.zig.txt contains third-party work and
+stays GPL version 2 only, and imported dependencies keep their own licenses.
+The pinned zigmkay firmware is GPL version 2 only, so distributed builds that
+compile it in are distributed under GPL version 2.
 No host implementation has been imported at bootstrap. Preserve existing
 copyright/license notices when importing source. Dependency notices and asset
 licenses must accompany their eventual imports; this file is not a complete
