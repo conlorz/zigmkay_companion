@@ -115,7 +115,7 @@ test "a layout moves between revisions by key index and reports what drops" {
     try p.snapshot.validate(moved.snapshot, small.board);
 }
 
-test "boards with the same key IDs match exactly and keep callbacks" {
+test "revisions with the same key count match exactly and keep callbacks" {
     const t = std.testing;
     var older = try boards.OwnedBoard.init(t.allocator, "keycaprio_colemak_0_6");
     defer older.deinit();
@@ -125,7 +125,7 @@ test "boards with the same key IDs match exactly and keep callbacks" {
     defer original.deinit();
     var moved = try transfer.transfer(t.allocator, original.snapshot, newer.board);
     defer moved.deinit();
-    try t.expectEqual(transfer.Match.key_id, moved.report.match);
+    try t.expectEqual(transfer.Match.key_index, moved.report.match);
     try t.expect(moved.report.exact());
     try t.expectEqual(original.snapshot.document.callbacks.len, moved.snapshot.document.callbacks.len);
     try t.expectEqual(original.snapshot.sources.len, moved.snapshot.sources.len);
@@ -178,4 +178,46 @@ test "directory names are readable and unique" {
     try std.testing.expectEqualStrings("eurkey-next-mac", new_layout.directoryName(&buffer, "EurKEY Next Mac", Taken{ .names = &.{} }));
     try std.testing.expectEqualStrings("colemak-jan-2", new_layout.directoryName(&buffer, "Colemak (Jan)", Taken{ .names = &.{"colemak-jan"} }));
     try std.testing.expectEqualStrings("layout", new_layout.directoryName(&buffer, "äö", Taken{ .names = &.{} }));
+}
+
+/// Typed keymap data as an analysis would return it, from a catalog default.
+fn analyzed(selector: []const u8) struct { desktop.onboarding.importer.Data, []const desktop.library.catalog.SourceFile } {
+    const defaults = desktop.library.catalog.defaultData(selector).?;
+    return .{ .{
+        .layers = defaults.layers,
+        .combos = defaults.combos,
+        .sides = defaults.sides,
+        .encoders = defaults.encoder_actions orelse &.{},
+        .has_callbacks = defaults.has_callbacks,
+    }, defaults.callback_sources };
+}
+
+test "an import is compared with the chosen keyboard before anything is created" {
+    const t = std.testing;
+    const catalog = desktop.library.catalog;
+    const data, const sources = analyzed("keycaprio_colemak_0_7");
+    var same = try desktop.import_compare.compare(t.allocator, data, sources, catalog.find("keycaprio_colemak_0_7").?);
+    defer same.deinit();
+    try t.expect(same.report.exact());
+    try t.expectEqualStrings("keycaprio_colemak_0_7", same.source_entry.selector);
+    var smaller = try desktop.import_compare.compare(t.allocator, data, sources, catalog.find("keycaprio_colemak_0_4").?);
+    defer smaller.deinit();
+    try t.expectEqual(@as(usize, 34), smaller.report.source_keys);
+    try t.expectEqual(@as(usize, 4), smaller.report.missingCount());
+    try t.expect(smaller.report.missing[30] and !smaller.report.missing[29]);
+    try t.expectEqual(@as(usize, 30), smaller.target_captions.len);
+    var lk7 = try desktop.import_compare.compare(t.allocator, data, sources, catalog.find("lk7").?);
+    defer lk7.deinit();
+    try t.expectEqual(@as(usize, 34), lk7.report.matched);
+    try t.expectEqual(desktop.new_layout.transfer.Match.key_index, lk7.report.match);
+}
+
+test "curated LK7 layouts match by key ID" {
+    const t = std.testing;
+    var eurmac = try p.profiles.create(t.allocator, .eurmac);
+    defer eurmac.deinit();
+    var moved = try transfer.transfer(t.allocator, eurmac.snapshot, p.profiles.board);
+    defer moved.deinit();
+    try t.expectEqual(transfer.Match.key_id, moved.report.match);
+    try t.expect(moved.report.exact());
 }

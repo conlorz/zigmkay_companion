@@ -62,3 +62,4 @@ pub const owned_worker = @import("owned_worker.zig");
 pub const onboarding = @import("onboarding.zig");
 pub const library = @import("library.zig");
 pub const new_layout = @import("new_layout.zig");
+pub const import_compare = @import("import_compare.zig");

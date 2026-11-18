@@ -26,9 +26,9 @@ layer does, and the top bar follows the order of work: open, build, flash.
 | 11 | Editor head: Keyboard › Layout breadcrumb and layout menu | [11-editor-head](editor/11-editor-head.svg) | `toolbar_ui.zig`, `layout_menu.zig` |
 | 12 | Export Zig source | [12-export](editor/12-export.svg) | `paths_ui.zig` |
 | 13 | My Keyboards: hardware and its layouts | [13-my-keyboards](editor/13-my-keyboards.svg) | `onboarding_ui.zig`, `keyboards_ui.zig`, `library.zig` |
-| 14 | First launch, no keyboards yet | [14-first-launch](editor/14-first-launch.svg) | `keyboards_ui.zig` |
-| 15 | New layout with preview | [15-new-layout](editor/15-new-layout.svg) | `new_layout_ui.zig`, `layout_transfer.zig` |
-| 16 | Import from Git with comparison | [16-import-compare](editor/16-import-compare.svg) | `import_ui.zig`, `layout_transfer.zig` |
+| 14 | First launch, no keyboards yet | [14-first-launch](editor/14-first-launch.svg) | `keyboards_ui.zig`, `keyboard_preview.zig` |
+| 15 | New layout with preview | [15-new-layout](editor/15-new-layout.svg) | `new_layout_ui.zig`, `new_layout.zig`, `layout_transfer.zig` |
+| 16 | Import from Git with comparison | [16-import-compare](editor/16-import-compare.svg) | `import_ui.zig`, `import_compare.zig`, `layout_transfer.zig` |
 | 17 | Add keyboard from the catalog | [17-add-keyboard](editor/17-add-keyboard.svg) | `catalog_ui.zig` |
 
 ## Canvas and grid
@@ -201,8 +201,18 @@ with the Try it out and Callbacks cards, the keyboard panel header and
 segmented control, the enlarged OS keyboard and the inspector header with its
 keycap preview and spelled-out action.
 
+Implemented (2026-11-18, screens 11–17): the Keyboard › Layout breadcrumb with
+its layout menu and automatic saving, the Export Zig source sheet, My
+Keyboards with hardware and layout cards, the first-launch entry cards, the
+catalog page, New layout with its preview, and the Git import comparison.
+
 Open: the inspector body (Behaviour label, Tap and Hold cards, category chips
-and result rows as drawn) and the secondary screens 5–10 still use their
-earlier layout. Compare native screenshots against these mockups when changing
-them; `--offline-status-frames 24` renders editor scenes offscreen to
-`.zig-cache/editor-status/` without capturing the desktop.
+and result rows as drawn) and the secondary screens 5–7 and 9 still use their
+earlier layout. Copying an outside project into the collection has no control
+on My Keyboards yet. Previews and comparisons use the schematic geometry
+described above until measured per-revision geometry exists. Compare native
+screenshots against these mockups when changing them:
+`--offline-status-frames 24` renders editor scenes (scene 2 shows the export
+sheet, scene 3 the layout menu) and `--offline-onboarding-frames 24` renders
+My Keyboards, the catalog, New layout and the import comparison offscreen to
+`.zig-cache/` without capturing the desktop.

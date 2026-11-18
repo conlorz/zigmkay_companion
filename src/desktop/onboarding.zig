@@ -5,7 +5,7 @@ pub const importer = @import("keymap-importer");
 pub const boards = importer.boards;
 pub const catalog = importer.catalog;
 const Model = @import("model.zig").Model;
-pub const Stage = enum { home, catalog, new_layout, source, keyboard, review, open };
+pub const Stage = enum { home, catalog, new_layout, source };
 
 pub const Result = union(enum) {
     inspected: importer.Captured,
@@ -140,7 +140,8 @@ pub const Request = struct {
                 .captured = analyzed.captured,
                 .data = analyzed.data,
             };
-            return importer.prepare(gpa, io, captured, analysis, input.selector, input.name, profile_id);
+            const target = catalog.find(input.selector) orelse return error.UnknownSelector;
+            return @import("import_compare.zig").prepare(gpa, io, captured, analysis, target, input.name, profile_id);
         }
         if (input.template != .firmware_default) {
             if (!std.mem.eql(u8, input.selector, "lk7")) return error.TemplateNotAvailableForBoard;

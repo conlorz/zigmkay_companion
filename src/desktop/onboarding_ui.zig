@@ -9,6 +9,7 @@ const ui = @import("editor-ui");
 const keyboards_ui = @import("keyboards_ui.zig");
 const catalog_ui = @import("catalog_ui.zig");
 const new_layout_ui = @import("new_layout_ui.zig");
+const import_ui = @import("import_ui.zig");
 
 pub const Action = enum {
     none,
@@ -40,6 +41,15 @@ pub const State = struct {
     candidate: ?desktop.new_layout.Candidate = null,
     candidate_key: u64 = 0,
     candidate_failure: [256]u8 = @splat(0),
+    /// The analyzed keymap next to the chosen keyboard.
+    comparison: ?desktop.import_compare.Comparison = null,
+    comparison_key: u64 = 0,
+    comparison_failure: [256]u8 = @splat(0),
+    /// Creates the import once its preparation arrives.
+    create_ready: bool = false,
+    /// Callback source of an in-memory analysis without a captured source,
+    /// for offscreen galleries.
+    sample_sources: []const flow.catalog.SourceFile = &.{},
     /// Opens the folder the native chooser returns.
     awaiting_open: bool = false,
     /// Opens `location` once the open layout is saved.
@@ -80,6 +90,7 @@ pub const State = struct {
         if (self.collection) |*value| value.deinit();
         if (self.library) |*value| value.deinit();
         self.dropCandidate();
+        self.dropComparison();
     }
 
     fn dropCandidate(self: *State) void {
@@ -130,6 +141,41 @@ pub const State = struct {
         self.source_valid = false;
         self.confirmed = false;
         self.template = 0;
+        self.create_ready = false;
+        self.dropComparison();
+    }
+
+    fn dropComparison(self: *State) void {
+        if (self.comparison) |*value| value.deinit();
+        self.comparison = null;
+        self.comparison_key = 0;
+        self.comparison_failure = @splat(0);
+    }
+
+    /// Compares the analyzed keymap with the chosen keyboard when either
+    /// changed. Callback source is read from the captured copy.
+    pub fn refreshComparison(self: *State, gpa: std.mem.Allocator, io: std.Io) void {
+        if (self.stage != .source) return;
+        const analysis = self.analysis orelse return;
+        var hash: std.hash.Wyhash = .init(0);
+        hash.update(&analysis.captured);
+        hash.update(std.mem.asBytes(&self.selector));
+        const wanted = hash.final() | 1;
+        if (wanted == self.comparison_key) return;
+        self.dropComparison();
+        self.comparison_key = wanted;
+        var scratch: std.heap.ArenaAllocator = .init(gpa);
+        defer scratch.deinit();
+        const files = if (analysis.data.has_callbacks) if (self.source) |source|
+            flow.importer.sourceFiles(scratch.allocator(), gpa, io, source) catch |err| return self.compareFailed(err)
+        else
+            self.sample_sources else &.{};
+        self.comparison = desktop.import_compare.compare(gpa, analysis.data, files, &flow.catalog.entries[self.selector]) catch |err|
+            return self.compareFailed(err);
+    }
+
+    fn compareFailed(self: *State, err: anyerror) void {
+        _ = std.fmt.bufPrint(&self.comparison_failure, "This keymap cannot be compared with that keyboard: {s}", .{@errorName(err)}) catch {};
     }
 
     pub fn report(self: *State, err: anyerror) void {
@@ -253,7 +299,8 @@ pub const State = struct {
         defer arena.deinit();
         const a = arena.allocator();
         const new_layout = action == .create and self.stage == .new_layout;
-        if (new_layout) try self.nameNewLayout(io);
+        if (new_layout) try self.nameLayout(io, std.mem.sliceTo(&self.new_layout.name, 0));
+        if (action == .create and self.stage == .source) try self.nameLayout(io, std.mem.sliceTo(&self.name, 0));
         if (action == .create or action == .add_existing) {
             const relative = try std.fmt.allocPrint(a, "keyboards/{s}", .{std.mem.sliceTo(&self.directory, 0)});
             const entry: p.collection.Entry = .{ .id = std.mem.sliceTo(&self.directory, 0), .directory = relative };
@@ -283,10 +330,15 @@ pub const State = struct {
         self.diagnostic = @splat(0);
     }
 
-    /// Takes the New layout name and a free collection directory for it.
-    fn nameNewLayout(self: *State, io: std.Io) !void {
-        const name = std.mem.trim(u8, std.mem.sliceTo(&self.new_layout.name, 0), " ");
-        if (name.len == 0) return error.LayoutNameRequired;
+    /// Takes the layout name and a free collection directory for it.
+    fn nameLayout(self: *State, io: std.Io, typed: []const u8) !void {
+        var copy: [129]u8 = undefined;
+        const trimmed = std.mem.trim(u8, typed, " ");
+        if (trimmed.len == 0) return error.LayoutNameRequired;
+        if (trimmed.len >= copy.len) return error.InvalidName;
+        // `typed` may be `self.name` itself.
+        @memcpy(copy[0..trimmed.len], trimmed);
+        const name = copy[0..trimmed.len];
         try set(&self.name, name);
         const Taken = struct {
             io: std.Io,
@@ -343,7 +395,7 @@ pub const State = struct {
             .analyzed => |value| {
                 if (self.analysis) |*old| old.deinit();
                 self.analysis = value;
-                self.stage = .keyboard;
+                // Prefer a keyboard the keymap fits; otherwise keep the chosen one.
                 for (flow.catalog.entries, 0..) |entry, index| {
                     if (flow.importer.compatible(value.data, entry)) {
                         self.selector = index;
@@ -354,20 +406,13 @@ pub const State = struct {
             .prepared => |value| {
                 if (self.prepared) |*old| old.deinit();
                 self.prepared = value;
-                self.stage = .review;
+                self.create_ready = true;
             },
             .opened => |value| return value,
         }
         return null;
     }
 };
-
-fn field(comptime label: []const u8, buffer: []u8) void {
-    const id = std.hash.Wyhash.hash(0, label);
-    dvui.labelNoFmt(@src(), label, .{}, .{ .id_extra = id });
-    const entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = buffer } }, .{ .expand = .horizontal, .id_extra = id });
-    entry.deinit();
-}
 
 /// What the onboarding pages know about the editor and the connected keyboard.
 pub const Context = struct {
@@ -423,7 +468,7 @@ pub fn draw(state: *State, context: Context) !Action {
                 state.stage = .source;
             },
         },
-        else => action = try legacy(state, theme, context, busy),
+        .source => action = try importPage(state, theme, context, busy),
     }
     if (state.awaiting_open and state.location[0] != 0 and action == .none) {
         state.awaiting_open = false;
@@ -544,161 +589,43 @@ fn drawBusy(state: *State, theme: ui.Theme, action: *Action) void {
     if (state.operation != .create and ui.iconButton(theme, null, "Cancel", "onboarding.cancel", .{ .x = keyboards_ui.canvas_width - 128, .y = 928, .w = 96, .h = 28 }, false)) action.* = .cancel;
 }
 
-/// Pages of the earlier wizard, framed in the current style until they are
-/// replaced.
-fn legacy(state: *State, theme: ui.Theme, context: Context, busy: bool) !Action {
-    var action: Action = .none;
-    const trail: []const []const u8 = switch (state.stage) {
-        .source => &.{ "My Keyboards", "Import from Git" },
-        .keyboard, .review => &.{ "My Keyboards", "New layout" },
-        else => &.{ "My Keyboards", "Open" },
-    };
-    if (keyboards_ui.bar(theme, trail, context.light)) action = .toggle_theme;
-    if (!busy and ui.iconButton(theme, ui.control_icons.back, "Back to My Keyboards", "onboarding.back", .{ .x = 1270, .y = 14, .w = 204, .h = 36 }, false)) {
-        state.clearImport();
-        state.stage = .home;
+fn importPage(state: *State, theme: ui.Theme, context: Context, busy: bool) !Action {
+    var hint: [160]u8 = undefined;
+    const provenance = if (state.source) |source| source.provenance.host_layout_hint else "none";
+    const host = std.fmt.bufPrint(&hint, "{s} · active OS input source: {s}", .{ provenance, context.host_source }) catch context.host_source;
+    const intent = try import_ui.draw(theme, .{
+        .location = &state.location,
+        .name = &state.name,
+        .module = &state.module,
+        .selector = &state.selector,
+        .source = if (state.source) |*value| value else null,
+        .inspected = state.inspectedSelection(),
+        .analyzed = state.analysis != null,
+        .comparison = if (state.comparison) |*value| value else null,
+        .failure = std.mem.sliceTo(&state.comparison_failure, 0),
+        .host_source = host,
+        .collection = std.mem.sliceTo(&state.root, 0),
+        .busy = busy,
+        .light = context.light,
+    });
+    switch (intent) {
+        .none, .target => {},
+        .back => {
+            state.clearImport();
+            state.stage = .home;
+        },
+        .toggle_theme => return .toggle_theme,
+        .choose_source => return .choose_source,
+        .inspect => return .inspect,
+        .analyze => return .analyze,
+        .module => if (state.source) |source| {
+            try State.set(&state.entry, source.candidates[state.module]);
+            try State.set(&state.location, source.source_root);
+            return .inspect;
+        },
+        .create => return .prepare,
     }
-    keyboards_ui.panel(theme, .{ .x = 16, .y = 80, .w = keyboards_ui.canvas_width - 32, .h = 836 }, 3);
-    const body = dvui.scrollArea(@src(), .{}, .{ .rect = .{ .x = 40, .y = 100, .w = keyboards_ui.canvas_width - 80, .h = 796 }, .background = false });
-    defer body.deinit();
-    const content = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal, .font = ui.options(theme, .{}, 15).font, .color_text = .{ .color = theme.text } });
-    defer content.deinit();
-    if (busy) return action;
-    const chosen = switch (state.stage) {
-        .home, .catalog, .new_layout => Action.none,
-        .source => try drawSource(state),
-        .keyboard => try drawKeyboard(state),
-        .review => try drawReview(state, context.host_source),
-        .open => drawOpen(state),
-    };
-    if (chosen != .none) action = chosen;
-    return action;
-}
-
-fn drawSource(state: *State) !Action {
-    var action: Action = .none;
-    field("Local source folder or public GitHub repository URL", &state.location);
-    if (dvui.button(@src(), "Choose source folder…", .{}, .{})) action = .choose_source;
-    field("Keymap module (suggested: src/keymap.zig)", &state.entry);
-    if (dvui.button(@src(), "Inspect source / Retry", .{}, .{})) action = .inspect;
-    const source = state.source orelse return action;
-    const digest = std.fmt.bytesToHex(source.provenance.fingerprint, .lower);
-    dvui.label(@src(), "Captured {d} source files · {s}", .{ source.provenance.sources.len, digest }, .{});
-    if (source.candidates.len > 1 and dvui.dropdown(@src(), source.candidates, .{ .choice = &state.module }, .{}, .{})) {
-        try State.set(&state.entry, source.candidates[state.module]);
-        try State.set(&state.location, source.source_root);
-        action = .inspect;
-    }
-    if (source.provenance.commit) |commit| dvui.label(@src(), "Immutable commit: {s}", .{commit}, .{});
-    for (source.provenance.sources, 0..) |file, index| dvui.label(@src(), "Retain {s}", .{file.path}, .{ .id_extra = index });
-    if (state.inspectedSelection() and dvui.button(@src(), "Analyze selected module", .{}, .{})) action = .analyze;
-    return action;
-}
-
-fn drawKeyboard(state: *State) !Action {
-    const arena = dvui.currentWindow().arena();
-    const names = try arena.alloc([]const u8, flow.catalog.entries.len);
-    for (flow.catalog.entries, names) |entry, *name| {
-        name.* = try std.fmt.allocPrint(
-            arena,
-            "{s} · PCB {s} · {s}",
-            .{ entry.display.name, entry.display.revision, entry.display.template },
-        );
-    }
-    if (dvui.dropdown(@src(), names, .{ .choice = &state.selector }, .{}, .{ .expand = .horizontal })) {
-        state.confirmed = false;
-        state.template = 0;
-    }
-    const selected = flow.catalog.entries[state.selector];
-    if (state.analysis == null and std.mem.eql(u8, selected.selector, "lk7")) {
-        dvui.label(@src(), "Starting template", .{}, .{});
-        const templates: []const []const u8 = &.{ "Selected firmware default", "QWERTY", "EurKEY draft", "EurKEY Next Mac candidate" };
-        _ = dvui.dropdown(@src(), templates, .{ .choice = &state.template }, .{}, .{});
-    }
-    const dimensions = .{ selected.default_dimensions.key_count, selected.encoder_action_slots };
-    dvui.label(@src(), "{d} keys · {d} encoder directions · schematic geometry", dimensions, .{});
-    if (state.analysis) |analysis| if (!flow.importer.compatible(analysis.data, selected)) {
-        const text = "Choose a compatible Keycaprio 0.6 or 0.7 target. " ++
-            "Matching dimensions alone do not establish hardware compatibility.";
-        dvui.label(@src(), text, .{}, .{});
-    };
-    _ = dvui.checkbox(@src(), &state.confirmed, "I confirm this keyboard hardware and PCB revision", .{});
-    field("Profile name", &state.name);
-    if (state.confirmed and dvui.button(@src(), "Review keyboard", .{}, .{})) return .prepare;
     return .none;
-}
-
-fn drawReview(state: *State, host_source: []const u8) !Action {
-    var action: Action = .none;
-    const prepared = state.prepared orelse return error.PreparedProjectRequired;
-    const doc = prepared.project.snapshot.document;
-    const board = prepared.board.entry.display;
-    dvui.label(@src(), "Keyboard: {s} · PCB {s}", .{ board.name, board.revision }, .{});
-    dvui.label(
-        @src(),
-        "{s}: {d} keys, {d} layers, {d} ordered combos",
-        .{ doc.name, doc.key_ids.len, doc.layers.len, doc.combos.len },
-        .{},
-    );
-    for (doc.layers, 0..) |layer, index| {
-        var disabled: usize = 0;
-        var transparent: usize = 0;
-        for (layer.actions) |assignment| {
-            if (assignment) |value| {
-                if (value == .none) disabled += 1;
-            } else transparent += 1;
-        }
-        const assigned = layer.actions.len - transparent - disabled;
-        const counts = .{ layer.name, assigned, transparent, disabled };
-        dvui.label(@src(), "{s}: {d} assignments, {d} transparent, {d} disabled", counts, .{ .id_extra = index });
-    }
-    if (doc.callbacks.len != 0) {
-        const text = "Custom callback source is retained byte-for-byte. " ++
-            "Existing layer indices stay fixed; names and assignments remain editable.";
-        dvui.label(@src(), text, .{}, .{});
-    }
-    for (doc.callbacks, 0..) |callback, index| {
-        dvui.label(@src(), "Retained module {s} · custom IDs {any}", .{ callback.binding, callback.ids }, .{ .id_extra = index });
-    }
-    _ = dvui.checkbox(@src(), &state.review_details, "Show every assignment, combo and encoder action", .{});
-    if (state.review_details) {
-        for (doc.layers, 0..) |layer, li| for (layer.actions, 0..) |assignment, ki| {
-            dvui.label(@src(), "{s} / {s}: {any}", .{ layer.name, doc.key_ids[ki], assignment }, .{ .id_extra = li * 128 + ki });
-        };
-        for (doc.combos, 0..) |combo, index| dvui.label(@src(), "Combo {d}: {any}", .{ index + 1, combo }, .{ .id_extra = index });
-        for (doc.encoders, 0..) |encoder, index| {
-            dvui.label(@src(), "Encoder direction {d}: {any}", .{ index + 1, encoder }, .{ .id_extra = index });
-        }
-    }
-    const host_hint = if (state.source) |source| source.provenance.host_layout_hint else board.host_layout;
-    dvui.label(@src(), "Host layout hint: {s} · active OS input source: {s}", .{ host_hint, host_source }, .{});
-    dvui.label(@src(), "Your OS input settings are unchanged. Exports use the application's pinned firmware.", .{}, .{});
-    field("Collection location (Change location)", &state.root);
-    if (dvui.button(@src(), "Change location…", .{}, .{})) action = .choose_location;
-    field("New keyboard directory / stable collection entry ID", &state.directory);
-    const destination = .{ std.mem.sliceTo(&state.root, 0), std.mem.sliceTo(&state.directory, 0) };
-    dvui.label(@src(), "Destination: {s}/keyboards/{s}", destination, .{});
-    if (dvui.button(@src(), "Create new project", .{}, .{ .tag = "onboarding.commit" })) action = .create;
-    return action;
-}
-
-fn drawOpen(state: *State) Action {
-    var action: Action = .none;
-    if (state.add_existing) {
-        const text = "Add a project inside this collection, or explicitly make a portable copy of an external project. " ++
-            "The original stays unchanged.";
-        dvui.label(@src(), text, .{}, .{});
-        field("Existing project directory (leave empty for membership only)", &state.location);
-        if (dvui.button(@src(), "Choose existing project…", .{}, .{})) action = .choose_open;
-        field("Directory name inside keyboards/", &state.directory);
-        const label = if (state.location[0] != 0) "Copy project into collection" else "Add existing project";
-        if (dvui.button(@src(), label, .{}, .{})) action = .add_existing;
-    } else {
-        field("Project or collection directory", &state.location);
-        if (dvui.button(@src(), "Choose folder…", .{}, .{})) action = .choose_open;
-        if (dvui.button(@src(), "Open", .{}, .{})) action = .open;
-    }
-    return action;
 }
 
 test "wizard rejects stale settings and owner generations without touching destinations" {

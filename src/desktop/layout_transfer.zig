@@ -49,8 +49,11 @@ pub const Transferred = struct {
 /// For each target key, the source key it corresponds to.
 pub fn matchKeys(a: std.mem.Allocator, source: []const []const u8, target: []const []const u8) !struct { Match, []?usize } {
     const origin = try a.alloc(?usize, target.len);
+    // Catalog boards name keys "key-<index>", so a shared catalog ID only
+    // repeats the key index.
     var shared = false;
     for (target) |id| {
+        if (std.mem.startsWith(u8, id, "key-")) continue;
         for (source) |candidate| if (std.mem.eql(u8, id, candidate)) {
             shared = true;
         };

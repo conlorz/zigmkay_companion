@@ -21,6 +21,11 @@ pub fn poll(app: *App) !void {
     }
     try openWhenSaved(app);
     onboarding.refreshCandidate(app.gpa, app.io);
+    onboarding.refreshComparison(app.gpa, app.io);
+    if (onboarding.create_ready and onboarding.worker == null) {
+        onboarding.create_ready = false;
+        try start(app, .create);
+    }
     const result = onboarding.poll(app.owner_generation) catch |err| failed: {
         onboarding.report(err);
         break :failed null;

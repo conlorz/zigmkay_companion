@@ -562,27 +562,31 @@ pub fn prepare(
     name: []const u8,
     profile_id: [8]u8,
 ) !Prepared {
-    if (!std.mem.eql(u8, &analysis.captured, &capture.provenance.fingerprint)) return error.StaleImportAnalysis;
     var board = try boards.OwnedBoard.init(gpa, selector);
+    if (!compatible(analysis.data, board.entry.*)) {
+        board.deinit();
+        return error.SelectCompatibleKeycaprioRevision;
+    }
+    return convert(gpa, io, capture, analysis, board, name, profile_id);
+}
+
+/// Converts the analysis onto `board`, whose key count and encoder slots
+/// must equal the keymap's. Takes ownership of `board`. Compatibility of the
+/// hardware is the caller's decision.
+pub fn convert(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    capture: Captured,
+    analysis: Analysis,
+    owned_board: boards.OwnedBoard,
+    name: []const u8,
+    profile_id: [8]u8,
+) !Prepared {
+    var board = owned_board;
     errdefer board.deinit();
-    if (!compatible(analysis.data, board.entry.*)) return error.SelectCompatibleKeycaprioRevision;
+    if (!std.mem.eql(u8, &analysis.captured, &capture.provenance.fingerprint)) return error.StaleImportAnalysis;
     try verify(gpa, io, capture);
-    var dir = try std.Io.Dir.cwd().openDir(io, capture.directory, .{});
-    defer dir.close(io);
-    var bundle = try p.sources.capture(gpa, io, dir, capture.provenance.entry);
-    defer bundle.deinit();
-    const a = board.arena.allocator();
-    const files = try a.alloc(catalog.SourceFile, bundle.bytes.len);
-    // Binding must point at the selected entry even when a dependency sorts first.
-    files[0] = .{ .path = bundle.entry, .bytes = blk: {
-        for (bundle.bytes) |file| if (std.mem.eql(u8, file.path, bundle.entry)) break :blk file.bytes;
-        return error.MissingSource;
-    } };
-    var index: usize = 1;
-    for (bundle.bytes) |file| if (!std.mem.eql(u8, file.path, bundle.entry)) {
-        files[index] = .{ .path = file.path, .bytes = file.bytes };
-        index += 1;
-    };
+    const files = try sourceFiles(board.arena.allocator(), gpa, io, capture);
     var converted = try boards.createData(gpa, board, .{
         .entry = board.entry,
         .layers = analysis.data.layers,
@@ -604,6 +608,26 @@ pub fn prepare(
     const generated = try p.exporter.generate(gpa, converted.snapshot, board.board);
     defer gpa.free(generated);
     return .{ .board = board, .project = converted, .captured = capture.provenance.fingerprint };
+}
+
+/// The captured source closure with the selected entry first, copied into `a`.
+pub fn sourceFiles(a: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io, capture: Captured) ![]const catalog.SourceFile {
+    var dir = try std.Io.Dir.cwd().openDir(io, capture.directory, .{});
+    defer dir.close(io);
+    var bundle = try p.sources.capture(gpa, io, dir, capture.provenance.entry);
+    defer bundle.deinit();
+    const files = try a.alloc(catalog.SourceFile, bundle.bytes.len);
+    // Binding must point at the selected entry even when a dependency sorts first.
+    files[0] = .{ .path = try a.dupe(u8, bundle.entry), .bytes = blk: {
+        for (bundle.bytes) |file| if (std.mem.eql(u8, file.path, bundle.entry)) break :blk try a.dupe(u8, file.bytes);
+        return error.MissingSource;
+    } };
+    var index: usize = 1;
+    for (bundle.bytes) |file| if (!std.mem.eql(u8, file.path, bundle.entry)) {
+        files[index] = .{ .path = try a.dupe(u8, file.path), .bytes = try a.dupe(u8, file.bytes) };
+        index += 1;
+    };
+    return files;
 }
 
 /// Exclusive publication into a new directory; existing projects are never

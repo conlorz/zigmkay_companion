@@ -1,15 +1,28 @@
 # Keyboard projects and one-way import
 
-On first launch, choose **Create keyboard**, **Import existing keymap**, or
-**Open project or collection**. A valid remembered project opens directly.
-Missing, corrupt and unsupported saved data stays on disk; use the welcome
-screen to choose another location or recover the original files. No keyboard
-build or Flash target is exposed before selection.
+A **keyboard** is hardware: a catalog board and PCB revision. Each project is
+one **layout** on it, and **My Keyboards** groups the layouts by keyboard. On
+first launch, choose **Start from scratch**, **Import from Git** or **Open
+folder**. A valid remembered project opens directly. Missing, corrupt and
+unsupported saved data stays on disk; My Keyboards lists it as unreadable and
+leaves it untouched. No keyboard build or Flash target is exposed before
+selection.
 
-Creation offers all 14 firmware selectors with friendly keyboard names, PCB
-revisions and the selected firmware's default template. LK7 also offers the
-existing QWERTY and EurKEY templates. Confirm the actual hardware and revision;
-key count cannot identify a PCB. Each created profile gets an independent ID.
+**+ Keyboard** shows the catalog grouped by hardware, with PCB revision chips;
+confirm the actual revision, because key count cannot identify a PCB. **New
+layout** then starts from a template, a copy of any layout, a blank Base layer
+or a Git import, and previews the result on this keyboard before anything is
+written. Templates are the firmware default of each selector of the hardware;
+the LK7 offers its built-in Rollercole, QWERTY, EurKEY draft and EurKEY Next
+Mac layouts, which keep the curated LK7 board identity of earlier projects.
+Each created layout gets an independent profile ID and a readable directory.
+
+A copy from other hardware, such as a Keycaprio 0.7 layout on a 0.4, is moved
+key by key: by key ID when both boards use the curated LK7 IDs, otherwise by
+firmware key index. Keys and combos without a counterpart are left out and
+listed, new keys stay unassigned, encoder directions are cut or padded and
+callback source stays byte-exact. Measured per-revision geometry does not
+exist yet, so index matching can move a key to another row; check the preview.
 The schematic editor and tutor share catalog geometry. Display hands and thumbs
 are independent of processing-side metadata; Dasbob, for example, retains its
 firmware's neutral processing sides.
@@ -70,32 +83,34 @@ practice databases. Keep `workspace.zon`, child `project.zon` files, `.sources`
 and `.import` in version control. The application does not initialize Git or
 make personal collection commits. If another process changes the collection
 manifest, reload it before retrying. If membership publication fails after a
-project was saved, use **Add existing project** for that new child.
+project was saved, open that folder with **Open folder**; My Keyboards then
+lists it outside the collection.
 
 ## Import
 
-Use **Source → Keyboard → Review → Create**, then **Open editor** or **Try tutor**.
+**Import from Git** is one page: capture, analyze, compare, create. The new
+layout opens in the editor.
 
-1. Select a local folder or paste a public `https://github.com/owner/repository`
-   URL, optionally ending in `/tree/<ref>`. Click **Inspect source / Retry** to
-   fetch or capture it. URLs are not fetched while typing. The requested ref,
-   or the default `HEAD`, is resolved to an immutable commit before downloading.
-   Authentication and private repositories are unsupported.
-2. Select a keymap module. `src/keymap.zig` is suggested; multiple candidate
-   modules appear in a selector. Click **Analyze selected module** to evaluate
-   its typed data against the application's pinned firmware with Zig 0.17.0.
-   Repository build scripts and callback handlers are never executed.
-3. Confirm compatible hardware and PCB revision. The initial import family is
-   the two pinned Keycaprio maps described in the
-   [research](design/keyboard-projects-and-import.md), using Keycaprio 0.6 or 0.7.
-   Other catalog boards remain available for new project creation.
-4. Review layers, assignments, ordered combos, encoders, retained code and
-   constrained operations. Enable **Show every assignment, combo and encoder
-   action** for full typed details. Check the host-layout hint against the
-   displayed active OS input source. Import does not change OS input settings.
-5. Choose a profile name, collection location and unused child directory.
-   **Create new project** publishes a new project only after validation and
-   reopening. Cancelling before this action leaves the destination unchanged.
+1. Paste a public `https://github.com/owner/repository` URL, optionally ending
+   in `/tree/<ref>`, or choose a local folder, and click **Capture source**.
+   URLs are not fetched while typing. The requested ref, or the default `HEAD`,
+   is resolved to an immutable commit before downloading. Authentication and
+   private repositories are unsupported.
+2. Select a keymap module; `src/keymap.zig` is suggested. **Analyze keymap**
+   evaluates its typed data against the application's pinned firmware with Zig
+   0.17.0. Repository build scripts and callback handlers are never executed.
+3. The found keymap appears next to the chosen keyboard. It is drawn on the
+   catalog board with its key count; keys without a counterpart on your
+   keyboard are outlined dashed red, and a summary lists the differences in
+   keys, layers, combos, callbacks and encoder directions. A keymap that fits
+   the target (the pinned Keycaprio 0.6 and 0.7 maps, see the
+   [research](design/keyboard-projects-and-import.md)) converts directly; any
+   other is converted on its own board and moved like a layout from another
+   revision. Check the host-layout hint against the active OS input source;
+   import does not change OS input settings.
+4. Name the layout and click **Create layout**. It publishes a new collection
+   member only after validation and reopening. Going back before this leaves
+   the destination unchanged.
 
 The editable result preserves every layer and assignment, transparent versus
 explicitly disabled keys, tap/hold/repeat/one-shot actions, modifiers, media and
@@ -124,7 +139,7 @@ are bounded. Archive links and escaping paths are rejected. Network failures
 retain the wizard for retry or local-folder import. Git and a separately
 installed Zig are unnecessary in bundled applications.
 
-**Try tutor** asynchronously prepares a native-only processor runner, without
+**Try it out** in the editor prepares a native-only processor runner, without
 building a UF2. A scored run retains its chosen layout and input mode. Ordinary
 OS text practices that chosen layout; it does not identify the physical keyboard
 that produced the text. Firmware installation remains an explicit later action.

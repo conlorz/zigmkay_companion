@@ -6,6 +6,7 @@ const Backend = @import("dvui_backend");
 const desktop = @import("desktop-core");
 const boards = @import("catalog-project");
 const project = @import("project");
+const keyboard_onboarding = @import("onboarding-ui");
 const editor = @import("editor-frame-ui");
 const App = @import("App.zig");
 const rundown_gallery = @import("rundown_gallery.zig");
@@ -45,7 +46,7 @@ fn showCatalogEntry(app: *App) !void {
 
 /// The onboarding gallery shows each page for four frames: the first launch,
 /// My Keyboards with sample layouts, the catalog, New layout, the import source
-/// and the review. Sample layouts exist only in memory.
+/// and the import comparison. Sample layouts exist only in memory.
 fn advanceOnboarding(app: *App) !void {
     const onboarding = &app.onboarding;
     switch (app.count) {
@@ -58,22 +59,28 @@ fn advanceOnboarding(app: *App) !void {
             onboarding.catalog = .{ .family = 1, .confirmed = true };
         },
         12 => {
-            onboarding.openNewLayout(lk7Entry());
+            onboarding.openNewLayout(entryOf("lk7"));
             onboarding.new_layout.template = 3;
         },
-        16 => onboarding.stage = .source,
+        16 => {
+            onboarding.clearImport();
+            onboarding.stage = .source;
+        },
         20 => {
-            var environment = std.process.Environ.Map.init(app.gpa);
-            defer environment.deinit();
-            var request = try desktop.onboarding.Request.init(app.gpa, .{
-                .operation = .prepare,
-                .selector = desktop.onboarding.catalog.entries[onboarding.selector].selector,
-                .toolchain = .{ .compiler = "", .build_root = "", .cache = "" },
-            }, &environment, @splat(0));
-            defer request.deinit();
-            const prepared = try request.prepare(app.gpa, app.io);
-            onboarding.prepared = prepared.prepared;
-            onboarding.stage = .review;
+            // A Keycaprio 0.7 keymap, as an analysis would return it, compared
+            // with a Keycaprio 0.4 that has four keys fewer.
+            const defaults = desktop.onboarding.catalog.defaultData("keycaprio_colemak_0_7").?;
+            onboarding.analysis = .{ .arena = .init(app.gpa), .captured = @splat(1), .data = .{
+                .layers = defaults.layers,
+                .combos = defaults.combos,
+                .sides = defaults.sides,
+                .encoders = defaults.encoder_actions orelse &.{},
+                .has_callbacks = defaults.has_callbacks,
+            } };
+            onboarding.sample_sources = defaults.callback_sources;
+            onboarding.selector = entryOf("keycaprio_colemak_0_4");
+            try keyboard_onboarding.State.set(&onboarding.location, "https://github.com/example/keycaprio-keymap");
+            try keyboard_onboarding.State.set(&onboarding.name, "Colemak Jan (imported)");
         },
         else => {},
     }
@@ -431,7 +438,7 @@ pub fn finish(app: *App) !void {
     if (app.mode.is(.native_tray) and !app.tray.installed) return error.NativeTrayLifecycleFailed;
 }
 
-fn lk7Entry() usize {
-    for (desktop.onboarding.catalog.entries, 0..) |entry, index| if (std.mem.eql(u8, entry.selector, "lk7")) return index;
+fn entryOf(selector: []const u8) usize {
+    for (desktop.onboarding.catalog.entries, 0..) |entry, index| if (std.mem.eql(u8, entry.selector, selector)) return index;
     unreachable;
 }
