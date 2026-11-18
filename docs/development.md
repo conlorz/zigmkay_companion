@@ -225,8 +225,8 @@ DVUI owns its SDL3 backend and FreeType dependency; the application consumes its
 exported `dvui_sdl3` and `sdl3` modules. ztray owns the native menu/tray compilation
 and framework linkage. Their Zig 0.17 build scripts run directly, without a local
 wrapper, hidden source manifest or patches to cached dependencies.
-The ztray pin uses the immutable head of its
-[Zig 0.17 upstream PR](https://github.com/StaffinityAI/ztray/pull/2), pending merge.
+The ztray pin is the merge commit of its
+[Zig 0.17 upstream PR](https://github.com/StaffinityAI/ztray/pull/2) on StaffinityAI/ztray.
 
 Native CI assembles macOS and Windows applications and exercises relocated
 firmware builds and practice without keyboard access. macOS acceptance denies
