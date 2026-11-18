@@ -148,8 +148,9 @@ device offline"). Tutor guidance keeps its amber target and cyan hold fills.
 ## Secondary screens (5–10)
 
 Combos, Encoders, Callbacks and Open / Export open as centered modal drawers
-on a dimmed editor, 900 wide with 28 padding, with a title, one sentence of
-explanation, the content and a footer with the primary action on the right.
+on a dimmed editor, 900 to 960 wide with 28 padding, with a title, one
+sentence of explanation, the content and a footer with the primary action on
+the right.
 Encoder actions are labeled clockwise or counter-clockwise only where the
 board definition says so; other slots read "Action slot N". Build and Flash
 activity opens from Details below the status row. My Keyboards replaces the
@@ -208,13 +209,43 @@ its layout menu and automatic saving, the Export Zig source sheet, My
 Keyboards with hardware and layout cards, the first-launch entry cards, the
 catalog page, New layout with its preview, and the Git import comparison.
 
+Implemented (2026-11-18, screens 5–7 and 9): Combos, Encoders and Callbacks
+as centered sheets with a title, one sentence of explanation and a footer
+with the primary action on the right. Combos list each combo as keycaps with
+its layer and edit the selected one with a live preview, a clickable
+keyboard, key lists, a layer picker and a timeout. The shared action form
+uses a segmented behaviour control, Tap and Hold cards, modifier toggles in
+host order and "+" buttons for optional parts. Encoders show numbered action
+slots as cards. Callbacks show one card per source with its IDs and the
+Check mirror, Edit externally and Refresh snapshot actions. The Build and
+Flash activity has a state line, a Build › Flash › Reconnect tracker and a
+log box; the flash panel uses the editor theme. Status colors come from the
+theme's `danger`, `success` and `warning` tokens (light: `#DC2626`,
+`#15803D`, `#B45309`), and onboarding pages are centered in windows wider
+than the canvas.
+
 Open: the inspector body (Behaviour label, Tap and Hold cards, category chips
-and result rows as drawn) and the secondary screens 5–7 and 9 still use their
-earlier layout. Copying an outside project into the collection has no control
-on My Keyboards yet. Boards without a spatial layout are drawn linearly, and
-revision transfers still match by key index. Compare native
-screenshots against these mockups when changing them:
-`--offline-status-frames 24` renders editor scenes (scene 2 shows the export
-sheet, scene 3 the layout menu) and `--offline-onboarding-frames 24` renders
-My Keyboards, the catalog, New layout and the import comparison offscreen to
-`.zig-cache/` without capturing the desktop.
+and result rows as drawn) still uses its earlier layout. Encoder slots are
+numbered because board definitions do not name knobs or directions yet; the
+flash tracker shows three steps because the toolbar only knows whether a
+build or a flash is running. Copying an outside project into the collection
+has no control on My Keyboards yet. Boards without a spatial layout are drawn
+linearly, and revision transfers still match by key index.
+
+Compare screenshots against these mockups when changing them. Every fixture
+below writes BMP files to `.zig-cache/` without capturing the desktop:
+
+- `--offline-status-frames 24` renders editor scenes: scene 2 shows the
+  export sheet, scene 3 the layout menu and the flash panel of a failed
+  build, scene 4 the Build and Flash activity.
+- `--offline-drawers-frames 24` renders the Combos, Callbacks and Encoders
+  sheets, each dark and then light, to `.zig-cache/editor-drawers/`.
+- `--offline-onboarding-frames 24` renders first launch, My Keyboards, the
+  catalog, New layout, the import source and the import comparison.
+
+The software renderer of the offline modes draws text without blending, so
+glyph boxes show on light and colored surfaces. The `--native-status-frames`,
+`--native-drawers-frames` and `--native-onboarding-frames` variants render
+the same scenes with the platform renderer in a hidden window (the
+onboarding variant draws each page twice dark, then twice light). They need
+a native video driver rather than `SDL_VIDEODRIVER=dummy`.
