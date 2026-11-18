@@ -128,12 +128,7 @@ fn candidateFiles(a: std.mem.Allocator, io: std.Io, root: std.Io.Dir) ![]const [
     var result: std.ArrayList([]const u8) = .empty;
     var total: usize = 0;
     for (files) |file| {
-        const portable = try a.dupe(u8, file.path);
-        if (@import("builtin").os.tag == .windows) {
-            for (portable) |*byte| {
-                if (byte.* == '\\') byte.* = '/';
-            }
-        }
+        const portable = file.path;
         if (!p.pathValid(portable)) continue;
         const bytes = try root.readFileAlloc(
             io,

@@ -1,5 +1,7 @@
 //! Deterministic traversal only; callers own exclusions and digest formats.
 const std = @import("std");
+/// `path` is relative to the root and always uses `/`, so the sorted order and
+/// any digest over it are the same on every platform.
 pub const Entry = struct { path: []const u8, kind: std.Io.File.Kind };
 
 pub const Policy = struct {
@@ -48,8 +50,11 @@ pub fn collect(gpa: std.mem.Allocator, io: std.Io, root: std.Io.Dir, policy: Pol
             continue;
         };
         if (item.name.len > std.Io.Dir.max_name_bytes) return error.InvalidSourceName;
-        const path = try std.fs.path.join(gpa, &.{ frame.prefix, item.name });
-        const name = std.fs.path.basename(path);
+        const path = if (frame.prefix.len == 0)
+            try gpa.dupe(u8, item.name)
+        else
+            try std.fmt.allocPrint(gpa, "{s}/{s}", .{ frame.prefix, item.name });
+        const name = item.name;
         if (policy.excluded(path, name, item.kind)) {
             gpa.free(path);
             continue;
