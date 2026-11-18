@@ -10,7 +10,7 @@ const Compile = std.Build.Step.Compile;
 pub const test_roots = [_][]const u8{
     "tests/desktop_vectors.zig",
     "src/platform/window_placement.zig",
-    "src/desktop/tray_icon.zig",
+    "src/desktop/application_icons.zig",
     "src/platform/events.zig",
     "tests/editor_frame.zig",
     "src/desktop/icon_resources.zig",
@@ -41,7 +41,7 @@ pub fn add(s: *tests.Suite, test_fixtures: tests.Fixtures) *Compile {
 
     _ = s.unit(step, .desktop, "tests/desktop_vectors.zig", g.vector_test_deps);
     _ = s.add(step, .desktop, g.placement);
-    _ = s.unit(step, .desktop, "src/desktop/tray_icon.zig", g.tray_icon_deps);
+    _ = s.add(step, .desktop, g.application_icons);
     _ = s.add(step, .desktop, g.events);
     tests.headless(s.unit(step, .desktop, "tests/editor_frame.zig", g.editor_frame_test_deps));
     _ = s.add(step, .desktop, g.icon_resources);
@@ -60,6 +60,8 @@ pub fn add(s: *tests.Suite, test_fixtures: tests.Fixtures) *Compile {
     }
 
     const app = b.addExecutable(.{ .name = "zigmkay-companion", .root_module = mods.root("src/app/main.zig", g.app_deps) });
+    if (s.cfg.target.result.os.tag == .windows)
+        app.root_module.addWin32ResourceFile(.{ .file = g.icon_files.path(b, "application.rc") });
     s.steps.check.dependOn(&app.step);
     for (fixtures) |fixture| step.dependOn(&tests.addGuiFixture(b, app, &.{ fixture[0], fixture[1] }).step);
 

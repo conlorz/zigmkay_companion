@@ -101,7 +101,7 @@ fn probe(gpa: std.mem.Allocator, io: std.Io) !void {
     try ztray.setTrayMenu(gpa, menu);
     ztray.pumpEvents();
     _ = ztray.pollTrayActionId();
-    var retained_tray = native_tray.NativeTray.init(.{ .allocator = gpa }, true);
+    var retained_tray = native_tray.NativeTray.init(.{ .allocator = gpa, .io = io }, true);
     defer retained_tray.deinit();
     retained_tray.update(.{});
     _ = retained_tray.poll();

@@ -24,8 +24,17 @@ pub fn add(s: *tests.Suite, deps: Deps, app: *Compile, bootsel: ?*Compile) void 
     }
     if (b.graph.needed_lazy_dependencies.count() != 0) return;
 
-    const assembler = b.addExecutable(.{ .name = "assemble-application", .root_module = s.mods.root("tools/assemble_application.zig", s.mods.core.assembler_deps) });
+    const assembler = b.addExecutable(.{ .name = "assemble-application", .root_module = s.mods.root("tools/assemble_application.zig", s.mods.core.jobs_only) });
     assembler.root_module.addOptions("bundle-pins", pins(b, cfg.revision));
+    const icons = s.mods.gui.?.icon_files;
+    switch (os) {
+        .macos => assembler.root_module.addAnonymousImport("application-icns", .{ .root_source_file = icons.path(b, "Zigmkay.icns") }),
+        .linux => {
+            assembler.root_module.addAnonymousImport("application-png", .{ .root_source_file = icons.path(b, "application.png") });
+            assembler.root_module.addAnonymousImport("application-svg", .{ .root_source_file = b.path("packaging/icons/zigmkay.svg") });
+        },
+        else => {},
+    }
     const assemble = b.addRunArtifact(assembler);
     assemble.has_side_effects = true;
     assemble.addDirectoryArg2(b.path("."), .{ .make_absolute = true });

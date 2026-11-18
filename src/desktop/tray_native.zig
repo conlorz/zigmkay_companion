@@ -2,18 +2,25 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ztray = @import("ztray");
+const icons = @import("application-icons");
+const macos = @import("tray_macos.zig");
 const lifecycle = @import("tray-lifecycle");
 const Action = lifecycle.Action;
 const MenuState = lifecycle.MenuState;
 
 pub const Native = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
 
     pub fn install(self: Native) !void {
-        try ztray.installTrayIcon(self.allocator, .{
-            .tooltip = "Zigmkay is running",
-            .icon_png = &@import("tray_icon.zig").png,
-        });
+        switch (builtin.os.tag) {
+            .macos => try macos.install(icons.tray_template_png),
+            .windows => try @import("tray_windows.zig").install(self.allocator, self.io, icons.tray_ico),
+            else => try ztray.installTrayIcon(self.allocator, .{
+                .tooltip = "Zigmkay is running",
+                .icon_png = icons.tray_png,
+            }),
+        }
     }
 
     pub fn menu(self: Native, state: MenuState) !void {
@@ -48,17 +55,21 @@ pub const Native = struct {
             .separator,
             .{ .action = .{ .title = "Quit Zigmkay", .action_id = @backingInt(Action.quit) } },
         };
-        try ztray.setTrayMenu(self.allocator, .{ .title = "Zigmkay", .items = &items });
+        if (builtin.os.tag == .macos)
+            try macos.setMenu(self.allocator, &items)
+        else
+            try ztray.setTrayMenu(self.allocator, .{ .title = "Zigmkay", .items = &items });
     }
 
     pub fn poll(_: Native) ?Action {
-        // SDL already pumps AppKit/Win32. A second pump can consume SDL events.
+        if (builtin.os.tag == .macos) return std.enums.fromInt(Action, macos.poll() orelse return null);
+        // SDL already pumps Win32. A second pump can consume SDL events.
         if (builtin.os.tag == .linux) ztray.pumpEvents();
         return ztray.pollTrayAction(Action);
     }
 
     pub fn shutdown(_: Native) void {
-        ztray.shutdownTray();
+        if (builtin.os.tag == .macos) macos.shutdown() else ztray.shutdownTray();
     }
 };
 

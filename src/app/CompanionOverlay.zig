@@ -9,6 +9,7 @@ const companion_window = @import("companion-window");
 const editor_fonts = @import("editor-fonts");
 const App = @import("App.zig");
 const Tutor = @import("Tutor.zig");
+const window_icon = @import("window_icon.zig");
 
 /// SDL window id of the native companion window.
 window: ?u32 = null,
@@ -43,6 +44,7 @@ pub fn update(app: *App, board: *const boards.OwnedBoard, practice: Tutor.Frame)
     app.native.init_opts_save.?.transparent = parent_transparent;
     defer child.deinit();
     const self = &app.companion;
+    const previous_window = self.window;
     self.window = switch (child.inner) {
         .os => |active| Backend.c.SDL_GetWindowID(active.backend.window),
         .floating => null,
@@ -52,7 +54,10 @@ pub fn update(app: *App, board: *const boards.OwnedBoard, practice: Tutor.Frame)
     if (app.mode.is(.companion) and (dvui.tagGet("companion.open_editor") != null or dvui.tagGet("companion.overlay") != null))
         return error.InteractiveCompanionControl;
     switch (child.inner) {
-        .os => |active| applyMode(app, active.backend.window),
+        .os => |active| {
+            if (previous_window != self.window) window_icon.apply(active.backend.window);
+            applyMode(app, active.backend.window);
+        },
         .floating => {
             self.view.unavailable = self.view.overlay;
             if (app.frame_limit != null) self.view.overlay = false else app.life.companion_visible = false;

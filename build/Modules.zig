@@ -34,8 +34,6 @@ pub const Core = struct {
     release_options: *std.Build.Step.Options,
     bootsel_policy: *Module,
     bootsel_tool: []const Import,
-    /// `companion-jobs` and the PNG icon as `application-icon`.
-    assembler_deps: []const Import,
     flash_controller: *Module,
     tray_lifecycle: *Module,
     flash_presenter: *Module,
@@ -146,7 +144,8 @@ pub const Gui = struct {
     audit_options: *std.Build.Step.Options,
 
     vector_test_deps: []const Import,
-    tray_icon_deps: []const Import,
+    application_icons: *Module,
+    icon_files: std.Build.LazyPath,
     key_renderer_deps: []const Import,
     dependency_smoke_deps: []const Import,
     physical_smoke_deps: []const Import,
@@ -195,10 +194,6 @@ fn initCore(b: *std.Build, cfg: Config, deps: Deps) Core {
         .release_options = release_options,
         .bootsel_policy = bootsel_policy,
         .bootsel_tool = dupe(b, &.{ .{ .name = "bootsel-policy", .module = bootsel_policy }, .{ .name = "bootsel-native", .module = bootsel_native } }),
-        .assembler_deps = dupe(b, &.{
-            .{ .name = "companion-jobs", .module = jobs },
-            .{ .name = "application-icon", .module = b.createModule(.{ .root_source_file = b.path("src/desktop/tray_icon.zig") }) },
-        }),
         .flash_controller = flash_controller,
         .tray_lifecycle = b.createModule(.{ .root_source_file = b.path("src/desktop/tray_lifecycle.zig"), .target = cfg.target, .optimize = cfg.optimize }),
         .flash_presenter = b.createModule(.{ .root_source_file = b.path("src/desktop/flash_presenter.zig"), .target = cfg.target, .optimize = cfg.optimize, .imports = dupe(b, &.{.{ .name = "flash-controller", .module = flash_controller }}) }),
@@ -402,7 +397,27 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
     const sdl = backend.import_table.get("sdl3-c").?;
     const icons = deps.icons.?.module("icons");
     const svg2tvg = deps.svg2tvg.?.module("svg2tvg");
+    const icon_generator = b.addExecutable(.{
+        .name = "generate-application-icons",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/generate_application_icons.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "svg2tvg", .module = svg2tvg }},
+        }),
+    });
+    const generate_icons = b.addRunArtifact(icon_generator);
+    generate_icons.addFileArg(b.path("packaging/icons/zigmkay.svg"));
+    const icon_files = generate_icons.addOutputDirectoryArg("icons");
     const dvui_only = dupe(b, &.{.{ .name = "dvui", .module = dvui }});
+    const application_icons = b.createModule(.{
+        .root_source_file = b.path("src/desktop/application_icons.zig"),
+        .target = t,
+        .optimize = o,
+        .imports = dvui_only,
+    });
+    for ([_][]const u8{ "tray.png", "tray-template.png", "tray.ico", "window.png", "window@2x.png" }) |name|
+        application_icons.addAnonymousImport(name, .{ .root_source_file = icon_files.path(b, name) });
     const sdl_only = dupe(b, &.{.{ .name = "sdl3-c", .module = sdl }});
     const placement = b.createModule(.{ .root_source_file = b.path("src/platform/window_placement.zig"), .target = t, .imports = sdl_only });
     const folder_dialog = b.createModule(.{ .root_source_file = b.path("src/platform/folder_dialog.zig"), .target = t, .imports = sdl_only });
@@ -431,6 +446,7 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
     const native_tray = b.createModule(.{ .root_source_file = b.path("src/desktop/tray_native.zig"), .target = t, .imports = dupe(b, &.{
         .{ .name = "ztray", .module = tray },
         .{ .name = "tray-lifecycle", .module = core.tray_lifecycle },
+        .{ .name = "application-icons", .module = application_icons },
     }) });
     const events = b.createModule(.{ .root_source_file = b.path("src/platform/events.zig"), .target = t, .imports = dupe(b, &.{
         .{ .name = "dvui", .module = dvui },
@@ -545,7 +561,8 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
         .companion_window = companion_window,
         .audit_options = audit_options,
         .vector_test_deps = dupe(b, &.{ .{ .name = "svg2tvg", .module = svg2tvg }, .{ .name = "icons", .module = icons } }),
-        .tray_icon_deps = dvui_only,
+        .application_icons = application_icons,
+        .icon_files = icon_files,
         .key_renderer_deps = dupe(b, &.{
             .{ .name = "dvui", .module = dvui },
             .{ .name = "editor-fonts", .module = fonts },
@@ -603,6 +620,7 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
             .{ .name = "flash-ui", .module = flash_ui },
             .{ .name = "app-paths", .module = app_paths },
             .{ .name = "native-tray", .module = native_tray },
+            .{ .name = "application-icons", .module = application_icons },
             .{ .name = "companion-ui", .module = companion_ui },
             .{ .name = "companion-window", .module = companion_window },
             .{ .name = "onboarding-ui", .module = onboarding_ui },

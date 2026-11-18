@@ -20,6 +20,7 @@ const tray_backend = @import("native-tray");
 const native_events = @import("native-events");
 const editor_fonts = @import("editor-fonts");
 const editor_ui = @import("editor-ui");
+const window_icon = @import("window_icon.zig");
 
 const Captions = @import("Captions.zig");
 const CompanionOverlay = @import("CompanionOverlay.zig");
@@ -156,6 +157,7 @@ pub fn init(app: *App, process: std.process.Init, mode: cli.Mode) !void {
     errdefer if (app.source) |*source| source.deinit();
     app.captions = try app.captionsFor(&app.model, "Offline launch fixture");
     errdefer app.captions.deinit();
+    if (builtin.os.tag == .linux) _ = Backend.c.SDL_SetHint(Backend.c.SDL_HINT_APP_ID, "zigmkay");
     app.native = try Backend.initWindow(.{
         .io = io,
         .size = if (frame_limit != null) .{ .w = 1536, .h = 1024 } else .{
@@ -169,9 +171,10 @@ pub fn init(app: *App, process: std.process.Init, mode: cli.Mode) !void {
         .persist_window_geometry = false,
     });
     errdefer app.native.deinit();
+    window_icon.apply(app.native.window);
     app.window = try dvui.Window.init(@src(), gpa, app.native.backend(), .{});
     errdefer app.window.deinit();
-    app.tray = tray_backend.NativeTray.init(.{ .allocator = gpa }, frame_limit == null or mode.is(.native_tray));
+    app.tray = tray_backend.NativeTray.init(.{ .allocator = gpa, .io = io }, frame_limit == null or mode.is(.native_tray));
     errdefer app.tray.deinit();
     if (mode.is(.native_tray) and !app.tray.installed) return error.NativeTrayUnavailable;
     if (mode.background() and !app.tray.installed) return error.BackgroundTrayUnavailable;

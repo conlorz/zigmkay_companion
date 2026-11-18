@@ -3,7 +3,6 @@ const std = @import("std");
 const jobs = @import("companion-jobs");
 const pins = @import("bundle-pins");
 const builtin = @import("builtin");
-const icon = @import("application-icon");
 // The runtime closure comes from `build/runtime.zig` through `bundle-pins`.
 const runtime_source_root = pins.runtime_source_root;
 const runtime_closure = pins.runtime_closure;
@@ -156,15 +155,25 @@ pub fn main(init: std.process.Init) !void {
         .macos => {
             try std.Io.Dir.cwd().copyFile(args[5], .cwd(), try std.fs.path.join(a, &.{ args[4], "Contents/MacOS/zigmkay-companion" }), init.io, .{ .make_path = true });
             const numeric_version = pins.application_version[0 .. std.mem.indexOfScalar(u8, pins.application_version, '-') orelse pins.application_version.len];
-            const plist = try std.fmt.allocPrint(a, "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>zigmkay-companion</string><key>CFBundleIdentifier</key><string>org.zigmkay.companion</string><key>CFBundleName</key><string>Zigmkay</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{s}</string><key>CFBundleVersion</key><string>{s}</string><key>ZigmkayVersion</key><string>{s}</string><key>LSMinimumSystemVersion</key><string>15.0</string><key>ZigmkayRevision</key><string>{s}</string><key>ZigmkayArchitecture</key><string>{s}</string></dict></plist>", .{ numeric_version, numeric_version, pins.application_version, pins.source_revision, @tagName(builtin.cpu.arch) });
+            const plist = try std.fmt.allocPrint(a, "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>zigmkay-companion</string><key>CFBundleIdentifier</key><string>org.zigmkay.companion</string><key>CFBundleName</key><string>Zigmkay</string><key>CFBundleIconFile</key><string>Zigmkay.icns</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>{s}</string><key>CFBundleVersion</key><string>{s}</string><key>ZigmkayVersion</key><string>{s}</string><key>LSMinimumSystemVersion</key><string>15.0</string><key>ZigmkayRevision</key><string>{s}</string><key>ZigmkayArchitecture</key><string>{s}</string></dict></plist>", .{ numeric_version, numeric_version, pins.application_version, pins.source_revision, @tagName(builtin.cpu.arch) });
             try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = try std.fs.path.join(a, &.{ args[4], "Contents/Info.plist" }), .data = plist });
+            try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = try std.fs.path.join(a, &.{ resources, "Zigmkay.icns" }), .data = @embedFile("application-icns") });
         },
         .windows => try jobs.bundle_payload.pack(a, init.io, args[5], resources, try std.fs.path.join(a, &.{ args[4], "Zigmkay.exe" })),
         .linux => {
             try std.Io.Dir.cwd().copyFile(args[5], .cwd(), try std.fs.path.join(a, &.{ args[4], "usr/bin/zigmkay-companion" }), init.io, .{ .make_path = true });
             try std.Io.Dir.cwd().copyFile(args[8], .cwd(), try std.fs.path.join(a, &.{ args[4], "AppRun" }), init.io, .{});
             try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = try std.fs.path.join(a, &.{ args[4], "zigmkay.desktop" }), .data = "[Desktop Entry]\nType=Application\nName=Zigmkay (unsigned preview)\nExec=zigmkay-companion\nIcon=zigmkay\nCategories=Utility;Development;\nTerminal=false\n" });
-            try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = try std.fs.path.join(a, &.{ args[4], "zigmkay.png" }), .data = &icon.png });
+            const app_dir = try std.Io.Dir.cwd().openDir(init.io, args[4], .{});
+            defer app_dir.close(init.io);
+            const png = @embedFile("application-png");
+            try app_dir.writeFile(init.io, .{ .sub_path = "zigmkay.png", .data = png });
+            try app_dir.writeFile(init.io, .{ .sub_path = ".DirIcon", .data = png });
+            const theme = "usr/share/icons/hicolor/";
+            try app_dir.createDirPath(init.io, theme ++ "scalable/apps");
+            try app_dir.createDirPath(init.io, theme ++ "256x256/apps");
+            try app_dir.writeFile(init.io, .{ .sub_path = theme ++ "scalable/apps/zigmkay.svg", .data = @embedFile("application-svg") });
+            try app_dir.writeFile(init.io, .{ .sub_path = theme ++ "256x256/apps/zigmkay.png", .data = png });
             try assembly.copy(try std.fs.path.join(a, &.{ repository, "packaging/linux/70-zigmkay.rules" }), "70-zigmkay.rules");
         },
         else => unreachable,
