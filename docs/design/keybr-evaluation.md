@@ -207,7 +207,8 @@ Commits on `companion-next`:
    scenes
 3. `c6dff2f` *Document the keybr evaluation and adaptive key lessons*
 4. `79199c3` *Block unwanted pseudo-words and forecast runs to the target*
-5. *Name the next adaptive letter in the rundown*
+5. `9248c64` *Name the next adaptive letter in the rundown*
+6. *Record adaptive practice limitations and validation*
 
 ### Pseudo-words: `src/desktop/practice_phonetic.zig`
 
@@ -338,6 +339,7 @@ All offline:
 - `zig fmt --check build src tools tests`
 - `zig build check test`
 - `zig build test-practice -Donly=practice`
+- `zig build test-desktop -Ddesktop` (offline GUI fixtures)
 - `zig build check -Ddesktop`: the new UI compiles. Its only failure at the
   time came from another thread's in-progress changes, which
   `tools/desktop_physical_smoke.zig` exposed.
@@ -352,6 +354,22 @@ New tests cover:
 - history aggregation across cohorts of one practice, excluding stopped runs.
 
 No human typing trial has validated the constants yet.
+
+### Known limitations
+
+- **Older builds.** A build without the adaptive stage cannot decode records
+  whose stage is `adaptive`. It reports them as rejected history and leaves
+  them unchanged, as it does for other unknown records.
+- **Target speed.** The target is not saved yet. A new editor session starts
+  at 35 WPM.
+- **History refresh cost.** Every refresh decodes the timing payloads of up to
+  60 more runs to build the letter model. This happens on the background
+  worker, alongside the existing progress summary.
+- **Stale estimates.** The plan uses the newest *loaded* history. Pressing
+  **New exercise** before the just-finished run's save and refresh complete
+  plans from the previous estimates.
+- **Letters only.** Unlocking is a contiguous prefix of the layout's letter
+  order, and adaptive lessons contain lowercase letters only.
 
 ## Phased plan
 
