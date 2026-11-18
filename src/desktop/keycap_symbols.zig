@@ -282,7 +282,7 @@ fn isKeyboardGlyph(value: u21) bool {
 
 test "symbols round trip through their private use code points" {
     inline for (@typeInfo(Symbol).@"enum".field_values) |value| {
-        const symbol: Symbol = @enumFromInt(value);
+        const symbol: Symbol = @fromBackingInt(@intCast(value));
         try std.testing.expectEqual(symbol, Symbol.fromCodepoint(symbol.codepoint()).?);
         const decoded = try std.unicode.utf8Decode(symbol.text());
         try std.testing.expectEqual(symbol.codepoint(), decoded);
