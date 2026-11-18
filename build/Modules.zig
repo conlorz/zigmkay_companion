@@ -439,6 +439,7 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
     }) });
     const flash_ui = b.createModule(.{ .root_source_file = b.path("src/desktop/flash_ui.zig"), .target = t, .imports = dupe(b, &.{
         .{ .name = "dvui", .module = dvui },
+        .{ .name = "editor-ui", .module = ui },
         .{ .name = "flash-presenter", .module = core.flash_presenter },
     }) });
     const tray = deps.ztray.?.module("ztray");
