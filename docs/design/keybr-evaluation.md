@@ -205,7 +205,8 @@ Commits on `companion-next`:
 2. `002d777` *Offer adaptive key lessons from per-letter history*: the
    curriculum stage, history model, tutor wiring, Lessons panel and gallery
    scenes
-3. *Document the keybr evaluation and adaptive key lessons*
+3. `c6dff2f` *Document the keybr evaluation and adaptive key lessons*
+4. *Block unwanted pseudo-words and forecast runs to the target*
 
 ### Pseudo-words: `src/desktop/practice_phonetic.zig`
 
@@ -224,6 +225,8 @@ Commits on `companion-next`:
 - **Focus.** Up to sixteen candidates are drawn until one contains the focus
   letter, ends naturally and differs from the previous word. Otherwise a word
   starting with the focus letter guarantees coverage.
+- **Blocklist.** A short first-party list of whole words is never offered,
+  because letter models can assemble profanity from harmless vocabulary.
 - **Differences from keybr:**
   - lower model order;
   - our own small corpus, unweighted;
@@ -248,6 +251,14 @@ Commits on `companion-next`:
   35), at five characters per word.
 - **Accuracy matters**, unlike keybr: a letter whose smoothed miss rate is above
   5% is neither *confident* nor *reached*.
+- **Forecast.**
+  - A least-squares line through a letter's newest ten smoothed speeds
+    estimates how many more runs it needs to reach the target.
+  - The forecast needs at least four runs, an upward slope and r² ≥ 0.5, and
+    it is hidden beyond 50 runs.
+  - The Lessons panel shows the forecast for the focused letter.
+  - keybr fits higher-degree polynomials over a detected session; this is a
+    simpler independent choice.
 - **Evidence.**
   - The model uses the newest 60 scored, completed runs of the same *practice*:
     board behavior, input mapping, OS/draft source, English family and
@@ -339,21 +350,20 @@ No human typing trial has validated the constants yet.
 
 ## Phased plan
 
-1. **Phase 1, done:** adaptive letter stage, pseudo-words, per-letter
-   confidence, target speed, history model, UI, gallery scene, documentation.
+1. **Phase 1, done:** adaptive letter stage, pseudo-words with a blocklist,
+   per-letter confidence and forecast, target speed, history model, UI,
+   gallery scenes, documentation.
 2. **Phase 2, polish (small):**
    - Persist the target speed in preferences.
    - Announce "new letter unlocked" in the rundown.
    - Show per-letter confidence in Progress and the rundown heatmap.
    - Offer a keyboard-order option that unlocks home-row letters first, using
      the existing `KeyMetadata.home_row` from project geometry.
-   - Add a first-party blocklist check for pseudo-words.
 3. **Phase 3, zigmkay-specific adaptivity (medium):**
    - Extend adaptive unlocking from letters to Shift outputs, layer outputs and
      modifier families, using the existing route proofs. This is where zigmkay
      can surpass keybr: unlock symbols on layer 1 only after the base letters
      are fluent.
-   - Add a learning-rate forecast from our own regression over smoothed speeds.
 4. **Phase 4, content (needs a license review):**
    - Train the model on a larger, license-clean English word-frequency list,
      weighted by frequency.

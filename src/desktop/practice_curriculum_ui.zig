@@ -274,10 +274,16 @@ fn drawAdaptive(
     const unlocked = available[0..context.alphabet];
     const focus = unlocked[context.family];
     var focus_bytes: [4]u8 = undefined;
-    const title = try std.fmt.allocPrint(arena, "{d} of {d} letters unlocked · focus {s}", .{
+    const runs = owner.adaptive_keys.get(focus).forecast(target_ms) orelse 0;
+    const forecast = if (runs == 0)
+        ""
+    else
+        try std.fmt.allocPrint(arena, " · about {d} more run{s} to target at this pace", .{ runs, if (runs == 1) "" else "s" });
+    const title = try std.fmt.allocPrint(arena, "{d} of {d} letters unlocked · focus {s}{s}", .{
         unlocked.len,
         available.len,
         desktop.practice_view.glyph(focus, true, &focus_bytes),
+        forecast,
     });
     presentation.label(title, .{ .x = x, .y = y + 140, .w = w, .h = 24 }, 14, theme.muted, null);
     const per_row: usize = @max(1, @min(13, @as(usize, @intFromFloat(w / 42))));
