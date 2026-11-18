@@ -191,7 +191,8 @@ linear fit over up to ten runs; it is hidden when the trend is flat, noisy or
 more than 50 runs away.
 
 The plan is chosen when a lesson starts, including **New exercise**, and is
-frozen with the run. Opening Lessons shows the plan that the next start will
+frozen with the run. After a scored adaptive run, the rundown names the letter
+that the next lesson unlocks or focuses once the run's history has loaded. Opening Lessons shows the plan that the next start will
 use. These are tutor policy values inspired by
 [keybr.com](https://www.keybr.com/); the [evaluation](design/keybr-evaluation.md)
 records the license reasoning and the clean-room design. No keybr code or data

@@ -302,6 +302,20 @@ fn curriculum(app: *App, scene: usize, labels: *const Labels, now_us: u64) !void
             try resize(app, 1440, 1050);
         },
         20 => try resize(app, 820, 700),
+        21 => {
+            view.curriculum_open = false;
+            practice.config = .{ .level = 0, .curriculum = .{ .version = 1, .stage = .adaptive } };
+            _ = try practice.start(true, null, now_us);
+            try resize(app, 1440, 1050);
+        },
+        22 => {
+            try typeReference(&practice.session, now_us, 150_000);
+            // The just-completed run made its focused letter reach the target.
+            var alphabet: [26]u8 = undefined;
+            const learned = desktop.practice_curriculum.letters(labels.practiceLabels(), &alphabet);
+            const focus = learned[practice.config.curriculum.family];
+            if (app.tutor.history.data.keys) |model| model.keys[focus - 'a'] = .{ .runs = 2, .ms = 300, .best_ms = 300, .miss_runs = 2 };
+        },
         else => {},
     }
 }

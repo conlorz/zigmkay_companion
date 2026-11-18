@@ -206,7 +206,8 @@ Commits on `companion-next`:
    curriculum stage, history model, tutor wiring, Lessons panel and gallery
    scenes
 3. `c6dff2f` *Document the keybr evaluation and adaptive key lessons*
-4. *Block unwanted pseudo-words and forecast runs to the target*
+4. `79199c3` *Block unwanted pseudo-words and forecast runs to the target*
+5. *Name the next adaptive letter in the rundown*
 
 ### Pseudo-words: `src/desktop/practice_phonetic.zig`
 
@@ -321,9 +322,13 @@ Commits on `companion-next`:
   - The target speed lasts for the editor session, like the daily goal choice.
 - **Review lessons** reuse the adaptive context with their recall target as
   the focus.
-- **Gallery.** The offline `--native-layout-curriculum-frames 120` gallery
+- **Rundown.** After a scored adaptive run, the coaching line names the
+  letter that the next lesson unlocks or focuses, using the newest loaded
+  estimates.
+- **Gallery.** The offline `--native-layout-curriculum-frames 132` gallery
   adds scene 19 (adaptive, wide) and scene 20 (narrow), with a synthetic
-  letter model.
+  letter model. Scenes 21 and 22 complete an adaptive run and show the
+  rundown's unlock notice.
 - **Samples.** `practice-samples` prints adaptive lessons for 6, 7, 10, 16 and
   26 letters.
 
@@ -336,7 +341,7 @@ All offline:
 - `zig build check -Ddesktop`: the new UI compiles. Its only failure at the
   time came from another thread's in-progress changes, which
   `tools/desktop_physical_smoke.zig` exposed.
-- The offline native gallery (`--native-layout-curriculum-frames 120`) captured
+- The offline native gallery (`--native-layout-curriculum-frames 132`) captured
   the [adaptive panel](../screenshots/typing-practice/adaptive-wide.png).
 
 New tests cover:
@@ -351,11 +356,10 @@ No human typing trial has validated the constants yet.
 ## Phased plan
 
 1. **Phase 1, done:** adaptive letter stage, pseudo-words with a blocklist,
-   per-letter confidence and forecast, target speed, history model, UI,
-   gallery scenes, documentation.
+   per-letter confidence and forecast, target speed, history model, Lessons
+   panel, rundown notice, gallery scenes, documentation.
 2. **Phase 2, polish (small):**
    - Persist the target speed in preferences.
-   - Announce "new letter unlocked" in the rundown.
    - Show per-letter confidence in Progress and the rundown heatmap.
    - Offer a keyboard-order option that unlocks home-row letters first, using
      the existing `KeyMetadata.home_row` from project geometry.
