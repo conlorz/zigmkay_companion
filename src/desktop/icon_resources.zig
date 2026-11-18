@@ -31,6 +31,21 @@ pub const controls = struct {
     pub const expand = lucide.@"chevron-down";
     pub const next = lucide.@"chevron-right";
     pub const search = lucide.search;
+    pub const check = lucide.check;
+    pub const rename = lucide.pencil;
+    pub const export_source = lucide.download;
+    pub const folder = lucide.folder;
+    pub const git = lucide.@"git-branch";
+    pub const saved = lucide.@"circle-check";
+    pub const warning = lucide.@"triangle-alert";
+    pub const info = lucide.info;
+    pub const template = lucide.@"layout-template";
+    pub const blank = lucide.@"square-dashed";
+    pub const back = lucide.@"arrow-left";
+    pub const forward = lucide.@"arrow-right";
+    pub const refresh = lucide.@"refresh-cw";
+    pub const file = lucide.@"file-code";
+    pub const transfer = lucide.@"arrow-left-right";
 };
 const Entry = struct { name: []const u8, bytes: []const u8 };
 

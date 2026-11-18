@@ -21,6 +21,17 @@ pub const Frame = struct {
     paths: paths.Frame = .{},
 };
 
+/// Automatic saving of the open layout. The application saves once the draft
+/// has rested for a moment and the editor is idle.
+pub const Autosave = struct {
+    /// The draft snapshot last seen and when it changed.
+    observed: [32]u8 = @splat(0),
+    changed_ms: u64 = 0,
+    failed: bool = false,
+    /// A layout to open once the current one is saved.
+    queued: ?[4096]u8 = null,
+};
+
 pub const View = struct {
     scroll: dvui.ScrollInfo = .{ .horizontal = .auto },
     toolbar: toolbar.View = .{},
@@ -33,6 +44,7 @@ pub const View = struct {
     encoders: ?desktop.encoder_editor.Session = null,
     callback: callbacks.View = .{},
     paths: paths.View = .{},
+    autosave: Autosave = .{},
     diagnostic: [512]u8 = @splat(0),
 
     pub fn report(self: *View, failure: anyerror) void {
@@ -43,7 +55,14 @@ pub const View = struct {
     }
 };
 
-pub const Result = union(enum) { effect: dispatch.Effect, callback: callbacks.Action, paths: paths.Action };
+/// What the frame asks the application to do. `layout` carries a command of the
+/// layout menu in the editor head.
+pub const Result = union(enum) {
+    effect: dispatch.Effect,
+    callback: callbacks.Action,
+    paths: paths.Action,
+    layout: toolbar.layout_menu.Command,
+};
 
 const none: Result = .{ .effect = .none };
 
@@ -112,6 +131,7 @@ pub fn draw(view: *View, owner: *dispatch.State, model: *desktop.model.Model, fr
     }
     if (modal) |result| return applyModal(view, owner, model, result, stale);
     if (stale or view.modal != .none) return none;
+    if (view.toolbar.command) |command| if (requests.request == null and requests.inspector == null) return .{ .layout = command };
     const effect = if (requests.inspector) |action|
         try owner.inspect(model, action)
     else if (requests.request) |captured|

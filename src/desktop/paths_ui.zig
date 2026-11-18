@@ -1,11 +1,12 @@
-//! Retained project/export drawer. Source and filesystem IO are caller-owned.
+//! The Export Zig source sheet. Project files save automatically; source and
+//! filesystem IO stay with the caller.
 const std = @import("std");
 const dvui = @import("dvui");
 const desktop = @import("desktop-core");
 const project = @import("project");
 const ui = @import("editor-ui");
 
-pub const Kind = enum { choose_project, choose_export, open, open_discard, save, export_zig, restore, overlay, cancel, close };
+pub const Kind = enum { choose_project, choose_export, open, open_discard, save, export_zig, reveal_export, restore, overlay, cancel, close };
 
 pub const Action = struct { snapshot: [32]u8, kind: Kind, project: [4096]u8, exported: [4096]u8 };
 
@@ -22,9 +23,9 @@ pub const View = struct {
 pub const Frame = struct {
     exported: ?[32]u8 = null,
     can_choose: bool = false,
-    recovery_available: bool = false,
-    overlay_available: bool = false,
     busy: bool = false,
+    /// The keyboard and PCB revision of the layout.
+    keyboard: []const u8 = "",
 };
 
 /// Requests `kind` when `clicked`, unless an earlier control already requested one.
@@ -32,65 +33,145 @@ fn offer(result: *?Action, view: *const View, snapshot: [32]u8, clicked: bool, k
     if (clicked and result.* == null) result.* = view.action(snapshot, kind);
 }
 
-/// A button that is grayed out and inert unless `available`.
-fn optionalButton(src: std.builtin.SourceLocation, text: []const u8, available: bool) bool {
-    return dvui.button(src, text, .{ .grayed = !available }, .{}) and available;
-}
+const width: f32 = 900;
+const height: f32 = 560;
 
 pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame, theme: ui.Theme, diagnostic: []const u8) !?Action {
     const captured = try model.id();
-    const window = ui.editDrawer(@src(), theme, 800);
-    defer window.deinit();
-    const size = window.data().rect;
+    const doc = model.document();
+    const sheet = ui.sheet(@src(), theme, width, height, "file.paths");
+    defer sheet.deinit();
     var result: ?Action = null;
-    {
-        const area = dvui.scrollArea(@src(), .{}, .{ .rect = .{ .x = 0, .y = 0, .w = size.w - 36, .h = size.h - 112 } });
-        defer area.deinit();
-        dvui.label(@src(), "Project directory · atomic project and immutable source bundles", .{}, .{});
-        const entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &view.project } }, .{ .expand = .horizontal });
-        entry.deinit();
-        offer(&result, view, captured, optionalButton(@src(), "Choose project folder…", frame.can_choose), .choose_project);
-        offer(&result, view, captured, dvui.button(@src(), "Open", .{}, .{}), .open);
-        const discard = model.dirty() and dvui.button(@src(), "Discard unsaved changes and open", .{}, .{});
-        offer(&result, view, captured, discard, .open_discard);
-        offer(&result, view, captured, dvui.button(@src(), "Save", .{}, .{}), .save);
-        dvui.label(@src(), "Owned export directory · existing different files are preserved", .{}, .{});
-        const exported = dvui.textEntry(@src(), .{ .text = .{ .buffer = &view.exported } }, .{ .expand = .horizontal });
-        exported.deinit();
-        offer(&result, view, captured, optionalButton(@src(), "Choose export folder…", frame.can_choose), .choose_export);
-        offer(&result, view, captured, dvui.button(@src(), "Export Zig", .{}, .{}), .export_zig);
-        try drawAssessment(model, frame, captured);
-        offer(&result, view, captured, optionalButton(@src(), "Separate overlay", frame.overlay_available), .overlay);
-        offer(&result, view, captured, optionalButton(@src(), "Restore recovery draft", frame.recovery_available), .restore);
-        dvui.labelNoFmt(@src(), diagnostic, .{}, .{});
-        if (frame.busy) {
-            dvui.label(@src(), "Project operation in progress · editing invalidates its result", .{}, .{});
-            offer(&result, view, captured, dvui.button(@src(), "Cancel project operation", .{}, .{ .tag = "file.cancel" }), .cancel);
-        }
+    var muted = theme;
+    muted.text = theme.muted;
+    ui.label(theme, "Export Zig source", .{ .x = 28, .y = 26, .w = 600, .h = 30 }, 22);
+    ui.label(muted, "Writes this layout as a firmware keymap folder. Existing different files are kept; nothing is flashed.", .{ .x = 28, .y = 62, .w = 820, .h = 20 }, 14);
+    offer(&result, view, captured, ui.iconButton(theme, ui.control_icons.remove, "", "file.close", .{ .x = width - 58, .y = 22, .w = 30, .h = 30 }, false), .close);
+
+    ui.label(muted, "Layout", .{ .x = 28, .y = 104, .w = 200, .h = 16 }, 12);
+    summaryCard(theme, doc, frame.keyboard);
+
+    ui.label(muted, "Destination folder", .{ .x = 28, .y = 214, .w = 300, .h = 16 }, 12);
+    var field = ui.options(theme, .{ .x = 28, .y = 232, .w = 712, .h = 40 }, 14);
+    field.background = true;
+    field.border = .all(1);
+    field.corners = .all(8);
+    field.padding = .{ .x = 12, .y = 10, .w = 12, .h = 10 };
+    field.tag = "file.export_directory";
+    const entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &view.exported } }, field);
+    entry.deinit();
+    const choose = ui.iconButtonEnabled(theme, ui.control_icons.folder, "Choose…", "file.choose_export", .{ .x = 750, .y = 232, .w = 122, .h = 40 }, false, frame.can_choose);
+    offer(&result, view, captured, choose, .choose_export);
+
+    ui.label(muted, "Checks", .{ .x = 28, .y = 302, .w = 200, .h = 16 }, 12);
+    try drawChecks(theme, doc, frame, captured);
+    if (diagnostic.len != 0) {
+        var failure = theme;
+        failure.text = ui.color(0xF06B73);
+        ui.label(failure, diagnostic, .{ .x = 28, .y = 440, .w = 844, .h = 20 }, 13);
     }
-    const close: dvui.Rect = .{ .x = 0, .y = size.h - 86, .w = 100, .h = 40 };
-    offer(&result, view, captured, ui.button(theme, "Close", "file.close", close), .close);
+
+    const footer = dvui.box(@src(), .{}, .{
+        .rect = .{ .x = 0, .y = height - 92, .w = width, .h = 1 },
+        .background = true,
+        .color_fill = .{ .color = theme.border },
+        .padding = .{},
+        .margin = .{},
+    });
+    footer.deinit();
+    const reveal = ui.iconButtonEnabled(theme, ui.control_icons.open, "Show exported", "file.reveal_export", .{ .x = 28, .y = height - 68, .w = 168, .h = 40 }, false, frame.exported != null);
+    offer(&result, view, captured, reveal, .reveal_export);
+    if (frame.busy) {
+        offer(&result, view, captured, ui.iconButton(theme, null, "Stop", "file.cancel", .{ .x = width - 256, .y = height - 68, .w = 104, .h = 40 }, false), .cancel);
+    } else {
+        offer(&result, view, captured, ui.iconButton(theme, null, "Cancel", "file.dismiss", .{ .x = width - 256, .y = height - 68, .w = 104, .h = 40 }, false), .close);
+    }
+    const exported = ui.iconButtonEnabled(theme, ui.control_icons.export_source, "Export", "file.export", .{ .x = width - 142, .y = height - 68, .w = 114, .h = 40 }, true, !frame.busy);
+    offer(&result, view, captured, exported, .export_zig);
     return result;
 }
 
-/// Draft and export identities, recovery reachability and unreachable layers.
-fn drawAssessment(model: *const desktop.model.Model, frame: Frame, captured: [32]u8) !void {
-    dvui.label(@src(), "Draft snapshot: {s}", .{std.fmt.bytesToHex(captured, .lower)}, .{});
-    if (frame.exported) |id| {
-        const state = if (std.mem.eql(u8, &id, &captured)) "matches draft" else "is stale";
-        dvui.label(@src(), "Export {s}: {s} · device identity requires verification", .{ state, std.fmt.bytesToHex(id, .lower) }, .{});
+/// The layout as one line: its name and what it contains.
+fn summaryCard(theme: ui.Theme, doc: project.Document, keyboard: []const u8) void {
+    const card = dvui.box(@src(), .{}, .{
+        .rect = .{ .x = 28, .y = 122, .w = 844, .h = 64 },
+        .background = true,
+        .color_fill = .{ .color = theme.bg },
+        .color_border = .{ .color = theme.border },
+        .border = .all(1),
+        .corners = .all(10),
+        .padding = .{},
+        .margin = .{},
+    });
+    card.deinit();
+    dvui.icon(@src(), "export.keyboard", ui.control_icons.keyboard, .{}, .{
+        .color_text = .{ .color = ui.layerColor(theme, 0) },
+        .rect = .{ .x = 48, .y = 142, .w = 24, .h = 24 },
+        .padding = .{},
+        .margin = .{},
+    });
+    var bold = theme;
+    bold.text = theme.text;
+    ui.label(bold, doc.name, .{ .x = 88, .y = 133, .w = 760, .h = 20 }, 15);
+    var muted = theme;
+    muted.text = theme.muted;
+    var buffer: [256]u8 = undefined;
+    const detail = std.fmt.bufPrint(&buffer, "{s} · {d} layers · {d} {s} · {s}", .{
+        keyboard,
+        doc.layers.len,
+        doc.combos.len,
+        if (doc.combos.len == 1) "combo" else "combos",
+        if (doc.callbacks.len == 0) "no callbacks" else "callback source attached",
+    }) catch doc.name;
+    ui.label(muted, detail, .{ .x = 88, .y = 157, .w = 760, .h = 18 }, 12);
+}
+
+/// Recovery and layer reachability, and whether the last export is current.
+fn drawChecks(theme: ui.Theme, doc: project.Document, frame: Frame, captured: [32]u8) !void {
+    const advisory = try project.assessment.assess(doc);
+    var unreachable_count: usize = 0;
+    for (doc.layers, 0..) |_, index| {
+        if (!advisory.reachable[index]) unreachable_count += 1;
     }
-    const advisory = try project.assessment.assess(model.document());
-    const summary = .{ advisory.recovery_found, advisory.callbacks_require_review };
-    dvui.label(@src(), "Declarative recovery action reachable: {} · callbacks require review: {}", summary, .{});
-    for (model.document().layers, 0..) |layer, index| {
-        if (!advisory.reachable[index]) dvui.label(
-            @src(),
-            "Layer {s}: no declarative path from Base",
-            .{layer.name},
-            .{ .id_extra = index },
-        );
-    }
+    var buffer: [128]u8 = undefined;
+    const layers = if (unreachable_count == 0)
+        "Every layer reachable from Base"
+    else
+        std.fmt.bufPrint(&buffer, "{d} layers have no declarative path from Base", .{unreachable_count}) catch "Some layers are unreachable";
+    check(theme, 0, advisory.recovery_found, if (advisory.recovery_found) "Recovery combo reachable from Base" else "No declarative recovery action found");
+    check(theme, 1, unreachable_count == 0, layers);
+    if (advisory.callbacks_require_review) check(theme, 2, false, "Callback source needs review before flashing");
+    const state = if (frame.exported) |id|
+        (if (std.mem.eql(u8, &id, &captured)) "Last export matches this layout" else "Last export is older than this layout")
+    else
+        "Not exported in this session";
+    info(theme, if (advisory.callbacks_require_review) 3 else 2, state);
+}
+
+fn check(theme: ui.Theme, row: usize, passed: bool, text: []const u8) void {
+    const y = 322 + @as(f32, @floatFromInt(row)) * 28;
+    const tint = if (passed) ui.color(0x6EC59A) else ui.color(0xF59E0B);
+    dvui.icon(@src(), "export.check", if (passed) ui.control_icons.saved else ui.control_icons.warning, .{}, .{
+        .id_extra = row,
+        .color_text = .{ .color = tint },
+        .rect = .{ .x = 28, .y = y + 2, .w = 16, .h = 16 },
+        .padding = .{},
+        .margin = .{},
+    });
+    ui.label(theme, text, .{ .x = 54, .y = y, .w = 800, .h = 20 }, 14);
+}
+
+fn info(theme: ui.Theme, row: usize, text: []const u8) void {
+    const y = 322 + @as(f32, @floatFromInt(row)) * 28;
+    dvui.icon(@src(), "export.info", ui.control_icons.info, .{}, .{
+        .color_text = .{ .color = theme.muted },
+        .rect = .{ .x = 28, .y = y + 2, .w = 16, .h = 16 },
+        .padding = .{},
+        .margin = .{},
+    });
+    var muted = theme;
+    muted.text = theme.muted;
+    ui.label(muted, text, .{ .x = 54, .y = y, .w = 800, .h = 20 }, 14);
 }
 
 pub fn validate(action: Action, view: View, model: *const desktop.model.Model) !void {

@@ -1,4 +1,4 @@
-//! Background project, source, profile and firmware jobs of the editor.
+//! Background project, source and firmware jobs of the editor.
 //!
 //! At most one job runs at a time. Every job captures the editor generation
 //! when it starts; a result is discarded when the editor moved on since.
@@ -11,6 +11,7 @@ const editor = @import("editor-frame-ui");
 const paths = @import("paths-ui");
 const callbacks = @import("callback-ui");
 const App = @import("App.zig");
+const onboarding_flow = @import("onboarding_flow.zig");
 
 pub const FileJob = struct {
     worker: *desktop.project_worker.Owner,
@@ -18,19 +19,14 @@ pub const FileJob = struct {
     editor_generation: u64,
     /// The close request to finish once the project is saved.
     close: ?desktop.editor_dispatch.Request = null,
+    /// The project path to restore when opening another layout fails.
+    restore: ?[4096]u8 = null,
 };
 
 pub const SourceJob = struct {
     worker: *desktop.source_worker.Owner,
     action: callbacks.Action,
     editor_generation: u64,
-};
-
-pub const ProfileJob = struct {
-    worker: *desktop.profile_switch.Worker,
-    action: desktop.editor_dispatch.Request,
-    editor_generation: u64,
-    previous_path: [4096]u8,
 };
 
 pub const BuildJob = struct {
@@ -42,20 +38,18 @@ pub const BuildJob = struct {
 pub const Jobs = struct {
     file: ?FileJob = null,
     source: ?SourceJob = null,
-    profile: ?ProfileJob = null,
     build: ?BuildJob = null,
     /// Native tutor runner build started from onboarding.
     runner: ?BuildJob = null,
 
     pub fn busy(self: *const Jobs) bool {
-        return self.file != null or self.source != null or self.profile != null or
+        return self.file != null or self.source != null or
             self.build != null or self.runner != null;
     }
 
     pub fn cancel(self: *Jobs) void {
         if (self.file) |job| job.worker.destroy();
         if (self.source) |job| job.worker.destroy();
-        if (self.profile) |job| job.worker.destroy();
         if (self.build) |job| job.worker.destroy();
         if (self.runner) |job| job.worker.destroy();
         self.* = .{};
@@ -144,7 +138,7 @@ fn captureSource(view: *editor.View, model: *desktop.model.Model, action: callba
 
 /// Accepts finished job results. A failed or stale result skips the frame.
 pub fn poll(app: *App) !App.Flow {
-    inline for (.{ pollRunner, pollBuild, pollFile, pollSource, pollProfile }) |pollJob| {
+    inline for (.{ pollRunner, pollBuild, pollFile, pollSource }) |pollJob| {
         const flow = try pollJob(app);
         if (flow != .proceed) return flow;
     }
@@ -216,38 +210,35 @@ fn pollFile(app: *App) !App.Flow {
     const event = job.worker.poll() orelse return .proceed;
     app.jobs.file = null;
     defer job.worker.destroy();
-    var prepared = event.result catch |err| {
-        app.view.report(err);
-        return .next_frame;
-    };
+    var prepared = event.result catch |err| return refuseFile(app, job, err);
     defer prepared.deinit();
-    if (job.editor_generation != app.owner_generation or !std.meta.eql(event.ticket, job.worker.ticket)) {
-        app.view.report(error.StaleProjectAction);
-        return .next_frame;
-    }
-    paths.validateCompletion(job.action, app.view.paths, &app.model) catch |err| {
-        app.view.report(err);
-        return .next_frame;
-    };
+    if (job.editor_generation != app.owner_generation or !std.meta.eql(event.ticket, job.worker.ticket))
+        return refuseFile(app, job, error.StaleProjectAction);
+    paths.validateCompletion(job.action, app.view.paths, &app.model) catch |err| return refuseFile(app, job, err);
     const opens = job.action.kind == .open or job.action.kind == .open_discard;
-    if (opens and app.editorBusy()) {
-        app.view.report(error.PendingEditorRequest);
-        return .next_frame;
-    }
-    _ = prepared.promote(&app.model) catch |err| {
-        app.view.report(err);
-        return .next_frame;
-    };
+    if (opens and app.editorBusy()) return refuseFile(app, job, error.PendingEditorRequest);
+    _ = prepared.promote(&app.model) catch |err| return refuseFile(app, job, err);
     if (opens) app.owner_generation = try std.math.add(u64, app.owner_generation, 1);
     if (opens or job.action.kind == .save) {
+        app.view.autosave.failed = false;
         app.associateProfile(std.mem.sliceTo(&app.view.paths.project, 0));
         app.rememberProject();
+        onboarding_flow.refreshLibrary(app);
     }
     if (prepared.exported) |id| app.exported = id;
     if (job.close) |captured| {
         if (app.owner.savedClose(&app.model, captured)) |_| {} else |err| app.view.report(err);
     }
     return if (app.owner.closed) .stop else .proceed;
+}
+
+/// Reports a failed or stale project operation. A failed save stops automatic
+/// saving until the next edit; a failed open keeps the previous project path.
+fn refuseFile(app: *App, job: FileJob, err: anyerror) App.Flow {
+    if (job.restore) |previous| app.view.paths.project = previous;
+    if (job.action.kind == .save) app.view.autosave.failed = true;
+    app.view.report(err);
+    return .next_frame;
 }
 
 fn pollSource(app: *App) !App.Flow {
@@ -280,43 +271,5 @@ fn pollSource(app: *App) !App.Flow {
         "External source differs · refresh explicitly to accept"
     else
         "External source matches the attached snapshot");
-    return .proceed;
-}
-
-fn pollProfile(app: *App) !App.Flow {
-    const job = app.jobs.profile orelse return .proceed;
-    const event = job.worker.poll() orelse return .proceed;
-    app.jobs.profile = null;
-    defer job.worker.destroy();
-    var prepared = event.result catch |err| {
-        app.view.report(err);
-        return .next_frame;
-    };
-    defer prepared.deinit();
-    if (job.editor_generation != app.owner_generation or !std.meta.eql(event.ticket, job.worker.ticket) or
-        !std.meta.eql(job.previous_path, app.view.paths.project))
-    {
-        app.view.report(error.StaleProfileAction);
-        return .next_frame;
-    }
-    job.action.validate(&app.model) catch |err| {
-        app.view.report(err);
-        return .next_frame;
-    };
-    if (app.editorBusy()) {
-        app.view.report(error.PendingEditorRequest);
-        return .next_frame;
-    }
-    const next_owner = try std.math.add(u64, app.owner_generation, 1);
-    prepared.promote(&app.model) catch |err| {
-        app.view.report(err);
-        return .next_frame;
-    };
-    app.owner_generation = next_owner;
-    const target = job.worker.request.path;
-    app.view.paths.project = @splat(0);
-    @memcpy(app.view.paths.project[0..target.len], target);
-    app.associateProfile(target);
-    if (prepared.existing) app.rememberProject();
     return .proceed;
 }

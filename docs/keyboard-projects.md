@@ -50,11 +50,20 @@ versions are refused. Each child retains the existing single-board/profile
 schema. Move the complete collection to preserve callbacks and import snapshots.
 Standalone projects still open independently.
 
-Choose **Keyboards** in the toolbar for navigation, **Add keyboard**, or **Add
-existing project**. An external project can be explicitly copied into the
-collection; its original files remain untouched. Existing directories are never
-overwritten. Save unsaved edits before switching, or explicitly discard them.
-Switching invalidates old job ownership and draft runner use.
+The editor head reads **Keyboard › Layout**. The keyboard opens My Keyboards;
+the layout opens a menu that lists the other layouts of the same keyboard and
+offers New layout, Duplicate, Rename, Export Zig source and Show in folder.
+Edits save automatically shortly after each change, and Undo and Redo stay
+available. Choosing another layout saves the open one first. A failed save is
+reported in the head and stops automatic saving until the next edit. Switching
+invalidates old job ownership and draft runner use.
+
+My Keyboards groups every known project by hardware: collection members,
+remembered profile projects and the legacy per-profile folders next to the
+collection, such as `projects/eurmac`. They are listed where they are; listing
+never moves or rewrites a project, and unreadable projects stay untouched. An
+external project can be explicitly copied into the collection; its original
+files remain untouched. Existing directories are never overwritten.
 
 New collections receive a `.gitignore` for local locks, caches, exports and
 practice databases. Keep `workspace.zon`, child `project.zon` files, `.sources`

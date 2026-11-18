@@ -36,6 +36,8 @@ pub const State = struct {
     analysis: ?flow.importer.Analysis = null,
     prepared: ?flow.importer.Prepared = null,
     collection: ?p.collection.Loaded = null,
+    /// The layouts of every known keyboard, grouped by hardware.
+    library: ?desktop.library.Library = null,
     root: [4096]u8 = @splat(0),
     location: [4096]u8 = @splat(0),
     source_location: [4096]u8 = @splat(0),
@@ -57,6 +59,12 @@ pub const State = struct {
         if (self.worker) |worker| worker.destroy();
         self.clearImport();
         if (self.collection) |*value| value.deinit();
+        if (self.library) |*value| value.deinit();
+    }
+
+    pub fn replaceLibrary(self: *State, library: desktop.library.Library) void {
+        if (self.library) |*old| old.deinit();
+        self.library = library;
     }
 
     pub fn clearImport(self: *State) void {

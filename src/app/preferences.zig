@@ -6,6 +6,7 @@ const desktop = @import("desktop-core");
 const installed = @import("app-paths");
 const keyboard_onboarding = @import("onboarding-ui");
 const App = @import("App.zig");
+const onboarding_flow = @import("onboarding_flow.zig");
 const workers = @import("workers.zig");
 
 pub fn installedPaths(gpa: std.mem.Allocator, io: std.Io, environment: *const std.process.Environ.Map) !installed.OwnedPaths {
@@ -74,6 +75,7 @@ pub fn loadStartup(app: *App, user_paths: installed.Paths) !void {
         app.view.report(err);
         return;
     };
+    defer onboarding_flow.refreshLibrary(app);
     const path = remembered orelse return;
     defer gpa.free(path);
     try openRemembered(app, path, default_path);

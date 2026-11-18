@@ -1,16 +1,29 @@
-//! Retained editor toolbar over explicit profile inventory and build capabilities.
+//! Retained editor head: the Keyboard › Layout breadcrumb, the work flow and
+//! the document controls, over explicit layout inventory and build capabilities.
 const std = @import("std");
 const dvui = @import("dvui");
 const desktop = @import("desktop-core");
 const ui = @import("editor-ui");
+pub const layout_menu = @import("layout_menu.zig");
 const dispatch = desktop.editor_dispatch;
 
-pub const Profile = struct { id: [8]u8, name: []const u8 };
+/// Where the open layout stands relative to its saved project.
+pub const Save = enum {
+    saved,
+    /// Edited; an automatic save follows shortly.
+    pending,
+    saving,
+    failed,
+    /// Not saved automatically, such as before a project is chosen.
+    manual,
+};
 
 pub const Frame = struct {
-    board_name: []const u8,
+    keyboard_name: []const u8,
     connection: []const u8,
-    profiles: []const Profile,
+    /// The layouts of this keyboard, for the layout menu.
+    layouts: []const layout_menu.Choice = &.{},
+    save: Save = .saved,
     build_status: []const u8 = "",
     can_build: bool = false,
     can_flash: bool = false,
@@ -30,6 +43,14 @@ pub const View = struct {
     details_open: bool = false,
     result_hash: u64 = 0,
     result_until: u64 = 0,
+    /// Whether the layout menu is open.
+    menu_open: bool = false,
+    /// The layout menu command chosen this frame, for the application.
+    command: ?layout_menu.Command = null,
+    /// The layout crumb is a name field while renaming.
+    renaming: bool = false,
+    rename_frames: u8 = 0,
+    rename: [129]u8 = @splat(0),
 };
 
 /// Captures `intent` when `clicked`, unless an earlier control already requested one.
@@ -37,8 +58,8 @@ fn offer(result: *?dispatch.Request, model: *const desktop.model.Model, clicked:
     if (clicked and result.* == null) result.* = try dispatch.Request.capture(model, intent);
 }
 
-/// The top bar follows the order of work: open, build, flash. Document and
-/// view controls sit at the right edge.
+/// The head reads Keyboard › Layout, then the order of work: build, flash.
+/// Saving is automatic; undo, redo and the theme sit at the right edge.
 pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame) !?dispatch.Request {
     const theme = ui.Theme.get(view.light);
     const icons = ui.control_icons;
@@ -46,14 +67,18 @@ pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame) !?disp
     defer box.deinit();
     const width = box.data().contentRect().w;
     var result: ?dispatch.Request = null;
+    view.command = null;
     ui.label(theme, "Zigmkay", .{ .x = 24, .y = 17, .w = 110, .h = 30 }, 23);
-    const keyboards = ui.iconButton(theme, icons.keyboard, frame.board_name, "keyboard.collection", .{ .x = 140, .y = 14, .w = 196, .h = 36 }, false);
+    const keyboards = ui.iconButton(theme, icons.keyboard, frame.keyboard_name, "keyboard.collection", .{ .x = 140, .y = 14, .w = 196, .h = 36 }, false);
     try offer(&result, model, keyboards, .{ .open = .keyboards });
-    // Switching profiles replaces any earlier request.
-    if (try drawProfile(model, frame.profiles, theme)) |id| result = try dispatch.Request.capture(model, .{ .profile = id });
-    const paths = ui.iconButton(theme, icons.open, "Open / Export", "file.paths", .{ .x = 640, .y = 14, .w = 156, .h = 36 }, false);
-    try offer(&result, model, paths, .{ .open = .paths });
-    flowArrow(theme, 800);
+    flowArrow(theme, 340);
+    const crumb: dvui.Rect = .{ .x = 360, .y = 14, .w = 240, .h = 36 };
+    if (view.renaming) {
+        try offer(&result, model, drawRename(view, theme, crumb), .{ .rename_layout = view.rename });
+    } else if (layout_menu.draw(theme, crumb, model.document().name, frame.layouts, undoHint(), &view.menu_open)) |command| {
+        if (command == .rename) startRename(view, model.document().name) else view.command = command;
+    }
+    drawSave(theme, frame.save);
     const build = ui.iconButtonEnabled(theme, icons.build, "Build", "firmware.build", .{ .x = 820, .y = 14, .w = 118, .h = 36 }, true, frame.can_build);
     try offer(&result, model, build, .build);
     flowArrow(theme, 942);
@@ -62,31 +87,77 @@ pub fn draw(view: *View, model: *const desktop.model.Model, frame: Frame) !?disp
     const flash = ui.iconButtonEnabled(theme, icons.flash, flash_label, "firmware.inspect", flash_bounds, true, frame.can_flash or frame.flash_active);
     try offer(&result, model, flash, .flash);
     const right = width - 16;
-    const undo = ui.iconButtonEnabled(theme, icons.undo, "", "edit.undo", .{ .x = right - 220, .y = 14, .w = 36, .h = 36 }, false, model.undo_stack.items.len != 0);
+    const undo = ui.iconButtonEnabled(theme, icons.undo, "", "edit.undo", .{ .x = right - 132, .y = 14, .w = 36, .h = 36 }, false, model.undo_stack.items.len != 0);
     try offer(&result, model, undo, .undo);
-    const redo = ui.iconButtonEnabled(theme, icons.redo, "", "edit.redo", .{ .x = right - 178, .y = 14, .w = 36, .h = 36 }, false, model.redo_stack.items.len != 0);
+    const redo = ui.iconButtonEnabled(theme, icons.redo, "", "edit.redo", .{ .x = right - 90, .y = 14, .w = 36, .h = 36 }, false, model.redo_stack.items.len != 0);
     try offer(&result, model, redo, .redo);
-    const save_bounds: dvui.Rect = .{ .x = right - 132, .y = 14, .w = 84, .h = 36 };
-    try offer(&result, model, ui.iconButton(theme, null, "Save", "file.save", save_bounds, false), .save);
-    // Unsaved edits show as a dot on Save.
-    if (model.dirty()) {
-        const dot = dvui.box(@src(), .{}, .{
-            .rect = .{ .x = save_bounds.x + save_bounds.w - 18, .y = save_bounds.y + 14, .w = 8, .h = 8 },
-            .background = true,
-            .color_fill = .{ .color = ui.layerColor(theme, 2) },
-            .corners = .all(4),
-            .padding = .{},
-            .margin = .{},
-            .tag = "file.unsaved",
-        });
-        dot.deinit();
-    }
     const theme_icon = if (view.light) icons.dark else icons.light;
     if (ui.iconButton(theme, theme_icon, "", "theme.toggle", .{ .x = right - 36, .y = 14, .w = 36, .h = 36 }, false)) {
         view.light = !view.light;
     }
     drawActivity(view, theme, frame, width);
     return result;
+}
+
+fn undoHint() []const u8 {
+    return if (@import("builtin").os.tag == .macos)
+        "Changes save automatically · ⌘Z undoes"
+    else
+        "Changes save automatically · Ctrl+Z undoes";
+}
+
+fn startRename(view: *View, name: []const u8) void {
+    view.rename = @splat(0);
+    const len = @min(name.len, view.rename.len - 1);
+    @memcpy(view.rename[0..len], name[0..len]);
+    view.renaming = true;
+    view.rename_frames = 0;
+}
+
+/// The layout name as a field. Enter renames; leaving the field cancels.
+fn drawRename(view: *View, theme: ui.Theme, bounds: dvui.Rect) bool {
+    var opts = ui.options(theme, bounds, 15);
+    opts.tag = "layout.rename";
+    opts.border = .all(1.5);
+    opts.color_border = .{ .color = theme.accent };
+    opts.corners = .all(8);
+    opts.padding = .{ .x = 12, .y = 8, .w = 12, .h = 8 };
+    const entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &view.rename } }, opts);
+    const id = entry.data().id;
+    const entered = entry.enter_pressed;
+    entry.deinit();
+    if (view.rename_frames == 0) dvui.focusWidget(id, null, null);
+    view.rename_frames +|= 1;
+    const name = std.mem.sliceTo(&view.rename, 0);
+    if (entered or (view.rename_frames > 2 and dvui.focusedWidgetId() != id)) view.renaming = false;
+    return entered and name.len != 0;
+}
+
+/// Whether the layout is saved, shown as a quiet note next to the breadcrumb.
+fn drawSave(theme: ui.Theme, save: Save) void {
+    const text, const tint, const icon: ?[]const u8 = switch (save) {
+        .saved => .{ "Saved", ui.color(0x6EC59A), ui.control_icons.saved },
+        .pending => .{ "Edited", theme.muted, null },
+        .saving => .{ "Saving…", theme.muted, null },
+        .failed => .{ "Save failed · see Details", ui.color(0xF06B73), ui.control_icons.warning },
+        .manual => return,
+    };
+    var x: f32 = 616;
+    if (icon) |bytes| {
+        dvui.icon(@src(), "save.state", bytes, .{}, .{
+            .color_text = .{ .color = tint },
+            .rect = .{ .x = x, .y = 25, .w = 14, .h = 14 },
+            .padding = .{},
+            .margin = .{},
+        });
+        x += 20;
+    }
+    var muted = theme;
+    muted.text = if (save == .failed) tint else theme.muted;
+    var opts = ui.options(muted, .{ .x = x, .y = 22, .w = 190, .h = 20 }, 12);
+    opts.padding = .{};
+    opts.tag = "file.save_state";
+    dvui.labelNoFmt(@src(), text, .{ .align_y = 0.5 }, opts);
 }
 
 /// The chevron between the steps of the work flow.
@@ -98,28 +169,6 @@ fn flowArrow(theme: ui.Theme, x: f32) void {
         .padding = .{},
         .margin = .{},
     });
-}
-
-/// Shows the document name, as a profile picker when the document is one of the
-/// listed profiles. Returns the newly chosen profile.
-fn drawProfile(model: *const desktop.model.Model, profiles: []const Profile, theme: ui.Theme) !?[8]u8 {
-    const doc = model.document();
-    const bounds: dvui.Rect = .{ .x = 346, .y = 14, .w = 230, .h = 36 };
-    const names = try dvui.currentWindow().arena().alloc([]const u8, profiles.len);
-    var choice: ?usize = null;
-    for (profiles, names, 0..) |profile, *name, index| {
-        name.* = profile.name;
-        if (std.mem.eql(u8, &profile.id, &doc.profile_id)) {
-            choice = index;
-            name.* = doc.name;
-        }
-    }
-    var selected = choice orelse {
-        ui.label(theme, doc.name, bounds, 14);
-        return null;
-    };
-    if (dvui.dropdown(@src(), names, .{ .choice = &selected }, .{}, ui.options(theme, bounds, 14))) return profiles[selected].id;
-    return null;
 }
 
 const Activity = struct {

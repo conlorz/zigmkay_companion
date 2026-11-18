@@ -220,6 +220,10 @@ pub fn showStatusDetails(app: *App) void {
     if (!app.mode.isStatus()) return;
     app.view.toolbar.auto_build = true;
     app.view.toolbar.details_open = statusScene(app) == 4;
+    // Scene 3 shows the layout menu, opened by a click on the layout crumb.
+    if (statusScene(app) != 3) app.view.toolbar.menu_open = false;
+    // Scene 2 shows the Export Zig source sheet.
+    app.view.modal = if (statusScene(app) == 2) .paths else .none;
 }
 
 pub fn statusToolbar(app: *const App, toolbar: *@FieldType(editor.Frame, "toolbar")) void {
@@ -244,6 +248,7 @@ pub fn statusToolbar(app: *const App, toolbar: *@FieldType(editor.Frame, "toolba
 /// Injects the SDL events of the practice and draft fixtures before the pump.
 pub fn injectEvents(app: *App) !void {
     if (app.mode.is(.practice) and app.count == 3) try pushFocusLost(app);
+    if (app.mode.isStatus() and app.count == 13) try clickCanvas(app, 480, 32);
     if (!app.checkingDraft()) return;
     const state = &app.fixture;
     if (state.draft_phase == .starting and app.draft_runtime.router.runner_running) {
@@ -269,6 +274,28 @@ pub fn injectText(app: *App) !void {
     var text: [4]u8 = undefined;
     const len = try std.unicode.utf8Encode(app.tutor.controller.session.reference[0], &text);
     _ = try app.window.addEventText(.{ .text = text[0..len] });
+}
+
+/// Moves the pointer to a point of the design canvas and clicks there.
+fn clickCanvas(app: *App, x: f32, y: f32) !void {
+    const scale = app.window.content_scale;
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.motion.type = c.SDL_EVENT_MOUSE_MOTION;
+    event.motion.windowID = app.events.root;
+    event.motion.x = x * scale;
+    event.motion.y = y * scale;
+    try pushEvent(&event);
+    for ([_]c_uint{ c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP }) |kind| {
+        event = std.mem.zeroes(c.SDL_Event);
+        event.button.type = kind;
+        event.button.windowID = app.events.root;
+        event.button.button = c.SDL_BUTTON_LEFT;
+        event.button.down = kind == c.SDL_EVENT_MOUSE_BUTTON_DOWN;
+        event.button.clicks = 1;
+        event.button.x = x * scale;
+        event.button.y = y * scale;
+        try pushEvent(&event);
+    }
 }
 
 fn pushFocusLost(app: *App) !void {

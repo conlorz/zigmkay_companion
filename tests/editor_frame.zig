@@ -46,7 +46,8 @@ const Observed = struct {
     key4: dvui.Rect.Physical,
     host_b: dvui.Rect.Physical,
     callbacks: dvui.Rect.Physical,
-    paths: dvui.Rect.Physical,
+    crumb: dvui.Rect.Physical,
+    menu_export: ?dvui.Rect.Physical,
     paths_close: ?dvui.Rect.Physical,
     encoder_close: ?dvui.Rect.Physical,
     pending_keep: ?dvui.Rect.Physical,
@@ -78,7 +79,7 @@ const Harness = struct {
         }
         const doc = self.model.document();
         const result = try editor.draw(self.view, self.owner, self.model, .{
-            .toolbar = .{ .board_name = "LK7", .connection = "Injected fixture", .profiles = &.{} },
+            .toolbar = .{ .keyboard_name = "LK7", .connection = "Injected fixture" },
             .keyboard = .{
                 .snapshot = try self.model.id(),
                 .board_id = doc.board_id,
@@ -96,7 +97,8 @@ const Harness = struct {
             .key4 = tagged("key.select.4") orelse return error.MissingKeyTag,
             .host_b = tagged("os.key.5") orelse return error.MissingHostTag,
             .callbacks = tagged("callback.attach") orelse return error.MissingCallbackTag,
-            .paths = tagged("file.paths") orelse return error.MissingPathsTag,
+            .crumb = tagged("layout.crumb") orelse return error.MissingLayoutTag,
+            .menu_export = tagged("layout.menu.export"),
             .paths_close = tagged("file.close"),
             .encoder_close = tagged("encoder.close"),
             .pending_keep = tagged("pending.keep"),
@@ -173,8 +175,13 @@ test "composed editor handles selection pending keep/discard callback close and 
     observed = try harness.frame(observed.callback_close orelse return error.MissingModalTag);
     try t.expect(view.modal == .none);
     observed = try harness.frame(null);
-    observed = try harness.frame(observed.paths);
-    try t.expect(view.modal == .paths);
+    // The layout menu opens from the crumb and asks to export.
+    observed = try harness.frame(observed.crumb);
+    try t.expect(view.toolbar.menu_open);
+    observed = try harness.frame(null);
+    observed = try harness.frame(observed.menu_export orelse return error.MissingLayoutMenuTag);
+    try t.expect(observed.result == .layout and observed.result.layout == .export_source);
+    view.modal = .paths;
     observed = try harness.frame(null);
     observed = try harness.frame(null);
     observed = try harness.frame(observed.paths_close orelse return error.MissingModalTag);

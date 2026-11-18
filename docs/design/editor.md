@@ -108,11 +108,12 @@ two layer colors at least CIE76 ΔE 30 apart.
 
 ## Editor (screens 1 and 2)
 
-Top bar, left to right: the Zigmkay wordmark; the keyboard switcher (board
-name, opens My Keyboards); the layout profile; then the work flow
-**Open / Export → Build → Flash** as one connected group, Build and Flash
-filled with `accent`; then Undo, Redo, Save and the theme toggle. "Unsaved"
-appears as a dot on Save.
+Top bar, left to right: the Zigmkay wordmark; the breadcrumb
+**Keyboard › Layout ▾** (the keyboard opens My Keyboards, the layout opens the
+layout menu of screen 11); the save state ("Saved", "Edited", "Saving…" or
+"Save failed"); then the work flow **Build › Flash**, filled with `accent`;
+then Undo, Redo and the theme toggle. Saving is automatic, so there is no
+Save button. Export Zig source moved into the layout menu (screen 12).
 
 Status row: status dot, current message, a hint when building, the Auto-build
 switch and Details on the right.

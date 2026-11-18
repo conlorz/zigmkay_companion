@@ -21,6 +21,7 @@ pub fn poll(app: *App) !void {
     if (opened.model == null) {
         try keyboard_onboarding.State.set(&onboarding.root, opened.collection.?);
         try onboarding.reloadCollection(app.gpa, app.io);
+        refreshLibrary(app);
         onboarding.active = true;
         onboarding.stage = .welcome;
     } else if (app.unsavedChanges() and !onboarding.discard) {
@@ -46,6 +47,7 @@ fn switchProject(app: *App, opened: *desktop.onboarding.Opened) !void {
     onboarding.selected = true;
     if (opened.collection) |root| try keyboard_onboarding.State.set(&onboarding.root, root);
     try onboarding.reloadCollection(app.gpa, app.io);
+    refreshLibrary(app);
     onboarding.stage = if (onboarding.operation == .create) .created else .welcome;
     onboarding.active = onboarding.operation == .create;
     onboarding.discard = false;
@@ -133,4 +135,21 @@ fn start(app: *App, action: keyboard_onboarding.Action) !void {
         toolchain.payload_root = bundle.root;
     } else if (action == .analyze) return onboarding.report(error.MissingApplicationBundle);
     onboarding.start(app.gpa, app.io, app.environ_map, toolchain, action, app.owner_generation) catch |err| onboarding.report(err);
+}
+
+/// Reloads the layouts of every known keyboard: the collection's members,
+/// remembered profile projects, the open project and the legacy profile
+/// folders. Reading never changes a project.
+pub fn refreshLibrary(app: *App) void {
+    var extra: std.ArrayList([]const u8) = .empty;
+    defer extra.deinit(app.gpa);
+    for (app.registry.entries.items) |entry| extra.append(app.gpa, entry.directory) catch {};
+    if (app.onboarding.selected) extra.append(app.gpa, std.mem.sliceTo(&app.view.paths.project, 0)) catch {};
+    const root = std.mem.sliceTo(&app.onboarding.root, 0);
+    const loaded = desktop.library.load(app.gpa, app.io, .{
+        .collection = if (root.len != 0) root else null,
+        .projects = if (app.user_paths) |owned| owned.paths.projects else null,
+        .extra = extra.items,
+    }) catch |err| return app.onboarding.report(err);
+    app.onboarding.replaceLibrary(loaded);
 }

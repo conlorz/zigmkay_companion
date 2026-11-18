@@ -76,29 +76,6 @@ test "source workers own attach requests and preserve externally edited checkout
     try t.expectError(error.StaleCallbackAction, mirrored_again.promote(&model));
 }
 
-test "profile worker returns an owned candidate without borrowing the editor" {
-    const t = std.testing;
-    var template = try project.profiles.create(t.allocator, .qwerty);
-    defer template.deinit();
-    var model = try desktop.model.Model.init(t.allocator, project.profiles.board, template.snapshot);
-    defer model.deinit();
-    var tmp = t.tmpDir(.{});
-    defer tmp.cleanup();
-    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
-    defer t.allocator.free(root);
-    var request = try desktop.profile_switch.Request.capture(&model, "eurkey\x00\x00".*, root);
-    var retained = true;
-    defer if (retained) request.deinit();
-    const worker = try desktop.profile_switch.Worker.create(t.allocator, t.io, &request, 1);
-    retained = false;
-    defer worker.destroy();
-    try model.rename("Edit after navigation started");
-    var prepared = try (try awaitWorker(worker)).result;
-    defer prepared.deinit();
-    try t.expectError(error.StaleProfileAction, prepared.promote(&model));
-    try t.expectEqualStrings("Edit after navigation started", model.document().layers[0].name);
-}
-
 test "owned file worker freezes save and joins canceled or consumed jobs" {
     const t = std.testing;
     var template = try project.profiles.create(t.allocator, .qwerty);
@@ -209,64 +186,6 @@ test "two independent project writers cannot publish over the same baseline" {
     var disk = try project.snapshot.load(t.allocator, t.io, temp.dir, model.board);
     defer disk.deinit();
     try t.expectEqualStrings(if (a_saved) "Writer A" else "Writer B", disk.snapshot.document.layers[0].name);
-}
-
-test "profile switching prepares read-only templates and preserves existing or invalid projects" {
-    const t = std.testing;
-    var base = try project.profiles.create(t.allocator, .qwerty);
-    defer base.deinit();
-    var model = try desktop.model.Model.init(t.allocator, project.profiles.board, base.snapshot);
-    defer model.deinit();
-    var tmp = t.tmpDir(.{});
-    defer tmp.cleanup();
-    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
-    defer t.allocator.free(root);
-    const path = try std.fs.path.join(t.allocator, &.{ root, "eurkey" });
-    defer t.allocator.free(path);
-    var request = try desktop.profile_switch.Request.capture(&model, "eurkey\x00\x00".*, path);
-    defer request.deinit();
-    var prepared = try request.prepare(t.allocator, t.io);
-    defer prepared.deinit();
-    try t.expect(!prepared.existing);
-    try t.expectError(error.FileNotFound, tmp.dir.openDir(t.io, "eurkey", .{}));
-    try model.rename("New unsaved work");
-    try t.expectError(error.StaleProfileAction, prepared.promote(&model));
-    try t.expectError(
-        error.UnsavedProject,
-        desktop.profile_switch.Request.capture(&model, "eurkey\x00\x00".*, path),
-    );
-    try model.undo();
-    try prepared.promote(&model);
-    try t.expectEqual("eurkey\x00\x00".*, model.document().profile_id);
-    try t.expectEqual(@as(usize, 0), model.undo_stack.items.len);
-    try t.expectError(error.StaleProfileAction, prepared.promote(&model));
-    var directory = try tmp.dir.createDirPathOpen(t.io, "eurkey", .{});
-    defer directory.close(t.io);
-    try model.rename("Personal saved profile");
-    try model.save(t.io, directory);
-    var existing_request = try desktop.profile_switch.Request.capture(&model, "eurkey\x00\x00".*, path);
-    defer existing_request.deinit();
-    var existing = try existing_request.prepare(t.allocator, t.io);
-    defer existing.deinit();
-    try t.expect(existing.existing);
-    try existing.promote(&model);
-    try t.expectEqualStrings("Personal saved profile", model.document().layers[0].name);
-    const broken = "opaque future project bytes\n";
-    try directory.writeFile(t.io, .{ .sub_path = "project.zon", .data = broken });
-    if (existing_request.prepare(t.allocator, t.io)) |result| {
-        var unexpected = result;
-        unexpected.deinit();
-        return error.ExpectedInvalidProject;
-    } else |_| {}
-    const preserved = try directory.readFileAlloc(t.io, "project.zon", t.allocator, .limited(4096));
-    defer t.allocator.free(preserved);
-    try t.expectEqualStrings(broken, preserved);
-    try project.snapshot.save(t.allocator, t.io, directory, base.snapshot, project.profiles.board);
-    try t.expectError(error.ProfileIdentityMismatch, existing_request.prepare(t.allocator, t.io));
-    try t.expectError(
-        error.UnknownProfile,
-        desktop.profile_switch.Request.capture(&model, "unknown1".*, path),
-    );
 }
 
 test "encoder slot drafts preserve compound actions and bind staged and document revisions" {

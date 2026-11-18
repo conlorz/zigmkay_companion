@@ -215,6 +215,13 @@ pub const Model = struct {
         try self.commit(snapshot);
     }
 
+    /// Renames the layout itself, as one undoable edit.
+    pub fn renameLayout(self: *Model, name: []const u8) !void {
+        var snapshot = self.current.snapshot;
+        snapshot.document.name = name;
+        try self.commit(snapshot);
+    }
+
     pub fn addLayer(self: *Model, duplicate: bool) !void {
         const doc = self.document();
         if (doc.layers.len == p.Limits.layers) return error.InvalidDimensions;

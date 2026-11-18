@@ -241,6 +241,7 @@ pub fn addHost(s: *Suite, fixtures: *Fixtures) void {
     _ = s.add(step, .core, integration);
     _ = s.unit(step, .core, "tests/catalog_physical_view.zig", h.catalog_view_deps);
     _ = s.unit(step, .core, "tests/onboarding.zig", h.onboarding_deps);
+    _ = s.unit(step, .core, "tests/keyboard_library.zig", h.onboarding_deps);
     fixtures.flash_session = .{
         s.unit(step, .core, "src/app/flash_session.zig", h.flash_session_deps),
         s.unit(step, .core, "src/app/flash_bootloader.zig", &.{}),

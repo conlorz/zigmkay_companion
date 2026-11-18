@@ -22,7 +22,7 @@ pub const Intent = union(enum) {
     flash,
     close,
     open: Open,
-    profile: [8]u8,
+    rename_layout: [129]u8,
 };
 
 pub const Request = struct {
@@ -77,6 +77,12 @@ pub const Request = struct {
             )) return error.StaleEditorRequest;
         switch (self.intent) {
             .select => |value| if (value.index >= model.selected.len) return error.InvalidKey,
+            .rename_layout => |value| {
+                const name = std.mem.sliceTo(&value, 0);
+                if (name.len == 0 or
+                    name.len > p.Limits.name_bytes or
+                    !std.unicode.utf8ValidateSlice(name)) return error.InvalidName;
+            },
             .chord => |value| {
                 if (value.target) |target| if (target >= model.selected.len) return error.InvalidKey;
                 if (value.held and
@@ -105,7 +111,6 @@ pub const Effect = union(enum) {
     none,
     pending,
     open: Open,
-    profile: Request,
     save: Request,
     build: Request,
     flash: Request,
@@ -204,7 +209,7 @@ pub const State = struct {
             .copy => model.copy(),
             .paste => try model.paste(),
             .open => |target| return .{ .open = target },
-            .profile => return .{ .profile = captured },
+            .rename_layout => |value| try model.renameLayout(std.mem.sliceTo(&value, 0)),
             .save => return .{ .save = captured },
             .build => return .{ .build = captured },
             .flash => return .{ .flash = captured },

@@ -381,6 +381,24 @@ pub fn editDrawer(src: std.builtin.SourceLocation, t: Theme, width: f32) *dvui.F
     return drawer(src, t, .{ .x = (screen.w - w) / 2, .y = (screen.h - h) / 2, .w = w, .h = h }, true);
 }
 
+/// A modal sheet of `w` × `h` canvas units, centered in the window. Its
+/// children are placed in canvas units from its top left corner.
+pub fn sheet(src: std.builtin.SourceLocation, t: Theme, w: f32, h: f32, tag: []const u8) *dvui.FloatingWindowWidget {
+    const scale = dvui.parentGet().screenRectScale(.{}).s / dvui.windowNaturalScale();
+    const screen = dvui.windowRect();
+    const width = @min(w * scale, screen.w - 32);
+    const height = @min(h * scale, screen.h - 32);
+    return dvui.floatingWindow(src, .{ .modal = true }, .{
+        .rect = .{ .x = (screen.w - width) / 2, .y = (screen.h - height) / 2, .w = width, .h = height },
+        .padding = .{},
+        .background = true,
+        .color_fill = .{ .color = t.panel },
+        .color_border = .{ .color = t.border },
+        .border = .all(1),
+        .corners = .all(14),
+        .tag = tag,
+    });
+}
 
 /// A button whose label is a caption with keyboard symbols drawn as icons.
 pub fn richButton(src: std.builtin.SourceLocation, text: []const u8, style: CaptionStyle, opts: dvui.Options) bool {
