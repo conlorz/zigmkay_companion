@@ -213,14 +213,41 @@ fn card(self: *Context, held: bool) void {
         defer row.deinit();
         var data: dvui.WidgetData = undefined;
         const header_tag = if (held) "inspector.hold" else "inspector.tap";
-        if (dvui.button(@src(), if (held) "Hold" else "Tap", .{}, .{ .tag = header_tag, .data_out = &data, .expand = .horizontal })) {
+        const title = if (held) "Hold" else "Tap";
+        // The title is the drop target for host-palette chords and selects
+        // which part the search adds to; the chosen part is outlined.
+        const targeted = self.state.target == target;
+        if (ui.richButton(@src(), title, .{
+            .color = self.theme.text,
+            .secondary = self.theme.text,
+            .size = 17,
+            .align_x = 0,
+            .id_extra = if (held) 2 else 1,
+        }, .{
+            .tag = header_tag,
+            .data_out = &data,
+            .expand = .horizontal,
+            .background = targeted,
+            .color_fill = .{ .color = self.theme.panel },
+            .padding = .{ .x = 8, .y = 4, .w = 8, .h = 4 },
+        })) {
             self.state.target = target;
         }
         self.chordDrop(&data, held);
-        if (dvui.button(@src(), "Clear", .{}, .{ .tag = if (held) "inspector.clear.hold" else "inspector.clear.tap" })) {
+        const link: dvui.Options = .{
+            .background = false,
+            .font = fonts.font("Clear", 13),
+            .color_text = .{ .color = self.theme.muted },
+            .padding = .{ .x = 6, .y = 4, .w = 6, .h = 4 },
+        };
+        var clear = link;
+        clear.tag = if (held) "inspector.clear.hold" else "inspector.clear.tap";
+        if (dvui.button(@src(), "Clear", .{}, clear)) {
             session.mutate(if (held) .clear_hold else .clear_tap);
         }
-        if (dvui.button(@src(), "+ Action", .{}, .{ .tag = if (held) "inspector.add.hold" else "inspector.add.tap" })) {
+        var add_link = link;
+        add_link.tag = if (held) "inspector.add.hold" else "inspector.add.tap";
+        if (dvui.button(@src(), "+ Add", .{}, add_link)) {
             self.state.target = target;
         }
     }
@@ -502,7 +529,12 @@ fn drawModeSelector(self: *Context, draft: forms.Draft) void {
         else => 0,
     };
     const modes: []const []const u8 = &.{ "Add an action…", "Tap", "Hold", "Tap / Hold", "Repeat" };
-    if (!dvui.dropdown(@src(), modes, .{ .choice = &mode }, .{}, .{ .expand = .horizontal, .tag = "inspector.mode" })) return;
+    mutedCaption(self, "Behaviour");
+    if (!dvui.dropdown(@src(), modes, .{ .choice = &mode }, .{}, .{
+        .expand = .horizontal,
+        .tag = "inspector.mode",
+        .margin = .{ .h = 8 },
+    })) return;
     if (mode == 0) return;
     // Warn when the new mode drops components of any selected key.
     var removes = false;
@@ -570,21 +602,50 @@ fn drawOneShot(self: *Context, previous: anytype) void {
     }
 }
 
+fn mutedCaption(self: *Context, text: []const u8) void {
+    dvui.labelNoFmt(@src(), text, .{}, .{
+        .expand = .horizontal,
+        .font = fonts.font(text, 13),
+        .color_text = .{ .color = self.theme.muted },
+        .id_extra = std.hash.Wyhash.hash(1, text),
+        .padding = .{ .x = 2, .y = 6, .w = 2, .h = 4 },
+    });
+}
+
+/// Search categories as wrapping chips; the chosen one is raised.
+fn drawCategories(self: *Context) !void {
+    const categories = [_][]const u8{ "All", "Keys", "Modifiers", "Layers", "Media", "Mouse", "Callbacks", "One-shot", "Signals" };
+    const chips = dvui.flexbox(@src(), .{ .justify_content = .start }, .{ .expand = .horizontal, .tag = "inspector.category", .margin = .{ .y = 6, .h = 6 } });
+    defer chips.deinit();
+    const current: usize = @backingInt(self.state.category);
+    for (categories, 0..) |name, index| {
+        const chosen = index == current;
+        const tag = try std.fmt.allocPrint(dvui.currentWindow().arena(), "inspector.category.{d}", .{index});
+        if (dvui.button(@src(), name, .{}, .{
+            .tag = tag,
+            .id_extra = index,
+            .font = fonts.font(name, 13),
+            .corners = .all(13),
+            .padding = .{ .x = 10, .y = 4, .w = 10, .h = 4 },
+            .margin = .{ .x = 0, .y = 0, .w = 6, .h = 6 },
+            .background = true,
+            .color_fill = .{ .color = if (chosen) ui.mix(self.theme.control, self.theme.text, 0.18) else self.theme.control },
+            .color_text = .{ .color = if (chosen) self.theme.text else self.theme.muted },
+        })) self.state.category = @fromBackingInt(@intCast(index));
+    }
+}
+
 fn drawSearch(self: *Context) !void {
     const arena = dvui.currentWindow().arena();
     const document = self.model.document();
-    caption(if (self.state.target == .tap) "Add to Tap" else "Add to Hold");
+    mutedCaption(self, if (self.state.target == .tap) "Add to Tap" else "Add to Hold");
     const entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &self.search }, .placeholder = "Search keys, symbols, layers…" }, .{
         .expand = .horizontal,
         .tag = "inspector.search",
         .padding = .all(8),
     });
     entry.deinit();
-    var category: usize = @backingInt(self.state.category);
-    const categories: []const []const u8 = &.{ "All", "Keys", "Modifiers", "Layers", "Media", "Mouse", "Callbacks", "One-shot", "Signals" };
-    if (dvui.dropdown(@src(), categories, .{ .choice = &category }, .{}, .{ .expand = .horizontal, .tag = "inspector.category" })) {
-        self.state.category = @fromBackingInt(@intCast(category));
-    }
+    try drawCategories(self);
     const results = dvui.scrollArea(@src(), .{}, .{
         .min_size_content = .{ .w = 370, .h = 210 },
         .max_size_content = .{ .w = 400, .h = 210 },
@@ -608,6 +669,8 @@ fn drawSearch(self: *Context) !void {
             .id_extra = index,
             .expand = .horizontal,
             .padding = .{ .x = 10, .y = 6, .w = 10, .h = 6 },
+            .margin = .{ .h = 4 },
+            .corners = .all(6),
         })) add(self, result);
     }
     if (found == 0) caption("No matching actions for this target");
