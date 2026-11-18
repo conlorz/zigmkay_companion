@@ -69,6 +69,11 @@ pub const Mode = union(enum) {
         return mode.is(.status) or mode.is(.native_status);
     }
 
+    /// The onboarding gallery, offscreen or with the native renderer.
+    pub fn isOnboarding(mode: Mode) bool {
+        return mode.is(.onboarding) or mode.is(.native_onboarding);
+    }
+
     pub fn isDrawers(mode: Mode) bool {
         return mode.is(.drawers) or mode.is(.native_drawers);
     }
@@ -129,6 +134,7 @@ pub const Fixture = struct {
         drawers,
         native_status,
         native_drawers,
+        native_onboarding,
         practice,
         rundown,
         /// `--native-<scene>-frames` and `--native-layout-<scene>-frames`.
@@ -161,7 +167,7 @@ pub const Fixture = struct {
 
         fn needsNativeVideo(kind: Kind) bool {
             return switch (kind) {
-                .native_tray, .gallery, .native_status, .native_drawers => true,
+                .native_tray, .gallery, .native_status, .native_drawers, .native_onboarding => true,
                 else => false,
             };
         }
@@ -252,6 +258,7 @@ fn parseKind(flag: []const u8) error{Usage}!Fixture.Kind {
         .{ "--offline-drawers-frames", .drawers },
         .{ "--native-status-frames", .native_status },
         .{ "--native-drawers-frames", .native_drawers },
+        .{ "--native-onboarding-frames", .native_onboarding },
         .{ "--offline-practice-frames", .practice },
         .{ "--offline-rundown-frames", .rundown },
         .{ "--offline-companion-frames", .companion },

@@ -25,7 +25,9 @@ pub const State = struct {
 /// Scripts that replace the project or the onboarding stage before a frame.
 pub fn beforeFrame(app: *App) !void {
     if (app.mode.is(.catalog)) try showCatalogEntry(app);
-    if (app.mode.is(.onboarding)) try advanceOnboarding(app);
+    if (app.mode.isOnboarding()) try advanceOnboarding(app);
+    // The native gallery draws each page twice in the dark, then twice in the light theme.
+    if (app.mode.is(.native_onboarding)) app.view.toolbar.light = app.count % 4 >= 2;
     if (app.mode.isDrawers()) try showDrawer(app);
 }
 
@@ -419,7 +421,7 @@ pub fn capture(app: *App) !void {
         try screenshot(app, path, error.DrawerScreenshotRead, error.DrawerScreenshotSave);
     }
     try rundown_gallery.capture(app);
-    if (app.mode.is(.onboarding) or app.mode.is(.catalog)) try captureOnboarding(app);
+    if (app.mode.isOnboarding() or app.mode.is(.catalog)) try captureOnboarding(app);
 }
 
 /// The activity row stays inside the toolbar, which spans the window.
@@ -449,7 +451,7 @@ fn captureStatus(app: *App) !void {
 
 /// The wizard never exposes a target or creates its destination before commit.
 fn captureOnboarding(app: *App) !void {
-    const wizard = app.mode.is(.onboarding);
+    const wizard = app.mode.isOnboarding();
     if (wizard) {
         if (dvui.tagGet("firmware.build") != null or dvui.tagGet("firmware.inspect") != null or app.onboarding.selected)
             return error.ImplicitOnboardingTargetExposed;
