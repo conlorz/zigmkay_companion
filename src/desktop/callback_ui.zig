@@ -35,12 +35,18 @@ fn offer(result: *?Action, view: *const View, snapshot: [32]u8, clicked: bool, k
 }
 
 const width: f32 = 900;
-const height: f32 = 840;
 const margin: f32 = 28;
-const footer_y: f32 = height - 84;
+/// The top of the attached source list.
+const list_top: f32 = 236;
+const list_max: f32 = 308;
 
 pub fn draw(view: *View, model: *const desktop.model.Model, theme: ui.Theme, diagnostic: []const u8) !?Action {
     const captured = try model.id();
+    // The sheet grows with the attached sources, up to a scrolling list.
+    const list_bottom = list_top + listHeight(model.document());
+    const attach_y = list_bottom + 16;
+    const footer_y = attach_y + 172;
+    const height = footer_y + 84;
     const sheet = ui.sheet(@src(), theme, width, height, "callback.sheet");
     defer sheet.deinit();
     var result: ?Action = null;
@@ -54,15 +60,15 @@ pub fn draw(view: *View, model: *const desktop.model.Model, theme: ui.Theme, dia
     const choose = ui.iconButton(theme, ui.control_icons.folder, "Choose…", "callback.choose", .{ .x = width - margin - 122, .y = 142, .w = 122, .h = 40 }, false);
     offer(&result, view, captured, choose, .choose_root);
 
-    try drawAttached(view, model, theme, captured, &result);
+    try drawAttached(view, model, theme, captured, &result, list_bottom);
 
-    ui.divider(theme, .{ .x = margin, .y = 560, .w = width - 2 * margin, .h = 1 }, 2);
-    ui.label(theme, "Attach a source file", .{ .x = margin, .y = 576, .w = 400, .h = 22 }, 15);
-    ui.label(muted, "Entry module", .{ .x = margin, .y = 610, .w = 300, .h = 18 }, 12);
-    field(theme, &view.entry, "callbacks.zig", "callback.entry", .{ .x = margin, .y = 632, .w = 540, .h = 40 });
-    ui.label(muted, "Custom IDs", .{ .x = 584, .y = 610, .w = 288, .h = 18 }, 12);
-    field(theme, &view.ids, "1–252, comma separated", "callback.ids", .{ .x = 584, .y = 632, .w = width - margin - 584, .h = 40 });
-    info(theme, "Attaching copies the entry module and every file it imports. Nothing is compiled or run.", 690);
+    ui.divider(theme, .{ .x = margin, .y = attach_y, .w = width - 2 * margin, .h = 1 }, 2);
+    ui.label(theme, "Attach a source file", .{ .x = margin, .y = attach_y + 16, .w = 400, .h = 22 }, 15);
+    ui.label(muted, "Entry module", .{ .x = margin, .y = attach_y + 50, .w = 300, .h = 18 }, 12);
+    field(theme, &view.entry, "callbacks.zig", "callback.entry", .{ .x = margin, .y = attach_y + 72, .w = 540, .h = 40 });
+    ui.label(muted, "Custom IDs", .{ .x = 584, .y = attach_y + 50, .w = 288, .h = 18 }, 12);
+    field(theme, &view.ids, "1–252, comma separated", "callback.ids", .{ .x = 584, .y = attach_y + 72, .w = width - margin - 584, .h = 40 });
+    info(theme, "Attaching copies the entry module and every file it imports. Nothing is compiled or run.", attach_y + 130);
 
     ui.divider(theme, .{ .x = 0, .y = footer_y, .w = width, .h = 1 }, 1);
     const button_y = footer_y + 22;
@@ -135,7 +141,15 @@ fn idRanges(ids: []const u8, buffer: []u8) []const u8 {
 }
 
 /// One card per callback source; attached sources offer their mirror actions.
-fn drawAttached(view: *View, model: *const desktop.model.Model, theme: ui.Theme, captured: [32]u8, result: *?Action) !void {
+/// The height of the attached source list: its cards, or the empty state.
+fn listHeight(doc: anytype) f32 {
+    if (doc.callbacks.len == 0) return 96;
+    var total: f32 = 0;
+    for (doc.callbacks) |callback| total += cardHeight(callback.kind == .attached) + 12;
+    return @min(list_max, total - 12);
+}
+
+fn drawAttached(view: *View, model: *const desktop.model.Model, theme: ui.Theme, captured: [32]u8, result: *?Action, bottom: f32) !void {
     const doc = model.document();
     const arena = dvui.currentWindow().arena();
     var muted = theme;
@@ -157,8 +171,7 @@ fn drawAttached(view: *View, model: *const desktop.model.Model, theme: ui.Theme,
     right.padding = .{};
     right.background = false;
     dvui.labelNoFmt(@src(), summary, .{ .align_x = 1 }, right);
-    const top: f32 = 236;
-    const bottom: f32 = 544;
+    const top = list_top;
     if (doc.callbacks.len == 0) {
         const empty = dvui.box(@src(), .{}, .{
             .rect = .{ .x = margin, .y = top, .w = width - 2 * margin, .h = 96 },
@@ -191,7 +204,7 @@ fn drawAttached(view: *View, model: *const desktop.model.Model, theme: ui.Theme,
     for (doc.callbacks) |callback| total += cardHeight(callback.kind == .attached) + 12;
     const content = dvui.box(@src(), .{}, .{
         .expand = .horizontal,
-        .min_size_content = .{ .w = width - 2 * margin, .h = total },
+        .min_size_content = .{ .w = width - 2 * margin, .h = total - 12 },
         .padding = .{},
         .margin = .{},
     });
