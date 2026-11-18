@@ -59,7 +59,7 @@ fn drawEditor(app: *App, board: *const boards.OwnedBoard, toolbar: Toolbar) !edi
             .geometry = board.entry.geometry,
             .labels = &app.captions.labels,
             .board_name = try keyboardName(board),
-            .fidelity = "Catalog geometry · physical acceptance pending",
+            .fidelity = try std.fmt.allocPrint(app.window.arena(), "Key placement: {s}", .{board.entry.fidelity.note()}),
         },
         .host = &app.captions.host,
         .paths = .{

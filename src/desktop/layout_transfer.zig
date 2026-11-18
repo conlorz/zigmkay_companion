@@ -1,7 +1,7 @@
 //! Moves a layout onto another board or PCB revision. Keys match by key ID
 //! when both boards share their ID scheme, otherwise by firmware key index.
-//! Measured per-revision geometry is not available, so neither method knows
-//! where a key sits; the report says what could not be carried over.
+//! Neither method uses key positions, so neither knows where a key sits; the
+//! report says what could not be carried over.
 const std = @import("std");
 const p = @import("project");
 

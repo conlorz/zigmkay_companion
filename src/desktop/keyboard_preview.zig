@@ -37,20 +37,27 @@ pub fn draw(theme: ui.Theme, geometry: Geometry, bounds: dvui.Rect, style: Style
         const missing = if (style.missing) |keys| index < keys.len and keys[index] else false;
         const id = style.id *% 4099 +% order;
         const danger = ui.color(0xF06B73);
-        const face = dvui.box(@src(), .{}, .{
-            .id_extra = id,
-            .rect = rect,
-            .rotation = placed.rotation,
-            .background = true,
-            .color_fill = .{ .color = if (missing) ui.mix(theme.keycap, danger, 0.12) else theme.keycap },
-            .color_border = .{ .color = ui.mix(theme.keycap, layer_color, 0.65) },
-            .border = if (missing) .{} else .all(@max(0.75, @min(1.5, rect.w / 24))),
-            .corners = .all(@max(2, rect.w * 0.12)),
-            .padding = .{},
-            .margin = .{},
-        });
-        face.deinit();
-        if (missing) dashed(rect, danger, id);
+        const fill = if (missing) ui.mix(theme.keycap, danger, 0.12) else theme.keycap;
+        const border = @max(0.75, @min(1.5, rect.w / 24));
+        const corner = @max(2, rect.w * 0.12);
+        if (placed.rotation != 0) {
+            // A turned key has no dashed outline; its border carries the danger color.
+            ui.turnedFace(rect, placed.rotation, corner, fill, if (missing) danger else ui.mix(theme.keycap, layer_color, 0.65), border);
+        } else {
+            const face = dvui.box(@src(), .{}, .{
+                .id_extra = id,
+                .rect = rect,
+                .background = true,
+                .color_fill = .{ .color = fill },
+                .color_border = .{ .color = ui.mix(theme.keycap, layer_color, 0.65) },
+                .border = if (missing) .{} else .all(border),
+                .corners = .all(corner),
+                .padding = .{},
+                .margin = .{},
+            });
+            face.deinit();
+            if (missing) dashed(rect, danger, id);
+        }
         const captions = style.captions orelse continue;
         if (index >= captions.len or captions[index].len == 0) continue;
         const inset = @max(1.5, rect.w * 0.1);

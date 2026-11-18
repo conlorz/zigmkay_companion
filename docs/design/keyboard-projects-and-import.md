@@ -42,9 +42,11 @@ collections, import tooling and discovery of multiple device identities.
   per document. [The model](../../src/desktop/model.zig) owns arbitrary
   validated board contracts. Changing keyboard types does not require
   generalizing the action model.
-- Only LK7 has curated schematic geometry. The other 13 catalog entries use a
-  ten-column index grid with neutral hand metadata. Editing is possible, but
-  the grid is a poor keyboard reference and tutor diagram.
+- LK7 has curated schematic geometry and Molekula a measured spatial layout
+  (see [Spatial layouts](../keyboard-projects.md#spatial-layouts)). The other
+  12 catalog entries use a ten-column index grid with hands from their
+  processing sides. Editing is possible, but the grid is a poor keyboard
+  reference and tutor diagram.
 - [Profile associations](../../src/desktop/profile_projects.zig) are
   keyed by board/profile and retain absolute local project paths. They are
   preferences, not a portable collection or a history of built layouts.

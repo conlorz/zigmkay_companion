@@ -21,11 +21,37 @@ A copy from other hardware, such as a Keycaprio 0.7 layout on a 0.4, is moved
 key by key: by key ID when both boards use the curated LK7 IDs, otherwise by
 firmware key index. Keys and combos without a counterpart are left out and
 listed, new keys stay unassigned, encoder directions are cut or padded and
-callback source stays byte-exact. Measured per-revision geometry does not
-exist yet, so index matching can move a key to another row; check the preview.
-The schematic editor and tutor share catalog geometry. Display hands and thumbs
+callback source stays byte-exact. Transfers do not use key positions yet, so
+index matching can move a key to another row; check the preview. The editor,
+companion and tutor share catalog key placement. Display hands and thumbs
 are independent of processing-side metadata; Dasbob, for example, retains its
 firmware's neutral processing sides.
+
+## Spatial layouts
+
+A board is drawn as built only when it has a spatial layout: a ZON file in
+[`src/catalog/spatial/`](../src/catalog/spatial/) registered in
+[`spatial.zig`](../src/catalog/spatial.zig). Without one, its keys are drawn
+linearly, ten per row in firmware key-index order, so nothing suggests a shape
+that was not measured. LK7 keeps its hand-drawn grid.
+
+A spatial layout lists every key once with its firmware key index, the PCB
+designator and the switch centre exactly as a KiCad position export (CPL)
+writes it: millimetres, y up, rotation in degrees counterclockwise. `pitch`
+gives the horizontal and vertical switch spacing; one key unit is the
+horizontal pitch. Hands, thumbs and the home row are explicit fields. To add a
+board:
+
+1. Export the positions from its PCB, or take `production/positions.csv`.
+2. Match each switch to a firmware key index through the matrix: the switch
+   column net and its diode row net against the board's `pin_mappings`.
+3. Copy the values unchanged and name the source revision in the file header.
+
+Molekula uses the Molekula2 PCB of
+[opendata-nuernberg/molekula](https://github.com/opendata-nuernberg/molekula)
+at `78ca099`; its inner thumb keys are turned by 10 and 20 degrees.
+Key IDs stay equal to the key index, so adding or correcting a spatial layout
+leaves existing projects and their index digest unchanged.
 
 ## Collections
 

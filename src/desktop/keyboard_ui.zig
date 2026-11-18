@@ -169,18 +169,24 @@ fn drawKey(
     const transparent = isTransparent(content);
     const selected = model.selected[index];
     const layer_color = ui.layerColor(theme, model.layer);
+    const turned = item.placed.rotation != 0;
+    const fill = if (selected) ui.mix(theme.keycap, layer_color, 0.22) else if (transparent) theme.panel else theme.keycap;
+    const border = if (selected) layer_color else ui.mix(theme.keycap, layer_color, if (transparent) 0.3 else 0.65);
+    const corner = @max(4, rect.w * 0.12);
+    const thickness: f32 = if (selected) 2.5 else 1.5;
     var opts = ui.options(theme, rect, 20);
-    opts.rotation = item.placed.rotation;
     opts.id_extra = item.placed.id;
     opts.tag = try std.fmt.allocPrint(dvui.currentWindow().arena(), "key.select.{d}", .{index});
-    opts.background = true;
-    opts.corners = .all(@max(4, rect.w * 0.12));
-    opts.border = .all(if (selected) 2.5 else 1.5);
-    opts.color_fill = .{ .color = if (selected) ui.mix(theme.keycap, layer_color, 0.22) else if (transparent) theme.panel else theme.keycap };
-    opts.color_border = .{ .color = if (selected) layer_color else ui.mix(theme.keycap, layer_color, if (transparent) 0.3 else 0.65) };
+    // A turned key keeps its upright hit area and draws its face as a path.
+    opts.background = !turned;
+    opts.corners = .all(corner);
+    opts.border = if (turned) .{} else .all(thickness);
+    opts.color_fill = .{ .color = fill };
+    opts.color_border = .{ .color = border };
     opts.padding = .all(2);
     var data: dvui.WidgetData = undefined;
     opts.data_out = &data;
+    if (turned) ui.turnedFace(rect, item.placed.rotation, corner, fill, border, thickness);
     if (dvui.button(@src(), "", .{}, opts) and result.* == null) {
         result.* = .{ .select = try desktop.key_selection.Action.capture(model, index, view.extend) };
     }

@@ -6,8 +6,24 @@ const defaults = @import("firmware-defaults");
 const boards = defaults.boards;
 pub const version: u16 = 1;
 pub const Capability = enum { available, unverified, unavailable };
-pub const Fidelity = enum { indexed_schematic, curated_schematic };
+/// How a board's keys are placed: in key-index order, on a hand-drawn grid,
+/// or at switch positions measured from the PCB.
+pub const Fidelity = enum {
+    linear,
+    curated_schematic,
+    measured,
+
+    /// One line for the UI, without claims beyond the placement source.
+    pub fn note(self: Fidelity) []const u8 {
+        return switch (self) {
+            .linear => "linear key order, no spatial layout",
+            .curated_schematic => "hand-drawn schematic grid, not measured",
+            .measured => "switch positions from the PCB",
+        };
+    }
+};
 pub const presentation = @import("presentation.zig");
+pub const spatial = @import("spatial.zig");
 
 pub const Entry = struct {
     selector: []const u8,
@@ -44,7 +60,14 @@ pub const entries = blk: {
             .key_count = @typeInfo(@typeInfo(@TypeOf(Profile.keymap)).array.child).array.len,
             .layer_count = @typeInfo(@TypeOf(Profile.keymap)).array.len,
         };
-        const geometry = if (std.mem.eql(u8, board.name, "lk7")) &@import("lk7-physical").keys else &presentation.geometry(dimensions.key_count);
+        const curated = std.mem.eql(u8, board.name, "lk7");
+        const measured = spatial.find(board.name);
+        const geometry = if (curated)
+            &@import("lk7-physical").keys
+        else if (measured) |layout|
+            &spatial.place(layout, dimensions.key_count)
+        else
+            &spatial.linear(dimensions.key_count, processing.sides);
         if (dimensions.key_count != processing.key_count) {
             @compileError(
                 "Default profile dimensions differ from board processing descriptor",
@@ -71,7 +94,7 @@ pub const entries = blk: {
             .encoder_action_slots = processing.encoder_actions,
             .processing_digest = processingDigest(board.name, processing.sides, processing.encoder_actions),
             .geometry = geometry,
-            .fidelity = .curated_schematic,
+            .fidelity = if (curated) .curated_schematic else if (measured != null) .measured else .linear,
             .index_digest = indexDigest(board.name, geometry),
         };
     }
@@ -155,18 +178,6 @@ pub fn keyIds(gpa: std.mem.Allocator, entry: Entry) ![]model.physical_layout.Key
     const result = try gpa.alloc(model.physical_layout.KeyId, entry.default_dimensions.key_count);
     for (entry.geometry) |key| result[key.key_index] = key.id;
     return result;
-}
-
-fn schematic(comptime count: usize) [count]model.physical_layout.Key {
-    var keys: [count]model.physical_layout.Key = undefined;
-    for (&keys, 0..) |*key, index| key.* = .{
-        .id = @intCast(index),
-        .key_index = @intCast(index),
-        .x = @floatFromInt(index % 10),
-        .y = @floatFromInt(index / 10),
-        .hand = .neutral,
-    };
-    return keys;
 }
 
 pub fn indexDigest(selector: []const u8, keys: []const model.physical_layout.Key) [32]u8 {
@@ -260,10 +271,16 @@ test "processing digest detects indexed side and encoder slot changes" {
     );
 }
 
-test "schematic fallback preserves indexes and geometry edits do not change index digest" {
+test "placement sources and geometry edits do not change index digest" {
+    _ = spatial;
     const lk7 = find("lk7").?;
     try std.testing.expectEqual(Fidelity.curated_schematic, lk7.fidelity);
-    try std.testing.expectEqual(Fidelity.curated_schematic, find("dasbob").?.fidelity);
+    try std.testing.expectEqual(Fidelity.measured, find("molekula").?.fidelity);
+    try std.testing.expectEqual(Fidelity.linear, find("dasbob").?.fidelity);
+    for (find("keycaprio_colemak_0_4").?.geometry, 0..) |key, index| {
+        try std.testing.expectEqual(@as(f32, @floatFromInt(index % 10)), key.x);
+        try std.testing.expectEqual(@as(f32, @floatFromInt(index / 10)), key.y);
+    }
     var keys = @import("lk7-physical").keys;
     keys[0].x += 3;
     try std.testing.expectEqual(lk7.index_digest, indexDigest(lk7.selector, &keys));

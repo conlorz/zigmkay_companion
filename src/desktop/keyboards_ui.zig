@@ -316,7 +316,7 @@ fn drawLayouts(theme: ui.Theme, keyboards: *const library.Library, selected: usi
     text(theme, keyboard.entry.display.name, .{ .x = 456, .y = 100, .w = 700, .h = 36 }, 28, theme.text, true, 50);
     var line: [128]u8 = undefined;
     var buffer: [192]u8 = undefined;
-    const detail = std.fmt.bufPrint(&buffer, "{s} · schematic geometry, not measured", .{hardwareLine(&line, keyboard.entry)}) catch "";
+    const detail = std.fmt.bufPrint(&buffer, "{s} · {s}", .{ hardwareLine(&line, keyboard.entry), keyboard.entry.fidelity.note() }) catch "";
     text(theme, detail, .{ .x = 456, .y = 140, .w = 760, .h = 20 }, 14, theme.muted, false, 51);
     var intent: Intent = .none;
     if (ui.iconButton(theme, ui.control_icons.add, "New layout", "keyboards.new_layout", .{ .x = 1340, .y = 104, .w = 156, .h = 36 }, false)) intent = .{ .new_layout = selected };

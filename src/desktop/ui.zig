@@ -280,6 +280,26 @@ pub fn rect(r: anytype) dvui.Rect {
     return .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
 }
 
+/// A keycap face turned clockwise by `radians` around its centre, in canvas
+/// units of the parent. DVUI boxes ignore rotation, so turned keys draw their
+/// face as a path; their contents stay upright.
+pub fn turnedFace(r: dvui.Rect, radians: f32, corner: f32, fill: dvui.Color, border: dvui.Color, thickness: f32) void {
+    const screen = dvui.parentGet().screenRectScale(r);
+    var path: dvui.Path.Builder = .init(dvui.currentWindow().lifo());
+    defer path.deinit();
+    path.addRect(screen.r, dvui.CornerRect.all(corner).scale(screen.s, dvui.CornerRect.Physical));
+    const centre = screen.r.center();
+    const cos = @cos(radians);
+    const sin = @sin(radians);
+    for (path.points.items) |*point| {
+        const d = point.diff(centre);
+        point.* = .{ .x = centre.x + d.x * cos - d.y * sin, .y = centre.y + d.x * sin + d.y * cos };
+    }
+    const face = path.build();
+    face.fillConvex(.{ .color = .{ .color = fill } });
+    if (thickness > 0) face.stroke(.{ .thickness = thickness * screen.s, .color = .{ .color = border }, .closed = true });
+}
+
 /// Base options for an absolutely placed control in theme colors.
 pub fn options(t: Theme, r: dvui.Rect, size: f32) dvui.Options {
     return .{

@@ -143,7 +143,7 @@ pub fn draw(view: *View, theme: ui.Theme, light: bool, owned: ?*const desktop.li
     well.deinit();
     preview.draw(theme, entry.geometry, .{ .x = 640, .y = 300, .w = 788, .h = 320 }, .{ .id = 7 });
     var dimensions: [160]u8 = undefined;
-    const geometry_note = if (std.mem.eql(u8, entry.selector, "lk7")) "hand-drawn schematic grid, not measured" else "schematic geometry estimated from the key count, not measured";
+    const geometry_note = entry.fidelity.note();
     const detail = if (entry.encoder_action_slots == 0)
         std.fmt.bufPrint(&dimensions, "{d} keys · no encoders · {s}", .{ entry.default_dimensions.key_count, geometry_note }) catch ""
     else

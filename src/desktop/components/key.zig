@@ -125,14 +125,17 @@ pub fn drawPracticeKey(
     const palette: Palette = .init(current_layer, active, target, hold);
     const guided = target or hold;
 
+    const thickness = (if (guided) @as(f32, 3) else 1.5) * scale;
+    // Boxes ignore rotation: a turned key draws its face as a path.
+    const turned = rotation != 0;
+    if (turned) ui.turnedFace(rect, rotation, 8 * scale, if (active or guided) palette.background else dvui.Color.transparent, palette.border, thickness);
     var b = dvui.box(@src(), .{}, .{
         .id_extra = index,
         .rect = rect,
-        .rotation = rotation,
-        .background = active or guided,
+        .background = !turned and (active or guided),
         .color_fill = .{ .color = palette.background },
         .color_border = .{ .color = palette.border },
-        .border = dvui.Rect.all((if (guided) @as(f32, 3) else 1.5) * scale),
+        .border = if (turned) .{} else dvui.Rect.all(thickness),
         .corners = .all(8 * scale),
         .padding = .{},
     });

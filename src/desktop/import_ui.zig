@@ -142,7 +142,7 @@ fn drawComparison(theme: ui.Theme, context: Context, comparison: *const Comparis
     if (dvui.dropdown(@src(), names, .{ .choice = context.selector }, .{}, opts)) intent.* = .target;
     const target = comparison.target_entry;
     var line: [160]u8 = undefined;
-    const geometry = if (std.mem.eql(u8, target.selector, "lk7")) "hand-drawn schematic grid" else "schematic geometry, not measured";
+    const geometry = target.fidelity.note();
     page.text(theme, std.fmt.bufPrint(&line, "{d} keys · {s}", .{ report.target_keys, geometry }) catch "", .{ .x = 798, .y = 224, .w = 340, .h = 18 }, 12, theme.muted, false, 53);
     well(theme, .{ .x = 798, .y = 252, .w = 698, .h = 370 }, 2);
     preview.draw(theme, target.geometry, .{ .x = 828, .y = 290, .w = 638, .h = 300 }, .{ .captions = comparison.target_captions, .id = 21 });
