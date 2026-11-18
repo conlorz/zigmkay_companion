@@ -110,7 +110,7 @@ With the prepared desktop dependencies and exactly Zig 0.17.0:
 mise run editor -- -- --native-layout-data-frames 72
 mise run editor -- -- --native-layout-progress-frames 96
 mise run editor -- -- --native-layout-diagnostics-frames 90
-mise run editor -- -- --native-layout-curriculum-frames 120
+mise run editor -- -- --native-layout-curriculum-frames 132
 mise run editor -- -- --native-layout-help-frames 126
 mise run editor -- -- --native-layout-rundown-frames 78
 ```

@@ -124,7 +124,7 @@ pub fn draw(
     try drawFilters(view, record, layout, theme);
     var focus: [5]u21 = undefined;
     const recommended = aggregate.targets(&focus);
-    drawCoaching(view, record, recommended.len, layout, theme);
+    try drawCoaching(owner, view, record, recommended.len, layout, theme);
     if (!try drawHeatmap(owner, view, record, aggregate, frame, layout, theme)) {
         const text = "Physical routes unavailable for this layout snapshot. Use the character list below.";
         presentation.caption(text, .{ .y = keyboard_y, .w = layout.width, .h = keyboard_h }, 17, theme.muted, null);
@@ -292,9 +292,18 @@ fn drawFilters(view: *View, record: *const results.Record, layout: Layout, theme
     });
 }
 
-fn drawCoaching(view: *const View, record: *const results.Record, recommended: usize, layout: Layout, theme: ui.Theme) void {
+fn drawCoaching(
+    owner: *const desktop.practice_controller.Controller,
+    view: *const View,
+    record: *const results.Record,
+    recommended: usize,
+    layout: Layout,
+    theme: ui.Theme,
+) !void {
     const coaching = if (!record.scored and view.scope == 0)
         "Unscored run. Start a scored exercise when ready."
+    else if (try adaptiveCoaching(owner, record)) |text|
+        text
     else if (record.cohort.hints.revealed)
         "Help was shown; this stays separate from hidden recall."
     else if (recommended == 0)
@@ -303,6 +312,27 @@ fn drawCoaching(view: *const View, record: *const results.Record, recommended: u
         "A short drill can help with these repeated misses.";
     presentation.surface(.{ .y = 284, .w = layout.width, .h = 56 }, tint(layout.light, 0xC5EBDC, 0x24463B));
     _ = presentation.flowText(coaching, 20, 300, layout.width - 260, 14, theme.text);
+}
+
+/// After a scored adaptive run, names the letter that the next adaptive lesson
+/// unlocks or focuses, from the newest loaded letter estimates.
+fn adaptiveCoaching(owner: *const desktop.practice_controller.Controller, record: *const results.Record) !?[]const u8 {
+    const lesson = record.cohort.curriculum;
+    if (lesson.version == 0 or lesson.stage != .adaptive or !record.scored) return null;
+    const labels = owner.curriculum_labels orelse return null;
+    const target_ms = desktop.practice_keys.targetMs(owner.adaptive_target_wpm);
+    const next = desktop.practice_curriculum.adapt(lesson, labels, &owner.adaptive_keys, target_ms) catch return null;
+    var alphabet: [26]u8 = undefined;
+    const available = desktop.practice_curriculum.letters(labels, &alphabet);
+    const arena = dvui.currentWindow().arena();
+    if (next.alphabet > lesson.alphabet) {
+        return try std.fmt.allocPrint(arena, "New letter unlocked: {c}. Every word of the next adaptive lesson contains it.", .{
+            available[lesson.alphabet],
+        });
+    }
+    return try std.fmt.allocPrint(arena, "Next adaptive lesson focuses {c}. New exercise keeps your unlocked letters.", .{
+        available[next.family],
+    });
 }
 
 /// Draws one heat cell per physical key when the record's routes still match the
