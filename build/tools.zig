@@ -35,8 +35,9 @@ pub fn add(s: *tests.Suite, catalog_export: ?*Compile) Tools {
     else
         null;
     if (bootsel) |helper| install(s, helper);
-    const generator = b.createModule(.{ .root_source_file = b.path("src/desktop/practice_generator.zig"), .target = cfg.target, .optimize = cfg.optimize });
-    install(s, b.addExecutable(.{ .name = "practice-samples", .root_module = s.mods.root("tools/practice_samples.zig", &.{.{ .name = "generator", .module = generator }}) }));
+    // The adaptive generator imports the English generator, so one module serves both.
+    const generator = b.createModule(.{ .root_source_file = b.path("src/desktop/practice_adaptive.zig"), .target = cfg.target, .optimize = cfg.optimize });
+    install(s, b.addExecutable(.{ .name = "practice-samples", .root_module = s.mods.root("tools/practice_samples.zig", &.{.{ .name = "adaptive", .module = generator }}) }));
 
     const h = s.mods.host orelse {
         Steps.unavailable(b, s.steps.run_project, "run-project needs the firmware package; drop -Donly");

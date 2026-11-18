@@ -153,7 +153,8 @@ pub const ImportedExport = struct { selector: []const u8, export_root: std.Build
 const practice_files = [_][]const u8{
     "practice_generator.zig",  "practice_results.zig",  "practice_history.zig",   "practice_history_runtime.zig",
     "practice_timing.zig",     "practice_database.zig", "practice_progress.zig",  "practice_analysis.zig",
-    "practice_curriculum.zig", "practice_help.zig",     "practice_retention.zig",
+    "practice_curriculum.zig", "practice_help.zig",     "practice_retention.zig", "practice_phonetic.zig",
+    "practice_keys.zig",       "practice_adaptive.zig",
 };
 const desktop_files = [_][]const u8{ "practice.zig", "practice_view.zig", "practice_controller.zig", "try_state.zig", "flash_controller.zig", "auto_build.zig", "geometry.zig", "encoder_state.zig" };
 const jobs_files = [_][]const u8{ "target_lock.zig", "firmware.zig", "source_digest.zig", "sidecar.zig", "flash_inputs.zig", "application_bundle.zig", "bundle_payload.zig", "runner_artifact.zig", "bootsel_transfer.zig" };
