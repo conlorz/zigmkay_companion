@@ -7,6 +7,7 @@ const timing = @import("practice_timing.zig");
 const progress = @import("practice_progress.zig");
 const analysis = @import("practice_analysis.zig");
 const retention = @import("practice_retention.zig");
+const keys = @import("practice_keys.zig");
 pub const Record = results.Record;
 pub const max_record_bytes = 512 * 1024;
 
@@ -29,6 +30,8 @@ pub const Query = struct {
     timing: ?timing.Owned = null,
     analysis: ?*analysis.Summary = null,
     retention: ?*retention.Summary = null,
+    /// Per-letter estimates from the newest scored runs of this practice.
+    keys: ?*keys.Model = null,
     database_runs: usize = 0,
     database_events: usize = 0,
     exported: bool = false,
@@ -41,6 +44,8 @@ pub const Query = struct {
         if (self.timing) |*value| value.deinit();
         if (self.analysis) |value| self.progress_allocator.destroy(value);
         if (self.retention) |value| self.progress_allocator.destroy(value);
+        if (self.keys) |value| self.progress_allocator.destroy(value);
+        self.keys = null;
         self.progress = null;
         self.timing = null;
         self.analysis = null;
@@ -349,6 +354,9 @@ pub const Request = struct {
         db: *database.Database,
         output: *Query,
     ) !void {
+        const points = try gpa.alloc(progress.Point, progress.limit);
+        defer gpa.free(points);
+        var point_count: usize = 0;
         var rows = try db.rowsForPractice(self.cohort);
         defer rows.deinit();
         while (try rows.step()) {
@@ -359,6 +367,14 @@ pub const Request = struct {
             if (!std.mem.eql(u8, &candidate.id, try rows.blob(0))) continue;
             if (!std.meta.eql(database.practiceKey(candidate.cohort), database.practiceKey(self.cohort))) continue;
             if (candidate.cohort.verified == self.cohort.verified) output.retention.?.add(&candidate);
+            if (candidate.cohort.verified == self.cohort.verified and
+                candidate.scored and
+                candidate.status == .completed and
+                point_count < points.len)
+            {
+                points[point_count] = keyPoint(&candidate);
+                point_count += 1;
+            }
             if (output.latest_curriculum == null and
                 candidate.cohort.curriculum.version == 1 and
                 candidate.scored and
@@ -368,8 +384,35 @@ pub const Request = struct {
                 output.latest_curriculum = candidate;
             }
         }
+        for (points[0..point_count]) |*point| {
+            if (!point.timing) continue;
+            if (try db.timingFor(point.id, gpa)) |value| {
+                var owned = value;
+                defer owned.deinit();
+                try point.enrich(gpa, owned.payload);
+            }
+        }
+        output.keys = try gpa.create(keys.Model);
+        output.keys.?.* = keys.Model.fromNewest(points[0..point_count]);
     }
 };
+
+/// The per-character evidence of `record` for the letter model.
+fn keyPoint(record: *const Record) progress.Point {
+    var point: progress.Point = .{
+        .id = record.id,
+        .timestamp = record.timestamp,
+        .active_us = record.active_us,
+        .timing = record.timing_available,
+        .count = record.stat_count,
+    };
+    for (record.stats[0..record.stat_count], 0..) |stat, i| point.characters[i] = .{
+        .cp = stat.cp,
+        .opportunities = @intCast(@min(stat.opportunities, std.math.maxInt(u16))),
+        .misses = @intCast(@min(stat.misses, std.math.maxInt(u16))),
+    };
+    return point;
+}
 
 fn isRecordFile(entry: std.Io.Dir.Entry) bool {
     return entry.kind == .file and entry.name.len == 36 and std.mem.endsWith(u8, entry.name, ".zon");

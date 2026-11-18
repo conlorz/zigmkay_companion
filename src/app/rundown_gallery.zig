@@ -283,6 +283,25 @@ fn curriculum(app: *App, scene: usize, labels: *const Labels, now_us: u64) !void
             _ = try practice.start(true, null, now_us);
         },
         18 => try typeReference(&practice.session, now_us, 150_000),
+        19 => {
+            view.curriculum_open = true;
+            view.curriculum.config = .{ .curriculum = .{ .version = 1, .stage = .adaptive } };
+            // Six letters reached a 35 WPM target, the seventh is new and
+            // one starting letter has slowed down again.
+            var alphabet: [26]u8 = undefined;
+            const learned = desktop.practice_curriculum.letters(labels.practiceLabels(), &alphabet);
+            const history_data = &app.tutor.history.data;
+            if (history_data.keys == null) history_data.keys = try history_data.progress_allocator.create(desktop.practice_keys.Model);
+            const model = history_data.keys.?;
+            model.* = .{ .runs = 9 };
+            for (learned[0..6], 0..) |cp, index| {
+                const ms = 250 + @as(f64, @floatFromInt(index)) * 15;
+                model.keys[cp - 'a'] = .{ .runs = 8, .ms = ms, .best_ms = ms, .miss_runs = 8 };
+            }
+            model.keys[learned[2] - 'a'].ms = 390;
+            try resize(app, 1440, 1050);
+        },
+        20 => try resize(app, 820, 700),
         else => {},
     }
 }

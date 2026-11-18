@@ -7,6 +7,7 @@ const generator = @import("practice_generator.zig");
 const results = @import("practice_results.zig");
 const curriculum = @import("practice_curriculum.zig");
 const help = @import("practice_help.zig");
+const keys = @import("practice_keys.zig");
 pub const Digest = [32]u8;
 pub const Mode = enum { english, zig };
 
@@ -76,6 +77,10 @@ pub const Controller = struct {
     exercise_seed: u64 = 1,
     normal_coverage: ?generator.HandCoverage = null,
     curriculum_labels: ?practice.Labels = null,
+    /// Per-letter estimates from the practice history of this layout and
+    /// source. Adaptive lessons choose their letters from it when they start.
+    adaptive_keys: keys.Model = .{},
+    adaptive_target_wpm: u16 = keys.default_target_wpm,
     cohort: results.Cohort = .{},
     captured_cohort: results.Cohort = .{},
     completed: ?results.Record = null,
@@ -174,6 +179,7 @@ pub const Controller = struct {
             self.completed == null and
             self.completion_delivered) return error.PracticeResultPending;
         if (self.generation == std.math.maxInt(u64)) return error.OperationExhausted;
+        self.config = try self.adapted(self.config);
         const previous: ?Operation = if (self.generation == 0) null else self.operation();
         var buffer: [8192]u8 = undefined;
         self.seed +%= 0x9e3779b97f4a7c15;
@@ -258,7 +264,21 @@ pub const Controller = struct {
 
     pub fn preview(self: *const Controller, buffer: []u8, config: Config) ![]const u8 {
         try config.validate();
-        return self.referenceForConfig(buffer, config, self.seed +% 0x9e3779b97f4a7c15);
+        return self.referenceForConfig(buffer, try self.adapted(config), self.seed +% 0x9e3779b97f4a7c15);
+    }
+
+    /// Chooses the unlocked letters and focus of an adaptive lesson from the
+    /// current per-letter estimates. Other lessons are returned unchanged.
+    pub fn adapted(self: *const Controller, config: Config) !Config {
+        if (config.curriculum.version == 0 or config.curriculum.stage != .adaptive) return config;
+        var output = config;
+        output.curriculum = try curriculum.adapt(
+            config.curriculum,
+            self.curriculum_labels orelse return error.CurriculumLayoutUnavailable,
+            &self.adaptive_keys,
+            keys.targetMs(self.adaptive_target_wpm),
+        );
+        return output;
     }
 
     pub fn matchesSettings(self: *const Controller, original: results.Cohort) bool {
@@ -521,4 +541,37 @@ test "English challenge and drill settings do not reinterpret fixed Zig lessons"
         error.UnsupportedDrillFamily,
         (Config{ .mode = .zig, .targets = .{ 'a', 0, 0, 0, 0 }, .target_count = 1 }).validate(),
     );
+}
+
+test "adaptive lessons freeze the planned letters when they start" {
+    const t = std.testing;
+    const Fixture = struct {
+        fn lookup(_: *const anyopaque, _: usize, key: usize, _: u8, _: u16) practice.Label {
+            const lower = "abcdefghijklmnopqrstuvwxyz";
+            if (key == 26) return .{ .hid_code = 44 };
+            return .{ .text = lower[key .. key + 1] };
+        }
+    };
+    var owner = Controller.init(@splat(1));
+    const config: Config = .{ .curriculum = .{ .version = 1, .stage = .adaptive } };
+    try t.expectError(error.CurriculumLayoutUnavailable, owner.adapted(config));
+    owner.curriculum_labels = .{ .context = "", .key_count = 27, .layer_count = 1, .lookup = Fixture.lookup };
+    for (curriculum.alphabet_order[0..6]) |cp| owner.adaptive_keys.keys[cp - 'a'] = .{ .runs = 2, .ms = 300, .best_ms = 300 };
+    owner.adaptive_keys.keys['i' - 'a'].best_ms = 400;
+    owner.adaptive_keys.keys['i' - 'a'].ms = 400;
+    _ = try owner.dispatch(owner.action(.{ .drill = config }), null, 0);
+    try t.expectEqual(@as(u8, 6), owner.config.curriculum.alphabet);
+    try t.expectEqual(@as(u8, 4), owner.config.curriculum.family);
+    try t.expectEqual(owner.config.curriculum, owner.captured_cohort.curriculum);
+    for (owner.session.reference[0..owner.session.reference_len]) |cp| {
+        try t.expect(cp == ' ' or std.mem.indexOfScalar(u8, curriculum.alphabet_order[0..6], @intCast(cp)) != null);
+    }
+    // Once every letter reaches the target, the next lesson unlocks one more.
+    owner.adaptive_keys.keys['i' - 'a'].best_ms = 300;
+    _ = try owner.dispatch(owner.action(.new_exercise), null, 1);
+    try t.expectEqual(@as(u8, 7), owner.config.curriculum.alphabet);
+    try t.expectEqual(@as(u8, 6), owner.config.curriculum.family);
+    var buffer: [8192]u8 = undefined;
+    const preview = try owner.preview(&buffer, config);
+    try t.expect(std.mem.indexOfScalar(u8, preview, 'o') != null);
 }

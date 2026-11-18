@@ -343,3 +343,65 @@ test "curriculum resumes across reopen without merging stage or assistance cohor
     try t.expectEqual(@as(usize, 1), reopened.data.total);
     try t.expectEqual(record.id, reopened.data.latest_curriculum.?.id);
 }
+
+test "letter estimates combine timed runs of every cohort of the same practice" {
+    const t = std.testing;
+    var temp = t.tmpDir(.{ .iterate = true });
+    defer temp.cleanup();
+    const root = try temp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    var runtime = try Runtime.init(t.allocator, t.io, root);
+    defer runtime.deinit();
+    const reference = [_]u21{ 'e', 'e', 'e', 'e' };
+    var events: [4]timing.Event = undefined;
+    for (&events, 0..) |*event, index| {
+        const at: u64 = @intCast(index * 200_000 + 1);
+        event.* = .{
+            .observed_us = at,
+            .elapsed_us = at,
+            .active_us = at,
+            .kind = .attempt,
+            .position = @intCast(index),
+            .expected = 'e',
+            .typed = 'e',
+            .correct = true,
+            .eligibility = if (index == 0) .first_input else .clean,
+            .interval_us = if (index == 0) null else 200_000,
+        };
+    }
+    var record = results.Record{
+        .id = @splat(1),
+        .timing_available = true,
+        .active_us = 600_001,
+        .matched = 4,
+        .attempts = 4,
+        .correct_attempts = 4,
+        .stat_count = 1,
+        .cohort = .{ .curriculum = .{ .version = 1, .stage = .adaptive } },
+    };
+    record.stats[0] = .{ .cp = 'e', .opportunities = 4 };
+    try runtime.enqueueWithTiming(record, .{ .reference = &reference, .events = &events });
+    record.id = @splat(2);
+    record.timestamp = 1;
+    record.cohort.curriculum.alphabet = 7;
+    try runtime.enqueueWithTiming(record, .{ .reference = &reference, .events = &events });
+    // A stopped exercise is not evidence.
+    record.id = @splat(3);
+    record.timestamp = 2;
+    record.scored = false;
+    record.status = .stopped;
+    try runtime.enqueueWithTiming(record, .{ .reference = &reference, .events = &events });
+    // Each request saves one queued run.
+    for (0..3) |_| {
+        try runtime.request(.{}, null, false, false, null);
+        try finishWorker(&runtime);
+        try t.expect(runtime.error_value == null);
+    }
+    try t.expectEqual(@as(usize, 0), runtime.queued);
+    const keys = runtime.data.keys.?;
+    try t.expectEqual(@as(u32, 2), keys.runs);
+    try t.expectEqual(@as(u32, 2), keys.get('e').runs);
+    try t.expectEqual(@as(u64, 8), keys.get('e').opportunities);
+    try t.expectApproxEqAbs(@as(f64, 200), keys.get('e').ms, 0.000_001);
+    try t.expect(keys.get('e').confident(300));
+}
