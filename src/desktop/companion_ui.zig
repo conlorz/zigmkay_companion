@@ -16,7 +16,7 @@ pub const Frame = struct {
     modifiers: layout.Modifiers = .{},
     pressed: []const bool,
     practicing: bool = false,
-    assistance: desktop.practice_results.Assistance = .guided,
+    assistance: desktop.practice_controller.Assistance = .guided,
     live: bool = false,
     active_layers: ?u16 = null,
     targets: ?[]const bool = null,

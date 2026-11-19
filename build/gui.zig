@@ -26,7 +26,6 @@ const fixtures = [_]struct { []const u8, []const u8 }{
     .{ "--offline-catalog-frames", "56" },
     .{ "--offline-status-frames", "24" },
     .{ "--offline-practice-frames", "3" },
-    .{ "--offline-rundown-frames", "20" },
     .{ "--offline-companion-frames", "9" },
     .{ "--offline-source-refresh-frames", "3" },
 };

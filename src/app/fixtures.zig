@@ -9,7 +9,6 @@ const project = @import("project");
 const keyboard_onboarding = @import("onboarding-ui");
 const editor = @import("editor-frame-ui");
 const App = @import("App.zig");
-const rundown_gallery = @import("rundown_gallery.zig");
 const source_refresh_fixture = @import("source_refresh_fixture.zig");
 
 const c = Backend.c;
@@ -29,6 +28,41 @@ pub fn beforeFrame(app: *App) !void {
     // The native gallery draws each page twice in the dark, then twice in the light theme.
     if (app.mode.is(.native_onboarding)) app.view.toolbar.light = app.count % 4 >= 2;
     if (app.mode.isDrawers()) try showDrawer(app);
+    if (app.mode.is(.native_tutor)) try showTutor(app);
+}
+
+/// The tutor gallery shows four scenes for four frames each, twice in the
+/// dark and then twice in the light theme: trying the keyboard, an English
+/// test, a Zig lesson and a finished English test.
+fn showTutor(app: *App) !void {
+    app.view.toolbar.light = app.count % 4 >= 2;
+    if (app.count % 4 != 0) return;
+    const practice = &app.tutor.controller;
+    const now: u64 = @intCast(@max(0, app.native.nanoTime()) / 1000);
+    const scene = app.count / 4;
+    if (scene == 0) return;
+    const config: desktop.practice_controller.Config = if (scene == 2) .{ .mode = .zig, .level = 0 } else .{ .level = 1 };
+    app.applyPractice(try practice.choose(config, now), &app.model, now);
+    app.applyPractice(try practice.start(true, null, now), &app.model, now);
+    const session = &practice.session;
+    const count = switch (scene) {
+        1 => 41,
+        2 => 64,
+        else => session.reference_len,
+    };
+    // Typed over the last seconds so that the live speed is plausible.
+    const start = now -| 3_000_000 -| 180_000 * count;
+    for (session.reference[0..count], 0..) |cp, index| {
+        const at = start + 180_000 * index;
+        // The English test shows one corrected mistake.
+        if (scene == 1 and index == 30) {
+            try session.insert("x", at, false);
+            session.backspace();
+        }
+        var bytes: [4]u8 = undefined;
+        const len = try std.unicode.utf8Encode(cp, &bytes);
+        try session.insert(bytes[0..len], at, false);
+    }
 }
 
 /// The drawers fixture shows the combo, callback and encoder drawers, each in
@@ -423,8 +457,17 @@ pub fn capture(app: *App) !void {
         const path = try std.fmt.allocPrintSentinel(app.window.arena(), ".zig-cache/editor-drawers/{d}.bmp", .{(app.count - 1) / 4}, 0);
         try screenshot(app, path, error.DrawerScreenshotRead, error.DrawerScreenshotSave);
     }
-    try rundown_gallery.capture(app);
+    if (app.mode.is(.native_tutor) and app.count % 2 == 0) try captureTutor(app);
     if (app.mode.isOnboarding() or app.mode.is(.catalog)) try captureOnboarding(app);
+}
+
+fn captureTutor(app: *App) !void {
+    if (dvui.tagGet("practice.word") == null or dvui.tagGet("practice.metrics") == null) return error.TutorNotDrawn;
+    app.window.endRendering(.{ .manage_backend = false });
+    const scene = (app.count - 1) / 4;
+    const theme = if (app.view.toolbar.light) "light" else "dark";
+    const path = try std.fmt.allocPrintSentinel(app.window.arena(), ".zig-cache/typing-practice-gallery/{d}-{s}.bmp", .{ scene, theme }, 0);
+    try screenshot(app, path, error.TutorScreenshotRead, error.TutorScreenshotSave);
 }
 
 /// The activity row stays inside the toolbar, which spans the window.

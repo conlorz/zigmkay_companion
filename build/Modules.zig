@@ -38,9 +38,6 @@ pub const Core = struct {
     tray_lifecycle: *Module,
     flash_presenter: *Module,
     geometry: *Module,
-    zqlite: ?*Module,
-    /// `zqlite` alone, for the persistent practice stores.
-    zqlite_only: []const Import,
 };
 
 /// Modules on top of the firmware package's processor and keycodes.
@@ -155,7 +152,7 @@ pub const Gui = struct {
 };
 
 pub fn init(b: *std.Build, cfg: Config, deps: Deps) Modules {
-    const core = initCore(b, cfg, deps);
+    const core = initCore(b, cfg);
     const host = if (deps.firmware) |firmware| initHost(b, cfg, core, firmware) else null;
     const gui = if (host) |h| if (deps.dvui) |dvui| initGui(b, cfg, deps, core, h, dvui) else null else null;
     return .{ .b = b, .cfg = cfg, .core = core, .host = host, .gui = gui };
@@ -171,7 +168,7 @@ pub fn root(m: Modules, path: []const u8, imports: []const Import) *Module {
     });
 }
 
-fn initCore(b: *std.Build, cfg: Config, deps: Deps) Core {
+fn initCore(b: *std.Build, cfg: Config) Core {
     const owned_zon = b.createModule(.{ .root_source_file = b.path("src/project/owned_zon.zig") });
     const uf2 = b.createModule(.{ .root_source_file = b.path("src/artifact/uf2.zig") });
     const jobs_deps = dupe(b, &.{ .{ .name = "owned-zon", .module = owned_zon }, .{ .name = "firmware-uf2", .module = uf2 } });
@@ -198,8 +195,6 @@ fn initCore(b: *std.Build, cfg: Config, deps: Deps) Core {
         .tray_lifecycle = b.createModule(.{ .root_source_file = b.path("src/desktop/tray_lifecycle.zig"), .target = cfg.target, .optimize = cfg.optimize }),
         .flash_presenter = b.createModule(.{ .root_source_file = b.path("src/desktop/flash_presenter.zig"), .target = cfg.target, .optimize = cfg.optimize, .imports = dupe(b, &.{.{ .name = "flash-controller", .module = flash_controller }}) }),
         .geometry = b.createModule(.{ .root_source_file = b.path("src/desktop/geometry.zig") }),
-        .zqlite = deps.zqlite,
-        .zqlite_only = if (deps.zqlite) |zqlite| dupe(b, &.{.{ .name = "zqlite", .module = zqlite }}) else &.{},
     };
 }
 
@@ -280,7 +275,6 @@ fn initHost(b: *std.Build, cfg: Config, core: Core, firmware: *std.Build.Depende
         .{ .name = "zkeycodes", .module = keycodes },
         .{ .name = "input-source", .module = input_source },
         .{ .name = "companion-jobs", .module = core.jobs },
-        .{ .name = "zqlite", .module = core.zqlite.? },
         .{ .name = "flash-controller", .module = core.flash_controller },
         .{ .name = "desktop-geometry", .module = core.geometry },
         .{ .name = "flash-presenter", .module = core.flash_presenter },
