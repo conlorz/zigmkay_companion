@@ -190,7 +190,7 @@ export fn desktopActionFormCompileProbe(
     draft: *desktop.action_form.Draft,
     document: *const @import("project").Document,
 ) void {
-    @import("action-form-ui").draw(draft, document.*) catch {};
+    @import("action-form-ui").draw(draft, document.*, @import("editor-ui").Theme.get(false), .{}) catch {};
 }
 
 export fn desktopActionDrawerCompileProbe(
@@ -222,8 +222,9 @@ export fn desktopInspectorCompileProbe(
 export fn desktopComboCompileProbe(
     session: *desktop.combo_editor.Session,
     model: *const desktop.model.Model,
+    board: *const @import("combo-ui").Board,
 ) void {
-    _ = @import("combo-ui").draw(session, model, @import("editor-ui").Theme.get(false), "") catch null;
+    _ = @import("combo-ui").draw(session, model, @import("editor-ui").Theme.get(false), "", board.*) catch null;
 }
 
 export fn desktopCallbackCompileProbe(
