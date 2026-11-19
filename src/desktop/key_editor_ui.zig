@@ -564,11 +564,11 @@ fn tapComponents(self: *Context, bounds: dvui.Rect) void {
     }
     if (tap.media_key) |media| {
         any = true;
-        chip(self, labels.words(@tagName(media), &name), "key.editor.remove.media", .{ .tap_media = null });
+        chip(self, labels.spelled(labels.mediaSymbol(media), &name), "key.editor.remove.media", .{ .tap_media = null });
     }
     if (tap.mouse_action) |mouse| {
         any = true;
-        chip(self, labels.words(@tagName(mouse), &name), "key.editor.remove.mouse", .{ .tap_mouse = null });
+        chip(self, labels.spelled(labels.mouseSymbol(mouse), &name), "key.editor.remove.mouse", .{ .tap_mouse = null });
     }
     if (tap.custom) |id| {
         any = true;

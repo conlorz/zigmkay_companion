@@ -244,6 +244,11 @@ fn knownUsage(code: u8, buffer: []u8) []const u8 {
     return std.fmt.bufPrint(buffer, "HID {d}", .{code}) catch "?";
 }
 
+/// A symbol as inspectors spell keys out: the symbol, then its name.
+pub fn spelled(symbol: Symbol, buffer: []u8) []const u8 {
+    return std.fmt.bufPrint(buffer, "{s} {s}", .{ symbol.text(), symbol.name() }) catch symbol.name();
+}
+
 /// An enum tag in words for the inspector: "VolumeUp" becomes "Volume up".
 pub fn words(tag: []const u8, buffer: []u8) []const u8 {
     var used: usize = 0;
