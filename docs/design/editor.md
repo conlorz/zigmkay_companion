@@ -3,7 +3,7 @@
 Date: 2026-11-18. This is the reference the native editor and companion are
 compared against. The mockups in [editor/](editor/) are hand-written SVG
 studies with illustrative data, not DVUI screenshots. Each has a PNG render
-next to it.
+next to it; screens 18 to 20 exist only as PNG renders of the chosen study.
 
 The goal is an editor a new user understands without documentation. Keys show
 symbols rather than words, every layer has one color that appears wherever the
@@ -13,7 +13,7 @@ layer does, and the top bar follows the order of work: open, build, flash.
 
 | # | Screen | Mockup | Native code |
 |---|---|---|---|
-| 1 | Editor, keys view, dark | [01-editor-dark](editor/01-editor-dark.svg) | `editor_frame.zig`, `toolbar_ui.zig`, `layer_ui.zig`, `keyboard_ui.zig`, `host_palette_ui.zig`, `inspector_ui.zig` |
+| 1 | Editor, keys view, dark | [01-editor-dark](editor/01-editor-dark.svg) | `editor_frame.zig`, `toolbar_ui.zig`, `layer_ui.zig`, `keyboard_ui.zig`, `host_palette_ui.zig`, `key_editor_ui.zig` |
 | 2 | Editor, keys view, light | [02-editor-light](editor/02-editor-light.svg) | same |
 | 3 | Keycap anatomy, symbols and layer palette | [03-keycaps](editor/03-keycaps.svg) | `labels.zig`, `keycap_symbols.zig`, `icon_resources.zig`, `ui.zig` |
 | 4 | Companion overlay, dark and light | [04-companion](editor/04-companion.svg) | `companion_ui.zig` |
@@ -30,6 +30,7 @@ layer does, and the top bar follows the order of work: open, build, flash.
 | 15 | New layout with preview | [15-new-layout](editor/15-new-layout.svg) | `new_layout_ui.zig`, `new_layout.zig`, `layout_transfer.zig` |
 | 16 | Import from Git with comparison | [16-import-compare](editor/16-import-compare.svg) | `import_ui.zig`, `import_compare.zig`, `layout_transfer.zig` |
 | 17 | Add keyboard from the catalog | [17-add-keyboard](editor/17-add-keyboard.svg) | `catalog_ui.zig` |
+| 18 | Key halves and the tap and hold editors (chosen variant A) | [18-key-tap](editor/18-key-tap.png), [19-key-hold](editor/19-key-hold.png), [20-keycap-halves](editor/20-keycap-halves.png) | `keyboard_ui.zig`, `key_editor_ui.zig`, `labels.zig` |
 
 ## Canvas and grid
 
@@ -39,10 +40,11 @@ the window (`geometry.fitScale`). All coordinates below are canvas units.
 - Outer margin 16, gap between panels 12, panel corner radius 12, panel
   padding 20.
 - Top bar: 0–64. Status row: 64–100, separated by a 1-unit border line.
-- Columns from y = 112 to 1044: layers 16–256 (240 wide), center 268–1068
-  (800), inspector 1080–1520 (440).
-- Center column: keyboard panel 112–640 (528 high), OS keyboard 652–1044 (392).
-  Keys on the canvas grow until the geometry fills the panel width.
+- Columns from y = 112 to 1044: layers 16–256 (240 wide), keyboard 268–1520
+  (1252, wider in wider windows). There is no inspector column (2026-11-19).
+- Keyboard column: keyboard panel 112–692 (580 high) with a 76 high strip at
+  its bottom that explains the primary key, OS keyboard 704–1044 (340).
+  Keys on the canvas grow until the geometry fills the panel.
 - Layers column: layer list on top; the Try it out and Callbacks cards sit at
   the bottom of the same column (87 high each), so the center column belongs
   to the keyboard.
@@ -69,9 +71,9 @@ Sizes: panel title 19, body 14, secondary 12, keycap legend 22 (fitted).
 ### Layer palette
 
 Each layer position has one color. It appears as the key borders on the
-canvas, the layer row chip, the inspector preview border, layer-hold
-indicators (`▤2`), the companion's key borders and title dot, and the fill of
-pressed keys in the companion.
+canvas, the layer row chip, the key preview in the strip below the keyboard,
+layer-hold indicators (`▤2`), the companion's key borders and title dot, and
+the fill of pressed keys in the companion.
 
 | Layer | Dark | Light |
 |---|---|---|
@@ -94,9 +96,11 @@ two layer colors at least CIE76 ΔE 30 apart.
   face. Corner radius 12 % of the key width.
 - Selected: border 2.5 in the full layer color and the face tinted 22 % toward
   it. Focus outside the canvas uses `accent`.
-- Main legend (tap) centered in the upper part, 22 units before fitting. The
-  hold legend sits below in `muted` at 70 % size. There is no "Hold" word on
-  the canvas: the position says it; the inspector spells it out.
+- Every key has two halves. The upper 62 % shows the tap legend, 24 units
+  before fitting; the lower part is a slightly darker band below a hairline
+  with the hold legend in `muted`. An autofire key shows the repeat icon and
+  its interval there. There is no "Hold" word on the canvas: the position
+  says it, and the strip below the keyboard spells it out.
 - Transparent keys draw the legend they fall through to, in `muted`, on a
   `panel` face with a faint border.
 - Keyboard symbols are icons, never font glyphs: ⌫ ⌦ ⎋ ⇥ ⇪ ↩ ␣ ⇧ ⌃ ⌥ ⌘,
@@ -130,11 +134,32 @@ geometry fidelity note moves to a small muted line at the bottom.
 OS keyboard: a compact host keyboard whose keys draw the same symbols as the
 canvas; Shift and Option toggles on the right of its header.
 
-Inspector: title with Copy and Paste; a keycap preview in the layer color
-next to the spelled-out action ("⌫ Backspace", "Hold: L ⇧ Shift"); the key id,
-layer and selection count in `muted`; the assignment state; then the mode,
-Tap and Hold cards, timing, advanced fields and the search, and the
-Unassign / Inherit / Cancel / Apply footer.
+Key halves and editors (screen 18, decided 2026-11-19, issue daf47e9): a
+click on the upper half of a key selects it and opens the tap editor as a
+popover below the key; the lower half opens the hold editor. There is no mode
+to choose: the key type follows from what is set (only the tap: tap, only the
+hold: hold, both: tap and hold, the tap with Autofire on the lower half:
+autofire). Every change applies at once and undo reverts it.
+
+- Tap editor: "Press a key on your keyboard" captures the next key press,
+  found on the OS keyboard so it follows the host layout; the parts of the
+  tap as removable chips; search with category chips and result tiles; the
+  modifiers sent with the key as four toggles in host order with Left /
+  Right; dead key; one-shot layer and modifiers and callback IDs when set.
+- Hold editor: modifier while held (four toggles and Left / Right), layer
+  while held as chips in their colors, a callback or signal while held, the
+  tapping term ("Counts as held after") and retro tapping ("Send the tap if
+  released alone"), and the Autofire card with its start delay and repeat
+  interval. Autofire replaces the hold action because the firmware has no
+  tap, hold and autofire type; it needs a tap.
+- Both end with Remove tap or Remove hold and close with × or Escape.
+- The strip below the keyboard shows the primary key, what it does in plain
+  words ("Tap: F. Hold: L ⇧ Shift after 200 ms."), and Copy, Paste, Inherit
+  and No action. A pending request or close question replaces the actions.
+- Dragging an OS keyboard key onto the lower half of a key sets a hold
+  modifier; any other key dropped there, or anything dropped on the upper
+  half, becomes the tap. While the tap editor is open the OS keyboard header
+  says that a click sets the tap.
 
 ## Companion (screen 4)
 
@@ -224,8 +249,13 @@ theme's `danger`, `success` and `warning` tokens (light: `#DC2626`,
 `#15803D`, `#B45309`), and onboarding pages are centered in windows wider
 than the canvas.
 
-Open: the inspector body (Behaviour label, Tap and Hold cards, category chips
-and result rows as drawn) still uses its earlier layout. Encoder slots are
+Implemented (2026-11-19, screen 18): key halves, the tap and hold popovers
+with immediate apply, the explanation strip below the keyboard and drops by
+half replace the inspector column; the keyboard and OS keyboard panels span
+the width it freed.
+
+Open: typing a number into a timing field applies every valid keystroke as
+its own undo step. Encoder slots are
 numbered because board definitions do not name knobs or directions yet; the
 flash tracker shows three steps because the toolbar only knows whether a
 build or a flash is running. Copying an outside project into the collection

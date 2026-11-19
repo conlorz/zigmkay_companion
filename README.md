@@ -80,12 +80,15 @@ above shows the explicitly labeled offline draft view.
 
 ## Program your keyboard visually
 
-The physical keyboard, layer list, OS keyboard palette and key inspector live
-in one window. Select a key, search for an action, or drag an OS keyboard chord
-into the inspector. Apply edits explicitly, with undo/redo available afterward.
+The physical keyboard, layer list and OS keyboard palette live in one window.
+Every key has two halves: click the upper half to choose what it types and the
+lower half to choose what it does while held. Press the key on your computer's
+keyboard, search for an action, or drag an OS keyboard key onto either half.
+Changes apply at once, with undo/redo available afterward.
 
-- **Tap, hold, tap/hold and repeat:** tune tapping terms and repeat delays;
-  combine key chords with left/right modifiers.
+- **Tap, hold and autofire without modes:** the key type follows from what you
+  set; tune tapping terms and autofire delays, and combine key chords with
+  left/right modifiers.
 - **Layers and one-shots:** add, duplicate and name layers, use layer holds,
   and distinguish inherited assignments from keys that do nothing.
 - **More than letters:** assign media controls, mouse actions, companion signals,
