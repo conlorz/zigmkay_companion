@@ -380,11 +380,18 @@ pub fn buttonData(t: Theme, text: []const u8, tag: []const u8, r: dvui.Rect, dat
     return dvui.button(@src(), text, .{}, opts);
 }
 
-pub fn panel(t: Theme, which: geometry.Panel) *dvui.BoxWidget {
+/// A panel's bounds on the canvas. The top bar and the keyboard panels grow
+/// with windows wider than the design canvas.
+pub fn panelRect(which: geometry.Panel) dvui.Rect {
     var bounds = rect(geometry.panel(which));
     const width = @max(@as(f32, 1536), dvui.parentGet().data().contentRect().w);
     if (which == .toolbar) bounds.w = width;
-    if (which == .inspector) bounds.w = width - bounds.x - 16;
+    if (which == .physical or which == .os) bounds.w = width - bounds.x - 16;
+    return bounds;
+}
+
+pub fn panel(t: Theme, which: geometry.Panel) *dvui.BoxWidget {
+    const bounds = panelRect(which);
     var opts = options(t, bounds, 14);
     opts.tag = @tagName(which);
     opts.id_extra = @backingInt(which);

@@ -364,6 +364,26 @@ pub fn showStatusDetails(app: *App) void {
     // Scene 3 shows the flash panel of a failed firmware build.
     app.flash.panel = statusScene(app) == 3;
     app.flash.failure = if (statusScene(app) == 3) error.FirmwareBuildFailed else null;
+    // Scenes 0 and 1 open the key editor on F: its tap, then its hold, after
+    // F gained a Shift hold.
+    const scene = statusScene(app);
+    if (scene <= 1 and app.count % 4 == 1) {
+        app.model.select(13, false);
+        if (scene == 1) {
+            const tap = desktop.inspector_session.tapPart(app.model.action());
+            app.model.apply(.{ .tap_hold = .{
+                .tap = tap,
+                .hold = .{ .hold_modifiers = .{ .left_shift = true } },
+                .tapping_term = .{ .ms = 200 },
+            } }) catch {};
+        }
+    }
+    app.view.key_editor.open = switch (scene) {
+        0 => .tap,
+        1 => .hold,
+        else => null,
+    };
+    app.view.key_editor.layer = app.model.layer;
 }
 
 pub fn statusToolbar(app: *const App, toolbar: *@FieldType(editor.Frame, "toolbar")) void {

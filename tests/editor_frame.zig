@@ -53,6 +53,10 @@ const Observed = struct {
     pending_keep: ?dvui.Rect.Physical,
     pending_discard: ?dvui.Rect.Physical,
     callback_close: ?dvui.Rect.Physical,
+    hold3: ?dvui.Rect.Physical,
+    hold_shift: ?dvui.Rect.Physical,
+    autofire: ?dvui.Rect.Physical,
+    editor_close: ?dvui.Rect.Physical,
 };
 
 fn tagged(name: []const u8) ?dvui.Rect.Physical {
@@ -104,6 +108,10 @@ const Harness = struct {
             .pending_keep = tagged("pending.keep"),
             .pending_discard = tagged("pending.discard"),
             .callback_close = tagged("callback.close"),
+            .hold3 = tagged("key.hold.3"),
+            .hold_shift = tagged("key.editor.modifier.hold.1"),
+            .autofire = tagged("key.editor.autofire"),
+            .editor_close = tagged("key.editor.close"),
         };
         _ = try self.window.end(.{ .manage_backend = false });
         self.native.renderPresent();
@@ -206,6 +214,24 @@ test "composed editor handles selection pending keep/discard callback close and 
     _ = try harness.frame(observed.encoder_close orelse return error.MissingModalTag);
     try t.expect(view.modal == .none and view.encoders == null);
     try t.expectEqual(@as(usize, 1), model.undo_stack.items.len);
+
+    // The hold half opens the hold editor, and its edits apply at once.
+    observed = try harness.frame(null);
+    observed = try harness.frame(observed.hold3 orelse return error.MissingKeyTag);
+    try t.expectEqual(@as(usize, 3), model.primary);
+    try t.expect(view.key_editor.open == .hold);
+    observed = try harness.frame(null);
+    observed = try harness.frame(null);
+    observed = try harness.frame(observed.hold_shift orelse return error.MissingEditorTag);
+    try t.expect(model.action().?.tap_hold.hold.hold_modifiers.left_shift);
+    try t.expectEqual(@as(usize, 2), model.undo_stack.items.len);
+    observed = try harness.frame(null);
+    observed = try harness.frame(observed.autofire orelse return error.MissingEditorTag);
+    try t.expect(model.action().? == .tap_with_autofire);
+    try t.expectEqual(@as(usize, 3), model.undo_stack.items.len);
+    observed = try harness.frame(null);
+    observed = try harness.frame(observed.editor_close orelse return error.MissingEditorTag);
+    try t.expect(view.key_editor.open == null);
 
     // A laptop-sized viewport must expose the lower action after scrolling.
     try t.expect(Backend.c.SDL_SetWindowSize(native.window, 1152, 600));

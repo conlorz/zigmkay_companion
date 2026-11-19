@@ -69,7 +69,7 @@ export fn desktopHostPaletteCompileProbe(
     model: *const desktop.model.Model,
     cache: *const desktop.host_palette.Cache,
 ) void {
-    _ = @import("host-palette-ui").draw(view, model, cache, @import("editor-ui").Theme.get(false)) catch null;
+    _ = @import("host-palette-ui").draw(view, model, cache, @import("editor-ui").Theme.get(false), false) catch null;
 }
 
 export fn desktopLayerCompileProbe(view: *@import("layer-ui").View, model: *const desktop.model.Model) void {
@@ -205,17 +205,18 @@ export fn desktopActionDrawerCompileProbe(
     ) catch {};
 }
 
-export fn desktopInspectorCompileProbe(
+export fn desktopKeyEditorCompileProbe(
     session: *desktop.inspector_session.Session,
     model: *const desktop.model.Model,
-    view: *@import("inspector-ui").View,
+    view: *@import("key-editor-ui").View,
+    host: *const desktop.host_palette.Cache,
 ) void {
-    _ = @import("inspector-ui").draw(
+    _ = @import("key-editor-ui").draw(
         session,
         model,
         view,
         @import("editor-ui").Theme.get(false),
-        false,
+        .{ .anchor = null, .host = host },
     ) catch null;
 }
 

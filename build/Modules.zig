@@ -137,6 +137,8 @@ pub const Gui = struct {
     native_draft_input: *Module,
     icon_resources: *Module,
     onboarding_ui: *Module,
+    keyboard_ui: *Module,
+    key_editor_ui: *Module,
     companion_window: *Module,
     audit_options: *std.Build.Step.Options,
 
@@ -481,10 +483,6 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
     });
     const with_form = editor ++ [_]Import{.{ .name = "action-form-ui", .module = action_form_ui }};
     const action_drawer_ui = desktopModule(b, cfg, "action_drawer_ui.zig", &with_form);
-    const inspector_ui = desktopModule(b, cfg, "inspector_ui.zig", &(editor ++ [_]Import{
-        .{ .name = "editor-fonts", .module = fonts },
-        .{ .name = "project", .module = host.project },
-    }));
     const combo_ui = desktopModule(b, cfg, "combo_ui.zig", &(with_form ++ [_]Import{.{ .name = "project", .module = host.project }}));
     const encoder_ui = desktopModule(b, cfg, "encoder_ui.zig", &with_form);
     const callback_ui = desktopModule(b, cfg, "callback_ui.zig", &editor);
@@ -493,6 +491,12 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
     const keyboard_ui = desktopModule(b, cfg, "keyboard_ui.zig", &(editor ++ [_]Import{
         .{ .name = "editor-fonts", .module = fonts },
         .{ .name = "layout-model", .module = host.layout },
+        .{ .name = "project", .module = host.project },
+    }));
+    const key_editor_ui = desktopModule(b, cfg, "key_editor_ui.zig", &(editor ++ [_]Import{
+        .{ .name = "project", .module = host.project },
+        .{ .name = "keyboard-ui", .module = keyboard_ui },
+        .{ .name = "zkeymap", .module = host.keymap },
     }));
     const toolbar_ui = desktopModule(b, cfg, "toolbar_ui.zig", &editor);
     const paths_ui = desktopModule(b, cfg, "paths_ui.zig", &(editor ++ [_]Import{.{ .name = "project", .module = host.project }}));
@@ -502,7 +506,7 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
         .{ .name = "layer-ui", .module = layer_ui },
         .{ .name = "keyboard-ui", .module = keyboard_ui },
         .{ .name = "host-palette-ui", .module = host_palette_ui },
-        .{ .name = "inspector-ui", .module = inspector_ui },
+        .{ .name = "key-editor-ui", .module = key_editor_ui },
         .{ .name = "combo-ui", .module = combo_ui },
         .{ .name = "callback-ui", .module = callback_ui },
         .{ .name = "encoder-ui", .module = encoder_ui },
@@ -554,6 +558,8 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
         .native_draft_input = native_draft_input,
         .icon_resources = icon_resources,
         .onboarding_ui = onboarding_ui,
+        .keyboard_ui = keyboard_ui,
+        .key_editor_ui = key_editor_ui,
         .companion_window = companion_window,
         .audit_options = audit_options,
         .vector_test_deps = dupe(b, &.{ .{ .name = "svg2tvg", .module = svg2tvg }, .{ .name = "icons", .module = icons } }),
@@ -586,7 +592,7 @@ fn initGui(b: *std.Build, cfg: Config, deps: Deps, core: Core, host: Host, dvui_
             .{ .name = "physical-ui", .module = physical_ui },
             .{ .name = "action-form-ui", .module = action_form_ui },
             .{ .name = "action-drawer-ui", .module = action_drawer_ui },
-            .{ .name = "inspector-ui", .module = inspector_ui },
+            .{ .name = "key-editor-ui", .module = key_editor_ui },
             .{ .name = "combo-ui", .module = combo_ui },
             .{ .name = "layer-ui", .module = layer_ui },
             .{ .name = "host-palette-ui", .module = host_palette_ui },
