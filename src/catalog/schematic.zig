@@ -1,7 +1,8 @@
 //! Key placement of catalog boards. A board with a schematic layout is drawn
 //! from its PCB, made easy to read: finger keys stand upright on a grid with
 //! one key between columns and rows and keep the column stagger of the PCB in
-//! quarter keys; thumb keys keep their angle up to 30 degrees. Revisions that
+//! quarter keys. One thumb key per hand stands upright as a reference; the
+//! others fan out from it, each at most 10 degrees further. Revisions that
 //! differ by a few millimetres share one layout. Every other board is drawn
 //! linearly in key-index order, without invented rows, splits or stagger.
 const std = @import("std");
@@ -100,11 +101,13 @@ test "finger keys stand upright, one key apart, on quarter rows" {
         // Columns of one hand lie whole keys apart; only the gap between the
         // hands may be fractional.
         var origin: [2]?f32 = .{ null, null };
+        var upright: [2]bool = .{ false, false };
         for (entry[1]) |item| {
             if (item.group == .thumb) {
-                try std.testing.expect(@abs(item.rotation) <= 30);
-                // Thumbs turn towards the centre: clockwise on the left.
+                // Thumbs turn towards the centre in 10-degree steps: clockwise on the left.
+                try std.testing.expectEqual(@round(item.rotation / 10), item.rotation / 10);
                 try std.testing.expect(if (item.hand == .left) item.rotation >= 0 else item.rotation <= 0);
+                if (item.rotation == 0) upright[if (item.hand == .right) 1 else 0] = true;
                 continue;
             }
             try std.testing.expectEqual(@as(f32, 0), item.rotation);
@@ -114,6 +117,8 @@ test "finger keys stand upright, one key apart, on quarter rows" {
             try std.testing.expectEqual(@round(item.x - first), item.x - first);
             try std.testing.expectEqual(@round(item.y * 4), item.y * 4);
         }
+        // Every hand has an upright thumb key as a reference.
+        try std.testing.expect(upright[0] and upright[1]);
     }
 }
 
