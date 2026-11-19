@@ -57,6 +57,9 @@ const Observed = struct {
     hold_shift: ?dvui.Rect.Physical,
     autofire: ?dvui.Rect.Physical,
     editor_close: ?dvui.Rect.Physical,
+    /// The halves of the turned LK7 thumb key 31.
+    tap31: ?dvui.Rect.Physical,
+    hold31: ?dvui.Rect.Physical,
 };
 
 fn tagged(name: []const u8) ?dvui.Rect.Physical {
@@ -112,6 +115,8 @@ const Harness = struct {
             .hold_shift = tagged("key.editor.modifier.hold.1"),
             .autofire = tagged("key.editor.autofire"),
             .editor_close = tagged("key.editor.close"),
+            .tap31 = tagged("key.select.31"),
+            .hold31 = tagged("key.hold.31"),
         };
         _ = try self.window.end(.{ .manage_backend = false });
         self.native.renderPresent();
@@ -229,6 +234,21 @@ test "composed editor handles selection pending keep/discard callback close and 
     observed = try harness.frame(observed.autofire orelse return error.MissingEditorTag);
     try t.expect(model.action().? == .tap_with_autofire);
     try t.expectEqual(@as(usize, 3), model.undo_stack.items.len);
+    observed = try harness.frame(null);
+    observed = try harness.frame(observed.editor_close orelse return error.MissingEditorTag);
+    try t.expect(view.key_editor.open == null);
+
+    // The closed popover covers the thumbs until the next frame.
+    observed = try harness.frame(null);
+    // A turned thumb key takes clicks only on its turned halves. Key 31 turns
+    // 10 degrees clockwise; this point near the top-right corner of its
+    // upright tap half lies outside the turned half, and selects nothing.
+    const box = observed.tap31 orelse return error.MissingKeyTag;
+    observed = try harness.frame(.{ .x = box.x + box.w * 0.909, .y = box.y + box.h * 0.139, .w = 0, .h = 0 });
+    try t.expect(model.primary != 31 and view.key_editor.open == null);
+    observed = try harness.frame(observed.hold31 orelse return error.MissingKeyTag);
+    try t.expectEqual(@as(usize, 31), model.primary);
+    try t.expect(view.key_editor.open == .hold);
     observed = try harness.frame(null);
     observed = try harness.frame(observed.editor_close orelse return error.MissingEditorTag);
     try t.expect(view.key_editor.open == null);

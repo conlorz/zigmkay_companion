@@ -239,8 +239,8 @@ fn drawKey(
         .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = split },
         .{ .x = rect.x, .y = rect.y + split, .w = rect.w, .h = rect.h - split },
     };
-    // A turned key draws the same parts turned around its centre; its hit
-    // areas stay upright.
+    // A turned key draws the same parts turned around its centre and takes
+    // pointer events only inside its turned halves.
     const turn: ui.Turn = .{ .radians = item.placed.rotation, .pivot = rect.center() };
     keyPart(rect, turn, id, 0, .round(corner), fill, border, thickness);
     // The hold half sits on a slightly darker band below a hairline.
@@ -266,29 +266,44 @@ fn drawKey(
             try std.fmt.allocPrint(arena, "key.select.{d}", .{index})
         else
             try std.fmt.allocPrint(arena, "key.hold.{d}", .{index});
-        if (dvui.button(@src(), "", .{}, .{
+        const corners = if (part == .tap) topCorners(corner) else bottomCorners(corner);
+        const hit: ?Hit = if (turned) .init(bounds, turn) else null;
+        const clicked = if (hit) |shape| turnedButton(shape, .{
+            .id_extra = @as(usize, id) * 2 + half,
+            .tag = tag,
+            .rect = shape.box,
+            .padding = .{},
+            .margin = .{},
+            .data_out = &data,
+        }) else dvui.button(@src(), "", .{}, .{
             .id_extra = @as(usize, id) * 2 + half,
             .tag = tag,
             .rect = bounds,
-            .background = !turned,
             .color_fill = .{ .color = clear },
             .color_fill_hover = .{ .color = hover },
             .color_fill_press = .{ .color = theme.text.opacity(0.12) },
             .border = .{},
-            .corners = if (part == .tap) topCorners(corner) else bottomCorners(corner),
+            .corners = corners,
             .padding = .{},
             .margin = .{},
             .data_out = &data,
-        }) and result.* == null) {
+        });
+        if (clicked and result.* == null) {
             result.* = .{ .select = try desktop.key_selection.Action.capture(model, index, view.extend) };
             view.clicked = part;
         }
-        if (dvui.focusedWidgetId() == data.id) view.canvas_focus = true;
-        try acceptChordDrop(view, model, &data, index, part == .hold, result);
+        const focused = dvui.focusedWidgetId() == data.id;
+        if (focused) view.canvas_focus = true;
+        const dropping = try acceptChordDrop(view, model, &data, index, part == .hold, hit, result);
+        if (hit) |shape| {
+            // The turned face shows hover, press, focus and drop targets.
+            const pressed = dvui.captured(data.id);
+            if (pressed or shape.contains(dvui.currentWindow().mouse_pt))
+                keyPart(bounds, turn, id, 4 + half, corners, theme.text.opacity(if (pressed) 0.12 else 0.07), null, 0);
+            if (focused or dropping)
+                ui.turnedBox(bounds, turn, corners, clear, dvui.themeGet().focus, 2);
+        }
         const r = data.borderRectScale().r;
-        // A turned half shows its hover on the turned face.
-        if (turned and r.contains(dvui.currentWindow().mouse_pt))
-            keyPart(bounds, turn, id, 4 + half, if (part == .tap) topCorners(corner) else bottomCorners(corner), hover, null, 0);
         anchor = if (anchor) |previous| previous.unionWith(r) else r;
     }
     if (primary) view.anchor = anchor;
@@ -384,15 +399,22 @@ fn drawAutofire(theme: ui.Theme, bounds: dvui.Rect, interval: u16, id: u16, scal
 }
 
 /// Accepts a host-palette chord dropped on one half of a key. The hold half
-/// takes modifiers; any other key dropped there becomes the tap.
-fn acceptChordDrop(view: *View, model: *const desktop.model.Model, data: *dvui.WidgetData, index: usize, held: bool, result: *?Result) !void {
-    const drag = view.drag orelse return;
-    if (!dvui.dragName("key_chord")) return;
+/// takes modifiers; any other key dropped there becomes the tap. A turned
+/// half only takes drops inside its turned shape. Returns whether a chord is
+/// hovering over this half; an upright half draws its own focus border.
+fn acceptChordDrop(view: *View, model: *const desktop.model.Model, data: *dvui.WidgetData, index: usize, held: bool, hit: ?Hit, result: *?Result) !bool {
+    const drag = view.drag orelse return false;
+    if (!dvui.dragName("key_chord")) return false;
+    var hovering = false;
     for (dvui.events()) |*event| {
         if (!dvui.eventMatch(event, .{ .id = data.id, .r = data.borderRectScale().r, .drag_name = "key_chord" })) continue;
         if (event.evt != .mouse) continue;
         const mouse = event.evt.mouse;
-        if (mouse.action == .position) data.focusBorder();
+        if (hit) |shape| if (!shape.contains(mouse.p)) continue;
+        if (mouse.action == .position) {
+            hovering = true;
+            if (hit == null) data.focusBorder();
+        }
         if (mouse.action == .release and mouse.button == .left) {
             event.handle(@src(), data);
             dvui.dragEnd();
@@ -401,6 +423,88 @@ fn acceptChordDrop(view: *View, model: *const desktop.model.Model, data: *dvui.W
             if (result.* == null) result.* = .{ .chord = try drag.drop(model, index, held and modifier) };
         }
     }
+    return hovering;
+}
+
+/// One half of a turned key: its upright half in canvas units, the turn, and
+/// the screen geometry pointer events are tested against.
+const Hit = struct {
+    /// The upright bounding box of the turned half, in canvas units.
+    box: dvui.Rect,
+    half: dvui.Rect.Physical,
+    pivot: dvui.Point.Physical,
+    radians: f32,
+
+    fn init(bounds: dvui.Rect, turn: ui.Turn) Hit {
+        const parent = dvui.parentGet();
+        var low: dvui.Point = .{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32) };
+        var high: dvui.Point = .{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32) };
+        for ([_]dvui.Point{ bounds.topLeft(), bounds.topRight(), bounds.bottomLeft(), bounds.bottomRight() }) |corner| {
+            const turned = turn.point(corner);
+            low = .{ .x = @min(low.x, turned.x), .y = @min(low.y, turned.y) };
+            high = .{ .x = @max(high.x, turned.x), .y = @max(high.y, turned.y) };
+        }
+        return .{
+            .box = .{ .x = low.x, .y = low.y, .w = high.x - low.x, .h = high.y - low.y },
+            .half = parent.screenRectScale(bounds).r,
+            .pivot = parent.screenRectScale(.{ .x = turn.pivot.x, .y = turn.pivot.y }).r.topLeft(),
+            .radians = turn.radians,
+        };
+    }
+
+    /// Whether a screen point lies on the turned half.
+    fn contains(self: Hit, point: dvui.Point.Physical) bool {
+        const d = point.diff(self.pivot);
+        const cos = @cos(-self.radians);
+        const sin = @sin(-self.radians);
+        return self.half.contains(.{ .x = self.pivot.x + d.x * cos - d.y * sin, .y = self.pivot.y + d.x * sin + d.y * cos });
+    }
+};
+
+/// A button over a turned half: it takes focus, tags and keyboard activation
+/// like `dvui.button`, but only pointer events inside the turned shape, so
+/// neighbouring keys keep the corners of its upright bounding box. The
+/// caller draws its hover, press and focus on the turned face.
+fn turnedButton(hit: Hit, opts: dvui.Options) bool {
+    var button: dvui.ButtonWidget = undefined;
+    button.init(@src(), .{}, opts);
+    defer button.deinit();
+    const wd = button.data();
+    var clicked = false;
+    for (dvui.events()) |*e| {
+        if (!dvui.eventMatch(e, .{ .id = wd.id, .r = wd.borderRectScale().r })) continue;
+        switch (e.evt) {
+            .mouse => |me| {
+                const inside = hit.contains(me.p);
+                if (!inside and !dvui.captured(wd.id)) continue;
+                if (me.action == .focus) {
+                    e.handle(@src(), wd);
+                    dvui.focusWidget(wd.id, null, e.num);
+                } else if (me.action == .press and me.button.pointer()) {
+                    e.handle(@src(), wd);
+                    dvui.captureMouse(wd, e.num);
+                    dvui.dragPreStart(me.button, me.p, .{});
+                } else if (me.action == .release and me.button.pointer() and dvui.captured(wd.id)) {
+                    e.handle(@src(), wd);
+                    dvui.captureMouse(null, e.num);
+                    dvui.dragEnd();
+                    if (inside) {
+                        dvui.refresh(null, @src(), wd.id);
+                        clicked = true;
+                    }
+                } else if (me.action == .position) {
+                    dvui.cursorSet(.hand);
+                }
+            },
+            .key => |ke| if (ke.action == .down and ke.matchBind("activate")) {
+                e.handle(@src(), wd);
+                dvui.refresh(null, @src(), wd.id);
+                clicked = true;
+            },
+            else => {},
+        }
+    }
+    return clicked;
 }
 
 test "key legends split tap and hold captions by the action's parts" {
