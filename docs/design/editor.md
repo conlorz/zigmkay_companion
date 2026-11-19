@@ -3,7 +3,7 @@
 Date: 2026-11-18. This is the reference the native editor and companion are
 compared against. The mockups in [editor/](editor/) are hand-written SVG
 studies with illustrative data, not DVUI screenshots. Each has a PNG render
-next to it. The tutor has its own [design reference](typing-practice-packages.md).
+next to it.
 
 The goal is an editor a new user understands without documentation. Keys show
 symbols rather than words, every layer has one color that appears wherever the
