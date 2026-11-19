@@ -212,13 +212,13 @@ result in the editor style; screen 10 is superseded.
   Show in folder. Build › Flash stays; saving is automatic with undo.
 - The legacy profile dropdown (four built-in LK7 templates with per-profile
   project folders) becomes "New layout from template".
-- Key placement (2026-11-18): a board with a spatial layout in
-  `src/catalog/spatial/` is drawn at its measured switch positions, turned
-  keys included; Molekula uses the Molekula2 PCB placement. `lk7` keeps the
-  hand-written grid in `src/catalog/lk7_physical_layout.zig`. Every other
-  board is drawn linearly, ten keys per row in key-index order, without
-  invented splits or stagger. See
-  [Spatial layouts](../keyboard-projects.md#spatial-layouts).
+- Key placement (2026-11-19): every catalog board is drawn on a schematic
+  layout from its PCB in `src/catalog/schematic/`: equal keys, finger keys
+  upright one key apart with the PCB's column stagger in quarter keys, thumb
+  keys turned up to 30 degrees. Revisions that differ by a few millimetres
+  share a layout, and the catalog lists one Leonardo Keycaprio with PCB
+  revisions 0.1 to 0.8 instead of separate Keycaprio and LK entries. See
+  [Key placement](../keyboard-projects.md#key-placement).
 
 ## Status
 
@@ -259,8 +259,8 @@ its own undo step. Encoder slots are
 numbered because board definitions do not name knobs or directions yet; the
 flash tracker shows three steps because the toolbar only knows whether a
 build or a flash is running. Copying an outside project into the collection
-has no control on My Keyboards yet. Boards without a spatial layout are drawn
-linearly, and revision transfers still match by key index.
+has no control on My Keyboards yet. Revision transfers still match by key
+index.
 
 Compare screenshots against these mockups when changing them. Every fixture
 below writes BMP files to `.zig-cache/` without capturing the desktop:

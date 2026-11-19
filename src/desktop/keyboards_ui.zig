@@ -166,7 +166,7 @@ pub fn pill(theme: ui.Theme, value: []const u8, rect: dvui.Rect, fill: dvui.Colo
     dvui.labelNoFmt(@src(), value, .{ .align_x = 0.5, .align_y = 0.5 }, opts);
 }
 
-/// "PCB 0.7 (LK7) · 34 keys" for a catalog entry.
+/// "PCB 0.7 · 34 keys" for a catalog entry.
 pub fn hardwareLine(buffer: []u8, entry: *const library.catalog.Entry) []const u8 {
     const revision = entry.display.revision;
     const keys = entry.default_dimensions.key_count;
