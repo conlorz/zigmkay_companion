@@ -49,7 +49,7 @@ pub const Host = struct {
     defaults: *Module,
     /// A separate default keymap inventory as a test root.
     defaults_test: *Module,
-    physical: *Module,
+    lk7_ids: *Module,
     catalog: *Module,
     protocol: *Module,
     profile: *Module,
@@ -212,12 +212,12 @@ fn initHost(b: *std.Build, cfg: Config, core: Core, firmware: *std.Build.Depende
     const zigmkay_only = dupe(b, &.{.{ .name = "zigmkay", .module = zigmkay }});
     const keycodes = b.createModule(.{ .root_source_file = sources.keycodes, .imports = zigmkay_only });
     const layout = b.createModule(.{ .root_source_file = b.path("src/layout/root.zig"), .imports = zigmkay_only });
-    const physical = b.createModule(.{ .root_source_file = b.path("src/catalog/lk7_physical_layout.zig"), .imports = dupe(b, &.{.{ .name = "layout-model", .module = layout }}) });
+    const lk7_ids = b.createModule(.{ .root_source_file = b.path("src/catalog/lk7_key_ids.zig"), .imports = dupe(b, &.{.{ .name = "layout-model", .module = layout }}) });
     const defaults = fw_build.defaultKeymaps(b, sources, zigmkay, keycodes);
     const catalog = b.createModule(.{ .root_source_file = b.path("src/catalog/root.zig"), .target = t, .optimize = o, .imports = dupe(b, &.{
         .{ .name = "firmware-defaults", .module = defaults },
         .{ .name = "layout-model", .module = layout },
-        .{ .name = "lk7-physical", .module = physical },
+        .{ .name = "lk7-key-ids", .module = lk7_ids },
     }) });
     for (fw_build.boards.entries, 0..) |board, index|
         catalog.addAnonymousImport(b.fmt("default-source-{d}", .{index}), .{ .root_source_file = firmware.path(b.fmt("keyboards/{s}", .{board.default_keymap})) });
@@ -230,7 +230,7 @@ fn initHost(b: *std.Build, cfg: Config, core: Core, firmware: *std.Build.Depende
         .{ .name = "layout-model", .module = layout },
         .{ .name = "device-protocol", .module = protocol },
         .{ .name = "rollercole-profile", .module = profile },
-        .{ .name = "lk7-physical", .module = physical },
+        .{ .name = "lk7-key-ids", .module = lk7_ids },
         .{ .name = "owned-zon", .module = core.owned_zon },
     });
     const project = b.createModule(.{ .root_source_file = b.path("src/project/root.zig"), .imports = project_deps });
@@ -304,7 +304,7 @@ fn initHost(b: *std.Build, cfg: Config, core: Core, firmware: *std.Build.Depende
             module.optimize = o;
             break :defaults_test module;
         },
-        .physical = physical,
+        .lk7_ids = lk7_ids,
         .catalog = catalog,
         .protocol = protocol,
         .profile = profile,

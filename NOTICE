@@ -242,3 +242,10 @@ Keycap symbol icons (2026-11-18): src/desktop/icon_resources.zig maps keycap
 symbols to lucide icons from the pinned icon package. Its first-party SVG
 paths follow the lucide 24-unit grid; the forward-delete icon mirrors the
 lucide `delete` path (ISC license, Lucide contributors).
+
+Key placement (2026-11-19): src/catalog/schematic/*.zon hold schematic key
+grids in key units, derived and rounded from published PCB switch positions;
+no PCB file is copied. Sources, named in each file header: StephanMoeller/
+Leonardo-KeycapRio 473f41f (CC BY-NC-SA 4.0), StephanMoeller/clacky-chan
+328530c and StephanMoeller/Tucky-Two-Times 29dedf9 (no license stated),
+opendata-nuernberg/molekula 78ca099 (MIT) and GroooveBob/DASBOB 3f49dda (MIT).
