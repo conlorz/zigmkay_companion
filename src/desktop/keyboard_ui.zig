@@ -239,60 +239,21 @@ fn drawKey(
         .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = split },
         .{ .x = rect.x, .y = rect.y + split, .w = rect.w, .h = rect.h - split },
     };
-    // A turned key keeps upright hit areas and draws its face as a path.
-    if (turned) {
-        ui.turnedFace(rect, item.placed.rotation, corner, fill, border, thickness);
-    } else {
-        const face = dvui.box(@src(), .{}, .{
-            .id_extra = id,
-            .rect = rect,
-            .background = true,
-            .color_fill = .{ .color = fill },
-            .color_border = .{ .color = border },
-            .border = .all(thickness),
-            .corners = .all(corner),
-            .padding = .{},
-            .margin = .{},
-        });
-        face.deinit();
-        // The hold half sits on a slightly darker band below a hairline.
-        const open = if (primary) view.open else null;
-        const band_fill = if (open == .hold)
-            ui.mix(fill, layer_color, 0.4)
-        else
-            ui.mix(fill, theme.bg, if (transparent) 0.25 else 0.45);
-        const band = dvui.box(@src(), .{}, .{
-            .id_extra = id,
-            .rect = .{ .x = rect.x + thickness, .y = rect.y + split, .w = rect.w - thickness * 2, .h = rect.h - split - thickness },
-            .background = true,
-            .color_fill = .{ .color = band_fill },
-            .corners = bottomCorners(corner - thickness),
-            .padding = .{},
-            .margin = .{},
-        });
-        band.deinit();
-        if (open == .tap) {
-            const tint = dvui.box(@src(), .{}, .{
-                .id_extra = id,
-                .rect = .{ .x = rect.x + thickness, .y = rect.y + thickness, .w = rect.w - thickness * 2, .h = split - thickness },
-                .background = true,
-                .color_fill = .{ .color = ui.mix(fill, layer_color, 0.4) },
-                .corners = topCorners(corner - thickness),
-                .padding = .{},
-                .margin = .{},
-            });
-            tint.deinit();
-        }
-        const line = dvui.box(@src(), .{}, .{
-            .id_extra = id,
-            .rect = .{ .x = rect.x + thickness, .y = rect.y + split, .w = rect.w - thickness * 2, .h = 1 },
-            .background = true,
-            .color_fill = .{ .color = ui.mix(fill, border, if (selected) 0.6 else 0.25) },
-            .padding = .{},
-            .margin = .{},
-        });
-        line.deinit();
-    }
+    // A turned key draws the same parts turned around its centre; its hit
+    // areas stay upright.
+    const turn: ui.Turn = .{ .radians = item.placed.rotation, .pivot = rect.center() };
+    keyPart(rect, turn, id, 0, .round(corner), fill, border, thickness);
+    // The hold half sits on a slightly darker band below a hairline.
+    const open = if (primary) view.open else null;
+    const band_fill = if (open == .hold)
+        ui.mix(fill, layer_color, 0.4)
+    else
+        ui.mix(fill, theme.bg, if (transparent) 0.25 else 0.45);
+    const inner_corner = @max(0, corner - thickness);
+    keyPart(.{ .x = rect.x + thickness, .y = rect.y + split, .w = rect.w - thickness * 2, .h = rect.h - split - thickness }, turn, id, 1, bottomCorners(inner_corner), band_fill, null, 0);
+    if (open == .tap)
+        keyPart(.{ .x = rect.x + thickness, .y = rect.y + thickness, .w = rect.w - thickness * 2, .h = split - thickness }, turn, id, 2, topCorners(inner_corner), ui.mix(fill, layer_color, 0.4), null, 0);
+    keyPart(.{ .x = rect.x + thickness, .y = rect.y + split, .w = rect.w - thickness * 2, .h = 1 }, turn, id, 3, .square, ui.mix(fill, border, if (selected) 0.6 else 0.25), null, 0);
     const arena = dvui.currentWindow().arena();
     var anchor: ?dvui.Rect.Physical = null;
     inline for (.{ Part.tap, Part.hold }, 0..) |part, half| {
@@ -325,6 +286,9 @@ fn drawKey(
         if (dvui.focusedWidgetId() == data.id) view.canvas_focus = true;
         try acceptChordDrop(view, model, &data, index, part == .hold, result);
         const r = data.borderRectScale().r;
+        // A turned half shows its hover on the turned face.
+        if (turned and r.contains(dvui.currentWindow().mouse_pt))
+            keyPart(bounds, turn, id, 4 + half, if (part == .tap) topCorners(corner) else bottomCorners(corner), hover, null, 0);
         anchor = if (anchor) |previous| previous.unionWith(r) else r;
     }
     if (primary) view.anchor = anchor;
@@ -344,9 +308,10 @@ fn drawKey(
         .id_extra = id,
         .layer_colors = !transparent,
         .layers = theme.layers,
+        .turn = turn,
     });
     if (shown.autofire) |interval| {
-        drawAutofire(theme, hold_bounds, interval, id, scale);
+        drawAutofire(theme, hold_bounds, interval, id, scale, turn);
     } else if (shown.hold.len != 0) {
         ui.caption(shown.hold, hold_bounds, .{
             .color = theme.muted,
@@ -355,11 +320,30 @@ fn drawKey(
             .id_extra = @as(usize, id) + 0x20000,
             .layer_colors = !transparent,
             .layers = theme.layers,
+            .turn = turn,
         });
     }
 }
 
 const CornerRect = @typeInfo(@FieldType(dvui.Options, "corners")).optional.child;
+
+/// One part of a keycap: a DVUI box on an upright key, a turned path on a
+/// turned one. `part` tells the parts of one key apart.
+fn keyPart(r: dvui.Rect, turn: ui.Turn, id: u16, part: usize, corners: CornerRect, fill: dvui.Color, border: ?dvui.Color, thickness: f32) void {
+    if (turn.radians != 0) return ui.turnedBox(r, turn, corners, fill, border, thickness);
+    const box = dvui.box(@src(), .{}, .{
+        .id_extra = @as(usize, id) * 8 + part,
+        .rect = r,
+        .background = true,
+        .color_fill = .{ .color = fill },
+        .color_border = if (border) |color| .{ .color = color } else null,
+        .border = if (border != null) .all(thickness) else .{},
+        .corners = corners,
+        .padding = .{},
+        .margin = .{},
+    });
+    box.deinit();
+}
 
 fn topCorners(radius: f32) CornerRect {
     return .{ .tl = .round(radius), .tr = .round(radius), .br = .square, .bl = .square };
@@ -370,7 +354,7 @@ fn bottomCorners(radius: f32) CornerRect {
 }
 
 /// The lower half of an autofire key: the repeat icon and the interval.
-fn drawAutofire(theme: ui.Theme, bounds: dvui.Rect, interval: u16, id: u16, scale: f32) void {
+fn drawAutofire(theme: ui.Theme, bounds: dvui.Rect, interval: u16, id: u16, scale: f32, turn: ui.Turn) void {
     var buffer: [16]u8 = undefined;
     const text = std.fmt.bufPrint(&buffer, "{d}", .{interval}) catch "";
     const size = @max(9, 13 * scale);
@@ -381,14 +365,16 @@ fn drawAutofire(theme: ui.Theme, bounds: dvui.Rect, interval: u16, id: u16, scal
     const y = bounds.y + (bounds.h - icon) / 2;
     dvui.icon(@src(), "autofire", ui.control_icons.autofire, .{}, .{
         .id_extra = id,
-        .rect = .{ .x = x, .y = y, .w = icon, .h = icon },
+        .rect = turn.rect(.{ .x = x, .y = y, .w = icon, .h = icon }),
+        .rotation = turn.radians,
         .color_text = .{ .color = theme.muted },
         .padding = .{},
         .margin = .{},
     });
     dvui.labelNoFmt(@src(), text, .{}, .{
         .id_extra = id,
-        .rect = .{ .x = x + icon + 4, .y = bounds.y, .w = width - icon - 4 + 2, .h = bounds.h },
+        .rect = turn.rect(.{ .x = x + icon + 4, .y = bounds.y, .w = width - icon - 4 + 2, .h = bounds.h }),
+        .rotation = turn.radians,
         .font = font,
         .color_text = .{ .color = theme.muted },
         .gravity_y = 0.5,

@@ -67,6 +67,7 @@ pub fn draw(theme: ui.Theme, geometry: Geometry, bounds: dvui.Rect, style: Style
             .size = rect.w * 0.42,
             .id_extra = id,
             .layers = theme.layers,
+            .turn = .{ .radians = placed.rotation, .pivot = rect.center() },
         });
     }
 }

@@ -214,8 +214,9 @@ result in the editor style; screen 10 is superseded.
   project folders) becomes "New layout from template".
 - Key placement (2026-11-19): every catalog board is drawn on a schematic
   layout from its PCB in `src/catalog/schematic/`: equal keys, finger keys
-  upright one key apart with the PCB's column stagger in quarter keys, thumb
-  keys turned up to 30 degrees. Revisions that differ by a few millimetres
+  upright one key apart with the PCB's column stagger in quarter keys, one
+  upright thumb key per hand with the others fanned in 10-degree steps,
+  labels turned with their key. Revisions that differ by a few millimetres
   share a layout, and the catalog lists one Leonardo Keycaprio with PCB
   revisions 0.1 to 0.8 instead of separate Keycaprio and LK entries. See
   [Key placement](../keyboard-projects.md#key-placement).

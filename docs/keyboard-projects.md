@@ -36,7 +36,9 @@ firmware's neutral processing sides.
 Keys are drawn on a schematic layout made from the board's PCB, so they read
 easily and are simple to pick: every key has the same size, finger keys stand
 upright one key apart and keep the column stagger of the PCB in quarter
-keys, and thumb keys keep their angle up to 30 degrees. The layouts are ZON
+keys. One thumb key per hand stands upright as a reference where the PCB puts
+it; the others fan out from it, each turned at most 10 degrees further than
+its neighbour, and labels turn with their key. The layouts are ZON
 files in [`src/catalog/schematic/`](../src/catalog/schematic/), registered by
 selector in [`schematic.zig`](../src/catalog/schematic.zig). A board without
 one is drawn linearly, ten keys per row in firmware key-index order.
